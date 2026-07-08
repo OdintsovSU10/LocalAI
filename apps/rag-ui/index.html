@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Locus</title>
+    <meta name="application-name" content="Locus">
+    <meta name="theme-color" content="#0d1117">
+    <link rel="icon" type="image/svg+xml" href="/assets/locus-icon.svg">
+    <link rel="apple-touch-icon" href="/assets/locus-icon.svg">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="app">
+      <aside class="sidebar">
+        <header class="brand">
+          <img class="brand-mark" src="/assets/locus-icon.svg" alt="" aria-hidden="true">
+          <div>
+            <div class="brand-title">Locus</div>
+            <div class="brand-subtitle">Локальная память проектов</div>
+          </div>
+        </header>
+
+        <div id="lm-mini" class="lm-mini checking">
+          <span class="lm-mini-dot" aria-hidden="true"></span>
+          <span id="lm-mini-title" class="lm-mini-title">LM Studio</span>
+          <span id="lm-mini-detail" class="lm-mini-detail">проверка...</span>
+        </div>
+
+        <div class="sidebar-actions">
+          <button id="new-chat-button" type="button">Новый чат</button>
+        </div>
+
+        <section class="history-panel">
+          <div class="panel-title">История</div>
+          <div id="chat-history" class="chat-history"></div>
+        </section>
+
+        <div class="sidebar-footer">
+          <button id="settings-open" type="button" class="secondary">Настройки</button>
+        </div>
+      </aside>
+
+      <section id="chat-workspace" class="workspace">
+        <header class="toolbar">
+          <select id="source-select" aria-label="Проект"></select>
+          <span id="chat-ready-status" class="chat-ready-status not-ready">Не готов</span>
+          <span id="project-index-info" class="project-index-info"></span>
+          <button id="agent-run-button" type="button">Запустить агента</button>
+          <div id="index-progress" class="index-progress" hidden>
+            <div class="index-progress-track">
+              <div id="index-progress-fill" class="index-progress-fill"></div>
+            </div>
+            <span id="index-progress-label" class="index-progress-label"></span>
+          </div>
+          <span id="job-status" class="status"></span>
+        </header>
+
+        <section class="chat-panel">
+          <div id="chat-thread" class="chat-thread">
+            <div class="empty chat-empty">Задайте вопрос с названием или адресом проекта. Например: «Балчуг, Садовническая — какие основные условия договора?»</div>
+          </div>
+          <form id="chat-form" class="chat-form">
+            <textarea id="question" rows="1" placeholder="Например: Балчуг, Садовническая — какие основные условия договора?"></textarea>
+            <div class="chat-actions">
+              <button id="stop-button" type="button" class="icon-action stop-button" title="Остановить" aria-label="Остановить" hidden></button>
+              <button id="send-button" type="submit" class="icon-action send-button" title="Спросить" aria-label="Спросить">
+                <span aria-hidden="true">↑</span>
+              </button>
+            </div>
+          </form>
+        </section>
+      </section>
+
+      <aside id="source-viewer" class="source-viewer" hidden>
+        <header class="source-viewer-header">
+          <div>
+            <div class="panel-title">Файл</div>
+            <div id="preview-title" class="preview-title">Источник не выбран</div>
+          </div>
+          <button id="source-viewer-close" type="button" class="icon-button" title="Закрыть файл" aria-label="Закрыть файл">×</button>
+        </header>
+        <div id="source-preview" class="source-preview">
+          <div class="empty">Нажмите на ссылку файла в чате, чтобы открыть фрагмент справа.</div>
+        </div>
+      </aside>
+
+      <section id="settings-page" class="settings-page" hidden>
+        <header class="settings-page-header">
+          <button id="settings-back" type="button" class="secondary">Назад</button>
+          <div>
+            <div id="settings-page-title" class="settings-page-title">Настройки</div>
+            <div class="folder-current">Источники, хранилище и подключение LM Studio</div>
+          </div>
+          <div class="settings-header-actions">
+            <button id="tender-sync-button" type="button" class="secondary tender-sync-header-button">Синхронизировать с Google Drive</button>
+            <button id="settings-system-status" type="button" class="backend-status service-control-button is-online" data-service="backend" title="Бэкэнд работает" aria-label="Бэкэнд работает" aria-haspopup="menu" aria-expanded="false">
+              <span class="backend-status-dot" aria-hidden="true"></span>
+              <span class="backend-status-label">Бэкэнд</span>
+            </button>
+            <button id="settings-reranker-status" type="button" class="backend-status service-control-button is-offline" data-service="reranker" title="Reranker не запущен" aria-label="Reranker не запущен" aria-haspopup="menu" aria-expanded="false">
+              <span class="backend-status-dot" aria-hidden="true"></span>
+              <span class="backend-status-label">Reranker</span>
+            </button>
+            <button id="settings-qdrant-status" type="button" class="backend-status service-control-button is-offline" data-service="qdrant" title="Qdrant не запущен" aria-label="Qdrant не запущен" aria-haspopup="menu" aria-expanded="false">
+              <span class="backend-status-dot" aria-hidden="true"></span>
+              <span class="backend-status-label">Qdrant</span>
+            </button>
+            <div id="service-action-menu" class="service-action-menu" role="menu" hidden>
+              <button type="button" class="secondary" data-service-action="start" role="menuitem">Запустить</button>
+              <button type="button" class="secondary" data-service-action="restart" role="menuitem">Рестарт</button>
+              <button type="button" class="secondary danger-action" data-service-action="stop" role="menuitem">Остановить</button>
+            </div>
+          </div>
+        </header>
+
+        <div class="settings-tabs" role="tablist" aria-label="Разделы настроек">
+          <button id="settings-tab-sources" type="button" class="settings-tab active" data-settings-tab="sources" role="tab" aria-selected="true">Источники</button>
+          <button id="settings-tab-llm" type="button" class="settings-tab" data-settings-tab="llm" role="tab" aria-selected="false">LLM</button>
+          <button id="settings-tab-indexes" type="button" class="settings-tab" data-settings-tab="indexes" role="tab" aria-selected="false">Индексы</button>
+        </div>
+
+        <div class="settings-content">
+          <div id="settings-panel-sources" class="settings-tab-panel active" role="tabpanel" aria-labelledby="settings-tab-sources">
+            <div class="settings-sources-layout">
+              <section class="panel sources-panel settings-project-list">
+                <div class="panel-title-row">
+                  <div class="panel-title">Папки RAG</div>
+                  <div class="source-list-actions">
+                    <button id="source-select-mode" type="button" class="secondary source-select-mode">Выбрать несколько</button>
+                    <button id="source-bulk-delete" type="button" class="danger source-bulk-delete" hidden disabled>Удалить</button>
+                    <button id="source-selection-done" type="button" class="secondary source-selection-done" hidden>Готово</button>
+                    <button id="source-add-shortcut" type="button" class="secondary icon-button compact-icon-button" title="Добавить папку в RAG" aria-label="Добавить папку в RAG">+</button>
+                  </div>
+                </div>
+                <div id="source-type-tabs" class="source-type-tabs" role="tablist" aria-label="Типы источников">
+                  <button id="source-tab-contracts" type="button" class="source-type-tab active" data-source-list-tab="contract" role="tab" aria-selected="true">Договоры <span id="source-tab-contracts-count">0</span></button>
+                  <button id="source-tab-tenders" type="button" class="source-type-tab" data-source-list-tab="tender" role="tab" aria-selected="false">Тендеры <span id="source-tab-tenders-count">0</span></button>
+                </div>
+                <div id="sources" class="sources"></div>
+              </section>
+
+              <div id="settings-project-detail" class="settings-project-detail">
+                <section id="selected-source-panel" class="panel">
+                  <div class="panel-title">Настройки папки</div>
+                  <div id="selected-source-settings" class="selected-source-settings"></div>
+                </section>
+
+                <section id="indexed-files-panel" class="panel">
+                  <div class="panel-title-row">
+                    <div>
+                      <div class="panel-title">Индексированные файлы</div>
+                      <div id="indexed-files-summary" class="hint"></div>
+                    </div>
+                    <button id="indexed-files-refresh" type="button" class="secondary">Обновить</button>
+                  </div>
+                  <div id="indexed-files-tree" class="indexed-files-tree"></div>
+                </section>
+
+                <section id="new-source-panel" class="panel">
+                  <div class="panel-title">Добавить папку в текущий RAG</div>
+                  <form id="source-form" class="stack">
+                    <input id="source-title" type="hidden">
+                    <div class="picker-row">
+                      <input id="source-path" type="text" placeholder="Вставьте путь или выберите дополнительную папку">
+                      <button id="choose-source-folder" type="button" class="secondary">Выбрать</button>
+                    </div>
+                    <button type="submit">Добавить папку в RAG</button>
+                  </form>
+                </section>
+
+                <section class="panel">
+                  <div class="panel-title">Хранилище</div>
+                  <form id="settings-form" class="stack">
+                    <input id="storage-path" type="text" placeholder="Путь для индексов и Markdown-кэша">
+                    <div class="split-row">
+                      <button id="choose-storage-folder" type="button" class="secondary">Выбрать</button>
+                      <button type="submit">Сохранить</button>
+                    </div>
+                    <div id="settings-status" class="hint"></div>
+                  </form>
+                </section>
+              </div>
+            </div>
+          </div>
+
+          <div id="settings-panel-llm" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-llm" hidden>
+          <section class="panel">
+            <div class="panel-title">LLM</div>
+            <form id="llm-form" class="stack">
+              <label class="check-row">
+                <input id="llm-enabled" type="checkbox">
+                <span>Включить ответы через LM Studio</span>
+              </label>
+              <div class="split-row">
+                <label class="field">
+                  <span class="field-caption">Маршрут чата</span>
+                  <select id="llm-provider" aria-label="Маршрут LLM">
+                    <option value="local">local</option>
+                    <option value="auto">auto local-first</option>
+                    <option value="remote">remote</option>
+                  </select>
+                </label>
+                <label class="check-row">
+                  <input id="remote-context-enabled" type="checkbox">
+                  <span>Разрешить remote context</span>
+                </label>
+              </div>
+              <label class="check-row">
+                <input id="remote-fallback-local" type="checkbox">
+                <span>Fallback на local после ошибки remote</span>
+              </label>
+              <div id="remote-context-warning" class="warning-hint" hidden>
+                Remote context отправляет найденные фрагменты документов в удаленную LM Studio. Включайте только для доверенного endpoint.
+              </div>
+              <div id="auto-route-panel" class="auto-route-panel">
+                <div class="auto-route-header">
+                  <span class="field-caption">Auto-маршрут</span>
+                  <span id="auto-route-state" class="route-badge checking">проверка</span>
+                </div>
+                <div class="auto-route-path">
+                  <div class="auto-route-step primary">
+                    <span class="route-order">1</span>
+                    <div>
+                      <strong>Локальный LM Studio</strong>
+                      <span id="auto-route-local">основной маршрут</span>
+                    </div>
+                  </div>
+                  <div class="auto-route-step">
+                    <span class="route-order">2</span>
+                    <div>
+                      <strong>LM Studio по токену</strong>
+                      <span id="auto-route-remote">remote context выключен</span>
+                    </div>
+                  </div>
+                </div>
+                <div id="auto-route-note" class="auto-route-note"></div>
+              </div>
+              <div class="llm-columns">
+                <div class="llm-connection-block">
+                  <div class="field-caption">Локальная LM Studio</div>
+                  <input id="llm-base-url" type="text" placeholder="http://127.0.0.1:1234/v1">
+              <div id="lm-studio-status" class="lm-status checking">
+                <span class="lm-status-dot" aria-hidden="true"></span>
+                <span id="lm-studio-status-text">LM Studio: проверка...</span>
+              </div>
+              <div id="lm-studio-status-detail" class="lm-status-detail"></div>
+              <div class="picker-row">
+                <select id="llm-model" aria-label="Доступные локальные модели">
+                  <option value="">Модели не загружены</option>
+                </select>
+                <button id="load-llm-models" type="button" class="secondary">Обновить</button>
+              </div>
+              <select id="embedding-model" aria-label="Доступные модели embeddings">
+                <option value="">Embeddings не загружены</option>
+              </select>
+                </div>
+                <div class="llm-connection-block">
+                <div class="field-caption">LM Studio по токену</div>
+                <input id="remote-llm-base-url" type="text" placeholder="https://example-lm-studio/v1">
+                <select id="remote-llm-runtime" aria-label="Remote LLM runtime">
+                  <option value="lmstudio">LM Studio</option>
+                  <option value="openai-compatible">OpenAI-compatible</option>
+                </select>
+                <input id="remote-llm-token" type="password" autocomplete="off" placeholder="Bearer token">
+                <div id="remote-lm-studio-status" class="lm-status checking">
+                  <span class="lm-status-dot" aria-hidden="true"></span>
+                  <span id="remote-lm-studio-status-text">LM Studio по токену: не проверялся</span>
+                </div>
+                <div id="remote-lm-studio-status-detail" class="lm-status-detail"></div>
+                <div class="picker-row">
+                  <select id="remote-llm-model" aria-label="Доступные модели удаленной LM Studio">
+                    <option value="chandra-ocr-2">chandra-ocr-2</option>
+                    <option value="lift">lift</option>
+                    <option value="qwen3.6-27b-mtp">qwen3.6-27b-mtp</option>
+                  </select>
+                  <button id="load-remote-llm-models" type="button" class="secondary">Обновить</button>
+                </div>
+                <div class="remote-diagnostics">
+                  <div class="diagnostic-header">
+                    <span class="field-caption">Диагностика удаленной машины</span>
+                    <button id="refresh-remote-diagnostics" type="button" class="secondary compact-button">Обновить</button>
+                  </div>
+                  <div class="diagnostic-grid">
+                    <div class="diagnostic-item">
+                      <span>Связь</span>
+                      <strong id="remote-diag-connectivity">ожидание</strong>
+                    </div>
+                    <div class="diagnostic-item">
+                      <span>Модели</span>
+                      <strong id="remote-diag-models">ожидание</strong>
+                    </div>
+                    <div class="diagnostic-item">
+                      <span>Занятость</span>
+                      <strong id="remote-diag-active">ожидание</strong>
+                    </div>
+                    <div class="diagnostic-item">
+                      <span>Последний ответ</span>
+                      <strong id="remote-diag-last">ожидание</strong>
+                    </div>
+                  </div>
+                  <div id="remote-diag-detail" class="lm-status-detail"></div>
+                </div>
+              </div>
+              </div>
+              <div class="llm-form-actions">
+                <button id="llm-save-button" type="submit">Сохранить доступы</button>
+                <button id="edit-llm-settings" type="button" class="secondary" hidden>Редактировать</button>
+              </div>
+              <div id="llm-status" class="hint"></div>
+            </form>
+          </section>
+          </div>
+
+          <div id="settings-panel-indexes" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-indexes" hidden>
+            <section class="panel">
+              <div class="panel-title-row">
+                <div class="panel-title">Vector store</div>
+                <button id="refresh-integrations-status" type="button" class="secondary compact-button">Обновить</button>
+              </div>
+              <form id="vector-store-form" class="stack">
+                <label class="check-row">
+                  <input id="vector-store-enabled" type="checkbox">
+                  <span>Qdrant / JSON vector search</span>
+                </label>
+                <div id="vector-connection-status" class="lm-status checking" role="status">
+                  <span class="lm-status-dot" aria-hidden="true"></span>
+                  <span id="vector-connection-status-text">Проверяю подключение...</span>
+                </div>
+                <div class="split-row">
+                  <select id="vector-store-provider" aria-label="Vector store provider">
+                    <option value="auto">auto</option>
+                    <option value="qdrant">qdrant</option>
+                    <option value="json">json</option>
+                  </select>
+                  <select id="qdrant-distance" aria-label="Qdrant distance">
+                    <option value="Cosine">Cosine</option>
+                    <option value="Dot">Dot</option>
+                    <option value="Euclid">Euclid</option>
+                    <option value="Manhattan">Manhattan</option>
+                  </select>
+                </div>
+                <input id="qdrant-url" type="text" placeholder="http://127.0.0.1:6333">
+                <div class="split-row">
+                  <input id="qdrant-collection" type="text" placeholder="localai_chunks">
+                  <input id="qdrant-batch-size" type="number" min="16" max="512" step="16" placeholder="128">
+                </div>
+                <details id="qdrant-api-key-details" class="advanced-field">
+                  <summary>API key для Qdrant Cloud</summary>
+                  <input id="qdrant-api-key" type="password" autocomplete="off" placeholder="Локальный Qdrant: оставьте пустым">
+                  <div id="qdrant-api-key-hint" class="hint">Для локального Qdrant API key не нужен.</div>
+                </details>
+                <div class="settings-form-actions">
+                  <button id="vector-store-save-button" type="submit">Сохранить индекс</button>
+                  <button id="edit-vector-store-settings" type="button" class="secondary" hidden>Редактировать</button>
+                </div>
+                <div id="vector-store-status" class="hint"></div>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="panel-title">Reranker</div>
+              <form id="reranker-form" class="stack">
+                <label class="check-row">
+                  <input id="reranker-enabled" type="checkbox">
+                  <span>Пересортировка найденных фрагментов перед ответом</span>
+                </label>
+                <div id="reranker-connection-status" class="lm-status disabled" role="status">
+                  <span class="lm-status-dot" aria-hidden="true"></span>
+                  <span id="reranker-connection-status-text">Reranker выключен</span>
+                </div>
+                <input id="reranker-url" type="text" placeholder="http://127.0.0.1:8080">
+                <div class="split-row">
+                  <input id="reranker-model" type="text" placeholder="jina-reranker-v2-base-multilingual">
+                  <input id="reranker-candidates" type="number" min="1" max="100" step="1" placeholder="30">
+                </div>
+                <div class="split-row">
+                  <input id="reranker-max-chars" type="number" min="200" max="20000" step="100" placeholder="4000">
+                  <input id="reranker-timeout" type="number" min="2" max="300" step="1" placeholder="30">
+                </div>
+                <details id="reranker-api-key-details" class="advanced-field">
+                  <summary>API key для удаленного reranker</summary>
+                  <input id="reranker-api-key" type="password" autocomplete="off" placeholder="Локальный reranker: оставьте пустым">
+                  <div id="reranker-api-key-hint" class="hint">Для локального reranker API key обычно не нужен.</div>
+                </details>
+                <div class="settings-form-actions">
+                  <button id="reranker-save-button" type="submit">Сохранить reranker</button>
+                  <button id="edit-reranker-settings" type="button" class="secondary" hidden>Редактировать</button>
+                </div>
+                <div id="reranker-status" class="hint"></div>
+              </form>
+            </section>
+
+            <section class="panel">
+              <div class="panel-title">Диагностика</div>
+              <div class="diagnostic-grid integrations-diagnostic-grid">
+                <div class="diagnostic-item">
+                  <span>Qdrant</span>
+                  <strong id="qdrant-diag-state" class="diagnostic-status checking">ожидание</strong>
+                </div>
+                <div class="diagnostic-item">
+                  <span>Коллекция</span>
+                  <strong id="qdrant-diag-collection">ожидание</strong>
+                </div>
+                <div class="diagnostic-item">
+                  <span>Reranker</span>
+                  <strong id="reranker-diag-state" class="diagnostic-status checking">ожидание</strong>
+                </div>
+                <div class="diagnostic-item">
+                  <span>PDF</span>
+                  <strong id="pdf-diag-state">ожидание</strong>
+                </div>
+              </div>
+              <div id="integrations-status-detail" class="lm-status-detail"></div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="skipped-modal" class="modal" hidden>
+      <section class="modal-dialog skipped-dialog" role="dialog" aria-modal="true" aria-labelledby="skipped-modal-title">
+        <header class="modal-header">
+          <div>
+            <div id="skipped-modal-title" class="modal-title">Пропущено</div>
+            <div id="skipped-modal-subtitle" class="folder-current">Файлы выбранной папки</div>
+          </div>
+          <button id="skipped-close" type="button" class="icon-button" aria-label="Закрыть">×</button>
+        </header>
+        <div class="skipped-toolbar">
+          <button id="force-reindex-button" type="button">Переиндексировать принудительно</button>
+          <span id="skipped-summary" class="skipped-summary"></span>
+        </div>
+        <div id="skipped-files" class="skipped-files skipped-files-modal"></div>
+      </section>
+    </div>
+
+    <div id="tender-sync-modal" class="modal" hidden>
+      <section class="modal-dialog tender-sync-dialog" role="dialog" aria-modal="true" aria-labelledby="tender-sync-modal-title">
+        <header class="modal-header">
+          <div>
+            <div id="tender-sync-modal-title" class="modal-title">Проверка синхронизации тендеров</div>
+            <div id="tender-sync-modal-subtitle" class="folder-current">Dry-run: ничего не записано</div>
+          </div>
+          <button id="tender-sync-close" type="button" class="icon-button" aria-label="Закрыть">×</button>
+        </header>
+        <div id="tender-sync-report" class="tender-sync-report"></div>
+      </section>
+    </div>
+
+    <div id="folder-modal" class="modal" hidden>
+      <section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="folder-modal-title">
+        <header class="modal-header">
+          <div>
+            <div id="folder-modal-title" class="modal-title">Выбор папки</div>
+            <div id="folder-current" class="folder-current">Диски и сетевые папки</div>
+          </div>
+          <button id="folder-close" type="button" class="icon-button" aria-label="Закрыть">×</button>
+        </header>
+        <div class="folder-actions">
+          <button id="folder-roots" type="button" class="secondary">Диски</button>
+          <button id="folder-up" type="button" class="secondary">Вверх</button>
+          <button id="folder-select-current" type="button">Выбрать эту папку</button>
+        </div>
+        <div id="folder-list" class="folder-list"></div>
+      </section>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

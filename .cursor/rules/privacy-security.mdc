@@ -1,0 +1,38 @@
+---
+description: Секреты, remote privacy, masked state — при правках API/UI/тестов/скриптов
+globs:
+  - apps/rag-api/**
+  - apps/rag-ui/**
+  - tests/**
+  - scripts/**
+  - config/**
+  - docs/**
+alwaysApply: false
+---
+
+# Privacy & security
+
+**Trigger:** правки LLM-роутинга, настроек, логов, API-ответов, тестов, документации.
+
+## Запрещено
+
+- Трогать `data/`, live `config/` с секретами, `.env`, пользовательские документы.
+- Печатать, логировать, коммитить токены, API keys, приватные remote URL.
+- Класть реальные секреты в `config/settings.json` — только `.env`/env.
+- Показывать секреты в UI/API; допустим только masked state (`hasApiKey`, placeholder).
+
+## LLM privacy (единая политика)
+
+Одна политика для project summary, `/api/chat`, `/api/chat/stream`, `eval:llm`:
+
+- **local-first** по умолчанию; remote context — только при явном `allowRemoteContext` / `llm.remote.enabled`.
+- Remote-to-local fallback — только при `fallbackToLocalOnRemoteError=true`.
+- Без silent remote: наличие token/base URL ≠ разрешение на remote.
+- Remote RAG context: `remoteRagContextLength = 16384`, preload через `ensureRemoteModelLoaded`.
+
+## После правок
+
+```powershell
+npm run check
+npm test
+```

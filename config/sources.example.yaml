@@ -1,0 +1,44 @@
+# Copy this file to config/sources.yaml for a clean local setup.
+# Use only local or approved network paths. Do not commit real user paths.
+sources:
+  - id: demo-local-source
+    title: Demo local documents
+    path: C:\LocalAI\demo-documents
+    include:
+      - "**/*.pdf"
+      - "**/*.txt"
+      - "**/*.md"
+      - "**/*.csv"
+      - "**/*.docx"
+      - "**/*.xlsx"
+      - "**/*.xlsm"
+    exclude:
+      - "~$"
+      - "thumbs.db"
+      - ".ds_store"
+    contextLinks: []
+    additionalPaths: []
+    # sourceType: contract
+    # linkedContractId: ""
+
+  - id: demo-tender-source
+    title: 279. ЖК Летная 71, Летная 98
+    path: G:\My Drive\003 Tenders 2025\Active\279 Example
+    sourceType: tender
+    tenderCategory: В работе
+    linkedContractId: demo-local-source
+    include:
+      - "**/*.pdf"
+      - "**/*.txt"
+      - "**/*.md"
+      - "**/*.csv"
+      - "**/*.docx"
+      - "**/*.xlsx"
+      - "**/*.xlsm"
+      - "**/*.xls"
+    exclude:
+      - "~$"
+      - "thumbs.db"
+      - ".ds_store"
+      - "desktop.ini"
+    contextLinks: []

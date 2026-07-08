@@ -1,0 +1,44 @@
+---
+description: RAG eval, smoke и проверки после изменений retrieval/reranker/chat/fixtures
+globs:
+  - scripts/**
+  - tests/**
+  - evals/**
+  - fixtures/**
+  - apps/rag-api/src/search*.js
+  - apps/rag-api/src/indexer.js
+  - apps/rag-api/src/citations.js
+  - apps/rag-api/src/reranker.js
+  - apps/rag-api/src/chat-scope.js
+  - apps/rag-api/src/llm-routing.js
+alwaysApply: false
+---
+
+# RAG & eval workflow
+
+**Trigger:** правки search/indexer/reranker, eval-кейсов, demo fixture, routing, citations.
+
+## Команды (из корня репозитория)
+
+| Задача | Команда |
+|--------|---------|
+| Синтаксис | `npm run check` |
+| Unit-тесты | `npm test` |
+| UI маркеры | `npm run check:ui` |
+| Retrieval demo (strict) | `npm run eval:demo` |
+| LLM end-to-end | `npm run eval:llm` |
+
+## eval:llm
+
+- Вызывает реальный `/api/chat` — та же privacy policy, что chat/stream/summary.
+- Gated: `RAG_EVAL_ALLOW_LLM=true` или флаг `--allow-llm`.
+- Auth: `RAG_AUTH_TOKEN` в env, если API требует Bearer.
+
+## Demo fixture
+
+- `fixtures/demo-project/`, `evals/demo-project.json` — без реальных ключей и приватных путей.
+- Новые eval-кейсы: `mustContain`, опционально `mustCite`, `expectedFileHint`.
+
+## После изменений
+
+Кратко перечисли изменённые файлы и какие команды из таблицы запускались.

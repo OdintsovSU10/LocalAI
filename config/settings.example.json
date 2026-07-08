@@ -1,0 +1,66 @@
+{
+  "dataDir": "",
+  "llm": {
+    "enabled": true,
+    "provider": "local",
+    "baseUrl": "http://127.0.0.1:1234/v1",
+    "apiKey": "lm-studio",
+    "model": "qwen2.5-7b-instruct",
+    "temperature": 0.1,
+    "maxTokens": 700,
+    "timeoutSeconds": 120,
+    "fallbackToLocalOnRemoteError": false,
+    "allowRemoteContext": false,
+    "remote": {
+      "enabled": false,
+      "runtime": "lmstudio",
+      "baseUrl": "https://example-lm-studio/v1",
+      "apiKey": "",
+      "model": "qwen3.6-27b-mtp",
+      "timeoutSeconds": 300
+    }
+  },
+  "embeddings": {
+    "enabled": true,
+    "baseUrl": "http://127.0.0.1:1234/v1",
+    "apiKey": "lm-studio",
+    "model": "text-embedding-bge-m3",
+    "batchSize": 16,
+    "timeoutSeconds": 120
+  },
+  "vectorStore": {
+    "enabled": true,
+    "provider": "auto",
+    "qdrant": {
+      "url": "http://127.0.0.1:6333",
+      "apiKey": "",
+      "collection": "localai_chunks",
+      "distance": "Cosine",
+      "timeoutSeconds": 10,
+      "batchSize": 128
+    }
+  },
+  "reranker": {
+    "enabled": false,
+    "baseUrl": "",
+    "apiKey": "",
+    "model": "jina-reranker-v2-base-multilingual",
+    "candidateCount": 30,
+    "maxChars": 4000,
+    "timeoutSeconds": 30
+  },
+  "storage": {
+    "metadataProvider": "json",
+    "sqlite": {
+      "databasePath": "",
+      "fallbackToJson": false
+    }
+  },
+  "search": {
+    "lexicalMode": "bm25",
+    "vectorCandidates": 200,
+    "lexicalCandidates": 200,
+    "finalCandidates": 60,
+    "rerankCandidates": 30
+  }
+}

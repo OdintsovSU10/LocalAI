@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "localai-rag": {
+      "command": "node",
+      "args": ["apps/mcp-server/src/index.js"],
+      "env": {
+        "RAG_API_URL": "http://127.0.0.1:8787",
+        "RAG_AUTH_TOKEN": "${env:RAG_AUTH_TOKEN}",
+        "LOCALAI_MCP_PHASE": "1"
+      }
+    }
+  }
+}

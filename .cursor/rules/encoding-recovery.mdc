@@ -1,0 +1,37 @@
+---
+description: Mojibake/кодировка — только отдельный этап encoding recovery, не смешивать с фичами
+globs:
+  - apps/**
+  - docs/**
+  - scripts/**
+alwaysApply: false
+---
+
+# Encoding recovery
+
+**Trigger:** видимый mojibake в UI/доках, `encoding_noise` в indexer/converters, запрос «исправить кодировку».
+
+## Жёсткое правило
+
+Не чинить русскую mojibake «по ходу» других задач. Только отдельный этап **encoding recovery** по явной просьбе.
+
+## Во время обычных правок
+
+- Не делать mass-fix по репозиторию.
+- Не трогать `data/`, live config, `.env`.
+- Не подменять осмысленный текст «на глаз» без проверки источника.
+
+## Runtime (не recovery)
+
+`encoding_noise` в `indexer.js` / `converters.js` — предупреждение о качестве PDF/OCR, не повод править все `.js`/`.md` файлы.
+
+## Этап recovery
+
+1. Сузить scope: конкретные файлы/экраны (UI acceptance: «newly touched UI areas»).
+2. Сохранить UTF-8; не ломать маркеры из `ui-invariants` / `npm run check:ui`.
+3. Проверить: `npm run check`, `npm test`, `npm run check:ui`.
+4. Для product/docs — rg по common mojibake markers (см. `docs/regression-matrix.md`, Encoding row).
+
+## Тест-якорь
+
+`tests/search-bm25.test.mjs` — «Russian query terms after encoding recovery»; не регрессить lexical search при recovery.

@@ -1,0 +1,8 @@
+{
+  "id": "sample-demo-format",
+  "sourceId": "",
+  "question": "Демонстрационный eval case: замените вопрос, sourceId и expectedFileHint на свои значения.",
+  "mustContain": [],
+  "mustCite": false,
+  "expectedFileHint": ""
+}

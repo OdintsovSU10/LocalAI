@@ -1,0 +1,7 @@
+# Copy this file to config/tender-links.yaml to pin ambiguous tender -> contract links.
+# Keep only stable source ids here. Do not commit real private folder paths.
+mappings:
+  - tenderFolder: "256. Primavera K14 (Spartak)"
+    contractId: source-example-contract
+  - tenderFolder: "277. ЖК City Bay 6 (MRG)"
+    contractId: source-another-contract

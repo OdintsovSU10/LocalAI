@@ -1,0 +1,16 @@
+node_modules/
+.venv-reranker/
+data/
+.tmp/
+.env
+config/settings.json
+config/sources.yaml
+*.log
+*.tmp
+*.bak
+__pycache__/
+*.pyc
+LocalAI-analysis-*.zip
+*-analysis-sanitized-*.zip
+smoke-output/
+benchmark-output/

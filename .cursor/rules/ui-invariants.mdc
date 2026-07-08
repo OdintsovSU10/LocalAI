@@ -1,0 +1,39 @@
+---
+description: UI/API маркеры LOCAL_RAG — не сбрасывать при рефакторинге фронта и chat/sources API
+globs:
+  - apps/rag-ui/**
+  - apps/rag-api/src/server.js
+  - apps/rag-api/src/llm.js
+  - apps/rag-api/src/source-match.js
+  - scripts/check-ui-static.mjs
+alwaysApply: false
+---
+
+# UI invariants
+
+**Trigger:** правки `index.html`, `app.js`, modules, styles, chat/sources endpoints.
+
+## Стоп-сигнал
+
+Если пропали маркеры ниже — вероятен reset на старый MVP. Остановись и восстанови, не «упрощай» UI.
+
+**DOM / UI:** `#source-viewer-close`, `#indexed-files-panel`, `#indexed-files-tree`, `#source-add-shortcut`, `#new-source-panel`, `.source-citation`, строки `Авто: определить по вопросу`, `Авто по вопросу`, `Проект определится из вопроса`.
+
+**JS:** `state.addingSource`, `focusNewSourceForm()`, `loadIndexedFiles()`, `renderIndexedFilesPanel()`, `buildIndexedFileTree()`, `renderMessageTextContent()`, `sourcesByCitationNumber()`, `applyMatchedSource()`.
+
+**API:** `/api/sources/match`, `/api/sources/:id/indexed-files`, `matchSourceForQuestion()`, `publicMatchedSource()`, `matchedSource`, `ensureRemoteModelLoaded`, `context_length`.
+
+## Сохранить поведение
+
+- Fullscreen settings, левая история чата, auto project mode.
+- Indexed files tree + closable right preview.
+- Citations `[n]` → clickable source chips.
+- Simplified LLM tab (access, statuses, diagnostics, model lists).
+
+## Проверка
+
+```powershell
+npm run check:ui
+```
+
+Скрипт статически проверяет маркеры из `AGENTS.md`; полный список — там.

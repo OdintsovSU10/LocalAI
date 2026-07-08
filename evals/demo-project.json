@@ -1,0 +1,52 @@
+{
+  "cases": [
+    {
+      "id": "demo-contract-amount",
+      "sourceId": "demo-project",
+      "question": "Какая сумма договора?",
+      "expectedFileHint": "contract.md",
+      "mustContain": ["12 450 000 рублей"],
+      "mustCite": true
+    },
+    {
+      "id": "demo-work-duration",
+      "sourceId": "demo-project",
+      "question": "Какой срок выполнения работ?",
+      "expectedFileHint": "schedule.md",
+      "mustContain": ["90 календарных дней"],
+      "mustCite": true
+    },
+    {
+      "id": "demo-payment-schedule",
+      "sourceId": "demo-project",
+      "question": "Какой график оплаты?",
+      "expectedFileHint": "budget.md",
+      "mustContain": ["30%", "40%", "финальный платеж 30%"],
+      "mustCite": true
+    },
+    {
+      "id": "demo-warranty-period",
+      "sourceId": "demo-project",
+      "question": "Какой гарантийный срок?",
+      "expectedFileHint": "contract.md",
+      "mustContain": ["24 месяца"],
+      "mustCite": true
+    },
+    {
+      "id": "demo-responsible-contact",
+      "sourceId": "demo-project",
+      "question": "Кто ответственный контакт?",
+      "expectedFileHint": "contacts.md",
+      "mustContain": ["Алексей Орлов", "demo.coordinator@example.test"],
+      "mustCite": true
+    },
+    {
+      "id": "demo-main-risks",
+      "sourceId": "demo-project",
+      "question": "Какие основные риски указаны?",
+      "expectedFileHint": "risks.md",
+      "mustContain": ["задержка исходных материалов", "изменение объема работ"],
+      "mustCite": true
+    }
+  ]
+}

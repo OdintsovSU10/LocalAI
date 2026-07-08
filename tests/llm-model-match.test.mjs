@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { chatCompletionBody, matchConfiguredModel, modelRowsFromPayload } from "../apps/rag-api/src/llm.js";
+import { chatCompletionBody, listLlmModels, matchConfiguredModel, mergeModelRows, modelRowsFromPayload } from "../apps/rag-api/src/llm.js";
 
 test("matchConfiguredModel keeps exact configured model ids", () => {
   assert.equal(
@@ -51,6 +51,84 @@ test("modelRowsFromPayload reads LM Studio v1 loaded instances", () => {
   assert.equal(rows[0].maxContextLength, 32768);
   assert.equal(rows[0].quantization, "Q4_K_M");
   assert.equal(rows[0].arch, "qwen3");
+});
+
+test("mergeModelRows keeps native catalog entries and loaded OpenAI metadata", () => {
+  const rows = mergeModelRows(
+    [
+      { id: "qwen/qwen3-8b", type: "llm" },
+      { id: "text-embedding-bge-m3", type: "embeddings" }
+    ],
+    [
+      {
+        id: "qwen/qwen3-8b",
+        loaded: true,
+        loadedContextLength: 8192,
+        loadedInstances: ["qwen/qwen3-8b"]
+      },
+      { id: "qwen2.5-7b-instruct", type: "llm" }
+    ]
+  );
+
+  assert.deepEqual(rows.map((row) => row.id), [
+    "qwen/qwen3-8b",
+    "text-embedding-bge-m3",
+    "qwen2.5-7b-instruct"
+  ]);
+  assert.equal(rows[0].loaded, true);
+  assert.equal(rows[0].loadedContextLength, 8192);
+  assert.deepEqual(rows[0].loadedInstances, ["qwen/qwen3-8b"]);
+});
+
+test("listLlmModels uses LM Studio native catalog for local provider", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    calls.push(target);
+    const payloadByUrl = {
+      "http://lm.local/v1/models": {
+        data: [{ id: "loaded-chat", object: "model" }]
+      },
+      "http://lm.local/api/v1/models": {
+        models: [
+          { key: "catalog-a", type: "llm" },
+          {
+            key: "loaded-chat",
+            type: "llm",
+            loaded_instances: [{ id: "loaded-chat", config: { context_length: 4096 } }]
+          }
+        ]
+      },
+      "http://lm.local/api/v0/models": {
+        data: [{ id: "catalog-b", object: "model" }]
+      }
+    };
+
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(payloadByUrl[target] || { data: [] })
+    };
+  };
+
+  try {
+    const models = await listLlmModels({
+      provider: "local",
+      baseUrl: "http://lm.local/v1",
+      apiKey: "lm-studio",
+      timeoutSeconds: 2
+    });
+
+    assert.deepEqual(models, ["catalog-a", "loaded-chat", "catalog-b"]);
+    assert.deepEqual(calls, [
+      "http://lm.local/v1/models",
+      "http://lm.local/api/v1/models",
+      "http://lm.local/api/v0/models"
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("chatCompletionBody disables thinking for local Qwen3 models only", () => {

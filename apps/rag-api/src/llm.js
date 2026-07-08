@@ -87,10 +87,17 @@ export function normalizeLlmSettings(llm) {
   };
 }
 
+function modelIdsFromRows(rows = []) {
+  return mergeModelRows(rows).map((model) => model.id).filter(Boolean);
+}
+
 export async function listLlmModels(llm) {
   const settings = normalizeLlmSettings(llm);
   const { controller, cleanup } = withTimeout(Math.min(settings.timeoutSeconds || 30, 30));
+  const lmStudioRuntime = isLmStudioRuntime(settings);
   const errors = [];
+  let openAiRows = [];
+  let openAiOk = false;
   try {
     try {
       const response = await fetch(`${settings.baseUrl}/models`, {
@@ -102,23 +109,24 @@ export async function listLlmModels(llm) {
         throw new Error(`OpenAI /models returned ${response.status}${text ? `: ${compactHttpError(text)}` : ""}`);
       }
       const payload = text ? JSON.parse(text) : null;
-      const models = modelRowsFromPayload(payload).map((model) => model.id).filter(Boolean);
-      if (models.length || !isRemoteLlmProvider(settings.provider) || !isLmStudioRuntime(settings)) return models;
+      openAiRows = modelRowsFromPayload(payload);
+      openAiOk = true;
+      if (!lmStudioRuntime) return modelIdsFromRows(openAiRows);
     } catch (error) {
       errors.push(error.message);
-      if (controller.signal.aborted || !isRemoteLlmProvider(settings.provider)) throw error;
-      if (!isLmStudioRuntime(settings)) throw error;
+      if (controller.signal.aborted || !lmStudioRuntime) throw error;
     }
 
     try {
       const rows = await listNativeLlmModels(settings, controller.signal);
-      const models = rows.map((model) => model.id).filter(Boolean);
+      const models = modelIdsFromRows(mergeModelRows(rows, openAiRows));
       if (models.length) return models;
     } catch (error) {
       errors.push(error.message);
       if (controller.signal.aborted) throw error;
     }
 
+    if (openAiOk) return modelIdsFromRows(openAiRows);
     throw new Error(errors.length ? errors.join("; ") : "No LLM models are available");
   } finally {
     cleanup();
@@ -191,20 +199,68 @@ export function modelRowsFromPayload(payload) {
     .filter(Boolean);
 }
 
+function cleanModelRow(row) {
+  if (typeof row === "string") return { id: row };
+  const id = String(row?.id || "").trim();
+  return id ? { ...row, id } : null;
+}
+
+function meaningful(value) {
+  return value !== undefined && value !== null && value !== "";
+}
+
+function mergeLoadedInstances(left = [], right = []) {
+  return [...new Set([...(left || []), ...(right || [])].map(String).filter(Boolean))];
+}
+
+function mergeModelRow(existing, incoming) {
+  const preferIncoming = Boolean((incoming.loaded || incoming.state === "loaded") && !(existing.loaded || existing.state === "loaded"));
+  const merged = { ...existing };
+
+  for (const [key, value] of Object.entries(incoming)) {
+    if (["id", "loaded", "state", "loadedInstances"].includes(key) || !meaningful(value)) continue;
+    if (preferIncoming || !meaningful(merged[key])) merged[key] = value;
+  }
+
+  merged.loadedInstances = mergeLoadedInstances(existing.loadedInstances, incoming.loadedInstances);
+  merged.loaded = Boolean(existing.loaded || incoming.loaded || existing.state === "loaded" || incoming.state === "loaded");
+  merged.state = merged.loaded ? "loaded" : (existing.state || incoming.state || "");
+  return merged;
+}
+
+export function mergeModelRows(...groups) {
+  const byId = new Map();
+  for (const rows of groups) {
+    for (const rawRow of rows || []) {
+      const row = cleanModelRow(rawRow);
+      if (!row) continue;
+      const existing = byId.get(row.id);
+      byId.set(row.id, existing ? mergeModelRow(existing, row) : row);
+    }
+  }
+  return Array.from(byId.values());
+}
+
 async function listNativeLlmModels(settings, signal) {
   const nativeBaseUrl = lmStudioNativeBaseUrl(settings.baseUrl);
   let lastError = null;
+  const rowGroups = [];
   for (const apiPath of ["/api/v1/models", "/api/v0/models"]) {
     try {
       const payload = await fetchJson(`${nativeBaseUrl}${apiPath}`, settings, { signal });
       const rows = modelRowsFromPayload(payload);
-      if (rows.length) return rows;
+      if (rows.length) {
+        rowGroups.push(rows);
+        continue;
+      }
       lastError = new Error(`LM Studio ${apiPath} returned no models`);
     } catch (error) {
       lastError = error;
       if (signal?.aborted) throw error;
     }
   }
+  const mergedRows = mergeModelRows(...rowGroups);
+  if (mergedRows.length) return mergedRows;
   throw lastError || new Error("LM Studio native models endpoint failed");
 }
 

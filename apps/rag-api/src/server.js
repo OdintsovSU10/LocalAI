@@ -18,7 +18,7 @@ import { buildCompletedVectorBackfillJob, buildVectorBackfillRows } from "./vect
 import { managedQdrantStatus, restartManagedQdrant, startManagedQdrant, stopManagedQdrant } from "./qdrant-process.js";
 import { listFolders, listRoots, openFileInSystem, revealFileInSystem } from "./filesystem.js";
 import { chooseFolderWithExplorer } from "./dialog.js";
-import { chatCompletion, chatCompletionStream, isLmStudioRuntime, listLlmModels, lmStudioNativeBaseUrl, matchConfiguredModel, modelRowsFromPayload, normalizeRemoteRuntime } from "./llm.js";
+import { chatCompletion, chatCompletionStream, isLmStudioRuntime, listLlmModels, lmStudioNativeBaseUrl, matchConfiguredModel, mergeModelRows, modelRowsFromPayload, normalizeRemoteRuntime } from "./llm.js";
 import { converterStatus } from "./converters.js";
 import { clearGoogleAuth, completeGoogleAuth, googleAuthPublicStatus, startGoogleAuth } from "./google-auth.js";
 import { rerankerStatus } from "./reranker.js";
@@ -1289,7 +1289,7 @@ function summarizeModels(models) {
     count: models.length,
     loadedCount: loaded.length,
     loaded: loaded.slice(0, 8),
-    items: models.slice(0, 30)
+    items: models
   };
 }
 
@@ -2015,7 +2015,10 @@ app.get("/api/llm/diagnostics", async (req, res) => {
   const openaiModels = modelRowsFromPayload(openai.payload);
   const nativeV1Models = modelRowsFromPayload(nativeV1.payload);
   const nativeV0Models = modelRowsFromPayload(nativeV0.payload);
-  const nativeModels = nativeV1.ok && nativeV1Models.length ? nativeV1Models : nativeV0Models;
+  const nativeModels = mergeModelRows(
+    nativeV1.ok ? nativeV1Models : [],
+    nativeV0.ok ? nativeV0Models : []
+  );
   const nativePreferred = nativeV1.ok && nativeV1Models.length
     ? "v1"
     : nativeV0.ok
@@ -2023,7 +2026,7 @@ app.get("/api/llm/diagnostics", async (req, res) => {
       : nativeV1.ok
         ? "v1"
         : "";
-  const models = nativeModels.length ? nativeModels : openaiModels;
+  const models = nativeModels.length ? mergeModelRows(nativeModels, openaiModels) : openaiModels;
   const okLatencies = [openai, nativeV1, nativeV0].filter((item) => item.ok).map((item) => item.latencyMs);
 
   res.json({

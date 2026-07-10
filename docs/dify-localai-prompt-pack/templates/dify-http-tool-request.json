@@ -1,0 +1,25 @@
+{
+  "method": "POST",
+  "url": "{{LOCALAI_DIFY_RETRIEVAL_URL}}",
+  "headers": {
+    "Authorization": "Bearer {{LOCALAI_DIFY_ADAPTER_TOKEN}}",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "query": "{{query}}",
+    "knowledge_id": "{{knowledge_id}}",
+    "sourceId": "{{sourceId}}",
+    "top_k": 8,
+    "score_threshold": 0.15,
+    "hints": {
+      "project": "{{selected_project}}",
+      "questionLanguage": "ru",
+      "needFreshIndex": false
+    },
+    "privacy": {
+      "allowRemoteContext": false,
+      "requestedBy": "dify-chatflow"
+    }
+  }
+}
+

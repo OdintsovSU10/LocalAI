@@ -1,6 +1,6 @@
 param(
   [string]$QdrantExe = "C:\qdrant\qdrant.exe",
-  [string]$StoragePath = "$env:USERPROFILE\Desktop\LOCAL_RAG\data\qdrant",
+  [string]$StoragePath = "D:\LOCAL_RAG\data\qdrant",
   [switch]$Foreground
 )
 

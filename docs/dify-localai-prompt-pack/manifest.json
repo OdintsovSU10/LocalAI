@@ -1,0 +1,29 @@
+{
+  "name": "dify-localai-prompt-pack",
+  "version": "0.2.0",
+  "createdFor": "LOCAL_RAG",
+  "integration": "Dify as workflow layer, LOCAL_RAG as retrieval core",
+  "language": "ru",
+  "files": [
+    "README.md",
+    "contracts/localai-dify-retrieval-contract.md",
+    "prompts/01-system-localai-rag.md",
+    "prompts/02-query-rewriter.md",
+    "prompts/03-retrieval-result-normalizer.md",
+    "prompts/04-answer-synthesizer.md",
+    "prompts/05-privacy-router.md",
+    "prompts/06-tender-audit-workflow.md",
+    "prompts/07-no-evidence-refusal.md",
+    "prompts/08-eval-and-regression-prompts.md",
+    "templates/dify-chatflow-poc-blueprint.json",
+    "templates/dify-external-knowledge-request.json",
+    "templates/dify-http-tool-request.json",
+    "templates/dify-variables.json"
+  ],
+  "privacy": {
+    "localFirstDefault": true,
+    "remoteContextForbiddenByDefault": true,
+    "noDirectFilesystemAccessFromDify": true,
+    "noSecretsInPrompts": true
+  }
+}

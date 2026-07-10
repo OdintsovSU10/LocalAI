@@ -121,3 +121,20 @@ export function uniqueSources(sources = []) {
     return Number(b.score || 0) - Number(a.score || 0);
   });
 }
+
+function sourceCitationNumbers(source = {}) {
+  if (Array.isArray(source.citationNumbers) && source.citationNumbers.length) {
+    return source.citationNumbers.map(Number).filter((number) => Number.isInteger(number) && number > 0);
+  }
+  const sourceNumber = Number(source.sourceNumber || 0);
+  return Number.isInteger(sourceNumber) && sourceNumber > 0 ? [sourceNumber] : [];
+}
+
+export function displayedSourcesForAnswer(sources = [], answerText = "", options = {}) {
+  const maxUncited = Math.max(1, Number(options.maxUncited || 8));
+  const cited = citedSourceNumbers(answerText);
+  if (!cited.length) return sources.slice(0, maxUncited);
+
+  const citedSet = new Set(cited);
+  return sources.filter((source) => sourceCitationNumbers(source).some((number) => citedSet.has(number)));
+}

@@ -198,6 +198,13 @@ function qdrantPointForChunk(chunk, item) {
   };
 }
 
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error("Индексация остановлена");
+  error.name = "AbortError";
+  throw error;
+}
+
 function qdrantErrorResult(settings, error) {
   if (settings.required) throw error;
   const decision = vectorProviderDecision({
@@ -257,7 +264,8 @@ async function clearSourcePoints(client, settings, sourceId) {
   return { collectionExists: true };
 }
 
-export async function syncSourceToQdrant({ vectorStore, sourceId, chunks, vectorItems }) {
+export async function syncSourceToQdrant({ vectorStore, sourceId, chunks, vectorItems, signal = null }) {
+  throwIfAborted(signal);
   const settings = qdrantSettings(vectorStore);
   if (!settings.enabled) return disabledResult("disabled", settings.provider);
 
@@ -271,6 +279,7 @@ export async function syncSourceToQdrant({ vectorStore, sourceId, chunks, vector
   try {
     const client = qdrantClient(settings);
     if (!points.length) {
+      throwIfAborted(signal);
       await clearSourcePoints(client, settings, sourceId);
       return {
         vectorStoreProvider: "qdrant",
@@ -289,10 +298,13 @@ export async function syncSourceToQdrant({ vectorStore, sourceId, chunks, vector
       };
     }
 
+    throwIfAborted(signal);
     await ensureQdrantCollection(client, settings, points[0].vector.length);
+    throwIfAborted(signal);
     await clearSourcePoints(client, settings, sourceId);
 
     for (let index = 0; index < points.length; index += settings.batchSize) {
+      throwIfAborted(signal);
       await client.upsert(settings.collection, {
         wait: true,
         points: points.slice(index, index + settings.batchSize)
@@ -314,6 +326,7 @@ export async function syncSourceToQdrant({ vectorStore, sourceId, chunks, vector
       sourceRebuilt: true
     };
   } catch (error) {
+    if (error?.name === "AbortError" || signal?.aborted) throw error;
     return qdrantStatusErrorResult(settings, error);
   }
 }

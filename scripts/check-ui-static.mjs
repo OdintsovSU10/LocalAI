@@ -167,7 +167,7 @@ function requirePattern(name, pattern, files) {
 function scanSuspiciousFrontendDefaults(files) {
   const scans = [
     { name: "private remote host marker", pattern: /01\.vibe|vibe\.local|example-private/i },
-    { name: "user-specific Windows path", pattern: /C:\\Users\\|Desktop\\LOCAL_RAG|odintsov/i },
+    { name: "user-specific Windows path", pattern: /C:\\Users\\|Desktop\\[^\\/]+[\\/]data|odintsov/i },
     { name: "OpenAI-style secret key", pattern: /sk-[A-Za-z0-9_-]{20,}/ },
     { name: "Bearer token value", pattern: /Bearer\s+[A-Za-z0-9._-]{20,}/i }
   ];

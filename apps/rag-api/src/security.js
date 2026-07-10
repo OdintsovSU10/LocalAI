@@ -53,6 +53,12 @@ function isPublicGoogleAuthCallback(req) {
     && String(req.path || req.url || "").split("?")[0] === "/google/auth/callback";
 }
 
+function isDifyAdapterEndpoint(req) {
+  const requestPath = String(req.path || req.url || "").split("?")[0];
+  return String(req.method || "GET").toUpperCase() === "POST"
+    && (requestPath === "/dify/retrieval" || requestPath === "/api/dify/retrieval");
+}
+
 export function createApiSecurityMiddleware(config = readApiSecurityConfig()) {
   const authToken = String(config.authToken || "").trim();
   const requireAuth = Boolean(authToken) || Boolean(config.requireAuth);
@@ -63,6 +69,7 @@ export function createApiSecurityMiddleware(config = readApiSecurityConfig()) {
     }
 
     if (isPublicGoogleAuthCallback(req)) return next();
+    if (isDifyAdapterEndpoint(req)) return next();
 
     if (!requireAuth) return next();
 

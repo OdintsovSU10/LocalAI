@@ -77,7 +77,7 @@ Live ignored files were not inspected for secret values: `.env`, `config/setting
 | Git status | Analysis artifact ignore | `git check-ignore -v LocalAI-analysis-sanitized-2026-06-29-104140.zip` | Local analysis zip is ignored or explicitly do-not-commit | Ignored | PASS | `.gitignore` covers `LocalAI-analysis-*.zip` and `*-analysis-sanitized-*.zip`. |
 | Stage 24 | Demo fixture | Inspect `fixtures/demo-project/*.md`, `evals/demo-project.json` | Safe fixture has 5 docs and 6 meaningful cases | Present | PASS | No real API keys or private source paths in fixture/eval definitions. |
 | Stage 24 | Demo state paths | `npm test` / `tests/demo-eval.test.mjs` | Demo index results do not use absolute workspace paths | Covered and passing | PASS | Runtime still reads fixture files from repo, but generated demo chunk paths are neutral relative paths. |
-| P1 cleanup | Neutral defaults/placeholders | `rg -n "01\.vibe|Desktop\\LOCAL_RAG"` safe files | No private remote URL in code/UI/docs; primary README/env data path is neutral | Private remote URL removed; README/env use `.\data` | PASS | Generic `$env:USERPROFILE\Desktop\LOCAL_RAG\data\qdrant` remains in Qdrant helper docs/script as a non-secret legacy path. |
+| P1 cleanup | Neutral defaults/placeholders | `rg -n "01\.vibe|C:\\Users|odintsov"` safe files | No private remote URL in code/UI/docs; primary README/env data path is neutral | Private remote URL removed; README/env now use `D:\LOCAL_RAG\data` | PASS | Qdrant helper docs/script now default to `D:\LOCAL_RAG\data\qdrant`. |
 
 ## Findings
 
@@ -89,7 +89,7 @@ None found.
 
 - Resolved: Stage 29 added stable citation target metadata, exact chunk preview resolution, UI click payload targeting, and `smoke:api` exact-evidence checks; Stage 29B demo browser re-test passed.
 - Fixed: private remote default/placeholder URL was present in API/UI defaults. Replaced with neutral `https://example-lm-studio/v1`.
-- Fixed: README and `.env.example` used an old user-specific data path. Replaced with neutral `.\data`, matching code default behavior better.
+- Fixed: README and `.env.example` used an old user-specific data path. Replaced with `D:\LOCAL_RAG\data`, matching code default behavior better.
 
 ### P2 / Follow-up
 
@@ -100,7 +100,7 @@ None found.
 - Remote context warning and optional SQLite UI smoke remain `NOT RUN`.
 - No browser automation dependency was added; visual/browser behavior remains governed by `docs/ui-acceptance-checklist.md`.
 - Example/template files are present and not ignored, but not tracked in the current git index because this worktree appears largely untracked.
-- Qdrant helper docs/script still default to a generic `$env:USERPROFILE\Desktop\LOCAL_RAG\data\qdrant` path; not a secret, but worth aligning with repo-local `data/` in a later cleanup.
+- Qdrant helper docs/script now default to `D:\LOCAL_RAG\data\qdrant`.
 
 ## Final Command Results
 

@@ -23,6 +23,57 @@ function normalizeMatchText(value) {
     .trim();
 }
 
+const cyrillicToLatin = {
+  а: "a",
+  б: "b",
+  в: "v",
+  г: "g",
+  д: "d",
+  е: "e",
+  ж: "zh",
+  з: "z",
+  и: "i",
+  й: "y",
+  к: "k",
+  л: "l",
+  м: "m",
+  н: "n",
+  о: "o",
+  п: "p",
+  р: "r",
+  с: "s",
+  т: "t",
+  у: "u",
+  ф: "f",
+  х: "kh",
+  ц: "ts",
+  ч: "ch",
+  ш: "sh",
+  щ: "sch",
+  ы: "y",
+  э: "e",
+  ю: "yu",
+  я: "ya"
+};
+
+function transliterateCyrillicToken(token) {
+  const value = String(token || "");
+  if (!/[а-я]/u.test(value)) return "";
+  return Array.from(value, (char) => cyrillicToLatin[char] ?? char).join("");
+}
+
+function relaxedLatinTokenVariants(token) {
+  const latin = transliterateCyrillicToken(token);
+  if (!latin) return [];
+
+  const relaxed = new Set([latin]);
+  relaxed.add(latin.replace(/iya/g, "ia"));
+  relaxed.add(latin.replace(/iy/g, "i"));
+  relaxed.add(latin.replace(/iu/g, "u"));
+  relaxed.add(latin.replace(/yi/g, "i"));
+  return Array.from(relaxed).filter((value) => value.length >= 2);
+}
+
 function matchTokens(value) {
   return normalizeMatchText(value)
     .split(" ")
@@ -37,6 +88,7 @@ function uniqueTokens(value) {
 function tokenVariants(token) {
   const value = String(token || "").trim();
   const variants = new Set([value]);
+  for (const relaxed of relaxedLatinTokenVariants(value)) variants.add(relaxed);
   const endings = [
     "иями", "ями", "ами", "ого", "его", "ому", "ему", "ыми", "ими",
     "ая", "яя", "ое", "ее", "ые", "ие", "ый", "ий", "ой", "ей",
@@ -46,7 +98,9 @@ function tokenVariants(token) {
 
   for (const ending of endings) {
     if (value.length - ending.length >= 4 && value.endsWith(ending)) {
-      variants.add(value.slice(0, -ending.length));
+      const withoutEnding = value.slice(0, -ending.length);
+      variants.add(withoutEnding);
+      for (const relaxed of relaxedLatinTokenVariants(withoutEnding)) variants.add(relaxed);
     }
   }
 

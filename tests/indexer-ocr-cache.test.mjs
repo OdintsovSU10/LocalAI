@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ocrCacheNeedsRefresh } from "../apps/rag-api/src/indexer.js";
+import { ocrCacheNeedsRefresh, shouldSuppressChunksForQuality } from "../apps/rag-api/src/indexer.js";
 
 const enabledAllPages = { builtinOcr: { enabled: true, maxPages: 0 } };
 const enabledThirtyPages = { builtinOcr: { enabled: true, maxPages: 30 } };
@@ -29,4 +29,11 @@ test("ocrCacheNeedsRefresh invalidates limited OCR cache when current cap is hig
 test("ocrCacheNeedsRefresh ignores complete or disabled OCR cache", () => {
   assert.equal(ocrCacheNeedsRefresh("Recognized 63 of 63 pages.", enabledAllPages), false);
   assert.equal(ocrCacheNeedsRefresh("Recognized 30 of 63 pages.", disabledOcr), false);
+});
+
+test("shouldSuppressChunksForQuality rejects recognition-noise chunks", () => {
+  assert.equal(shouldSuppressChunksForQuality({ warnings: ["ocr_text_noise"] }), true);
+  assert.equal(shouldSuppressChunksForQuality({ warnings: ["pdf_text_layer_noise"] }), true);
+  assert.equal(shouldSuppressChunksForQuality({ warnings: ["no_usable_ocr_pages"] }), true);
+  assert.equal(shouldSuppressChunksForQuality({ warnings: ["low_ocr_confidence"] }), false);
 });

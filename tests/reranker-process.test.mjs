@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { defaultManagedRerankerBaseUrl, defaultManagedRerankerModel, managedRerankerSettings } from "../apps/rag-api/src/reranker-process.js";
+import { defaultManagedRerankerBaseUrl, defaultManagedRerankerModel, managedRerankerSettings, managedRerankerStatus } from "../apps/rag-api/src/reranker-process.js";
 
 test("managedRerankerSettings uses local BGE reranker defaults when settings are empty", () => {
   const settings = managedRerankerSettings({});
@@ -37,4 +37,32 @@ test("managedRerankerSettings marks remote rerankers as unmanaged", () => {
   assert.equal(settings.local, false);
   assert.equal(settings.manageable, false);
   assert.equal(settings.healthBaseUrl, "https://reranker.example.test");
+});
+
+test("managedRerankerStatus keeps disabled settings separate from a running process", async (t) => {
+  const previousFetch = globalThis.fetch;
+  const previousEnabled = process.env.RAG_RERANKER_ENABLED;
+  delete process.env.RAG_RERANKER_ENABLED;
+
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    if (previousEnabled === undefined) delete process.env.RAG_RERANKER_ENABLED;
+    else process.env.RAG_RERANKER_ENABLED = previousEnabled;
+  });
+
+  globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, model: "health-model" }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
+
+  const status = await managedRerankerStatus({
+    enabled: false,
+    baseUrl: "http://127.0.0.1:8080",
+    model: "configured-model"
+  });
+
+  assert.equal(status.enabled, false);
+  assert.equal(status.running, true);
+  assert.equal(status.state, "disabled");
+  assert.equal(status.model, "health-model");
 });

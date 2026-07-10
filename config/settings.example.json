@@ -1,5 +1,5 @@
 {
-  "dataDir": "",
+  "dataDir": "D:\\LOCAL_RAG\\data",
   "llm": {
     "enabled": true,
     "provider": "local",

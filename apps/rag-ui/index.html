@@ -9,11 +9,13 @@
     <link rel="icon" type="image/svg+xml" href="/assets/locus-icon.svg">
     <link rel="apple-touch-icon" href="/assets/locus-icon.svg">
     <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="stylesheet" href="/locus-tokens.css">
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/locus-redesign.css">
   </head>
   <body>
     <main class="app">
-      <aside class="sidebar">
+      <aside class="sidebar" aria-label="История чатов">
         <header class="brand">
           <img class="brand-mark" src="/assets/locus-icon.svg" alt="" aria-hidden="true">
           <div>
@@ -22,10 +24,17 @@
           </div>
         </header>
 
-        <div id="lm-mini" class="lm-mini checking">
-          <span class="lm-mini-dot" aria-hidden="true"></span>
-          <span id="lm-mini-title" class="lm-mini-title">LM Studio</span>
-          <span id="lm-mini-detail" class="lm-mini-detail">проверка...</span>
+        <div class="sidebar-status-stack">
+          <div id="lm-mini" class="lm-mini checking">
+            <span class="lm-mini-dot" aria-hidden="true"></span>
+            <span id="lm-mini-title" class="lm-mini-title">LM Studio</span>
+            <span id="lm-mini-detail" class="lm-mini-detail">проверка...</span>
+          </div>
+          <div id="dify-mini" class="lm-mini checking" role="status" title="Dify: проверка...">
+            <span class="lm-mini-dot" aria-hidden="true"></span>
+            <span class="lm-mini-title">Dify</span>
+            <span id="dify-mini-detail" class="lm-mini-detail">проверка...</span>
+          </div>
         </div>
 
         <div class="sidebar-actions">
@@ -34,6 +43,10 @@
 
         <section class="history-panel">
           <div class="panel-title">История</div>
+          <div class="history-filter" role="tablist" aria-label="Фильтр истории">
+            <button id="history-filter-active" type="button" role="tab" aria-selected="true">Активные</button>
+            <button id="history-filter-archived" type="button" role="tab" aria-selected="false">Архив <span id="history-archive-count" class="history-filter-count"></span></button>
+          </div>
           <div id="chat-history" class="chat-history"></div>
         </section>
 
@@ -44,17 +57,34 @@
 
       <section id="chat-workspace" class="workspace">
         <header class="toolbar">
-          <select id="source-select" aria-label="Проект"></select>
-          <span id="chat-ready-status" class="chat-ready-status not-ready">Не готов</span>
-          <span id="project-index-info" class="project-index-info"></span>
-          <button id="agent-run-button" type="button">Запустить агента</button>
-          <div id="index-progress" class="index-progress" hidden>
-            <div class="index-progress-track">
-              <div id="index-progress-fill" class="index-progress-fill"></div>
-            </div>
-            <span id="index-progress-label" class="index-progress-label"></span>
+          <label class="project-picker">
+            <span class="eyebrow">Проект</span>
+            <select id="source-select" aria-label="Проект"></select>
+          </label>
+          <div class="index-control">
+            <section id="chat-index-status-bar" class="index-status-bar chat-index-status-bar is-empty" role="status" aria-live="polite">
+              <span id="chat-ready-status" class="chat-ready-status not-ready">Не готов</span>
+              <span id="project-index-info" class="project-index-info"></span>
+              <span id="job-status" class="status index-status-message"></span>
+              <div class="toolbar-progress-row">
+                <div id="index-progress" class="index-progress" hidden>
+                  <div class="index-progress-track">
+                    <div id="index-progress-fill" class="index-progress-fill"></div>
+                  </div>
+                  <span id="index-progress-label" class="index-progress-label"></span>
+                </div>
+              </div>
+              <a id="audit-open-link" class="secondary audit-open-link" href="/settings/audit" title="Быстро открыть аудит обработки">Аудит</a>
+            </section>
+            <details id="index-actions-menu" class="index-actions-menu">
+              <summary aria-label="Действия с индексом" title="Действия с индексом">⋯</summary>
+              <div class="index-actions-popover">
+                <button id="agent-run-button" type="button">Обновить индекс</button>
+                <button id="agent-force-run-button" type="button">Полная переиндексация</button>
+                <button id="index-stop-button" type="button" class="danger-action" hidden>Остановить</button>
+              </div>
+            </details>
           </div>
-          <span id="job-status" class="status"></span>
         </header>
 
         <section class="chat-panel">
@@ -69,11 +99,12 @@
                 <span aria-hidden="true">↑</span>
               </button>
             </div>
+            <div class="composer-hint">Ответы формируются локально. Enter — отправить, Shift+Enter — новая строка</div>
           </form>
         </section>
       </section>
 
-      <aside id="source-viewer" class="source-viewer" hidden>
+      <aside id="source-viewer" class="source-viewer" role="dialog" aria-modal="false" aria-labelledby="preview-title" hidden>
         <header class="source-viewer-header">
           <div>
             <div class="panel-title">Файл</div>
@@ -94,6 +125,18 @@
             <div class="folder-current">Источники, хранилище и подключение LM Studio</div>
           </div>
           <div class="settings-header-actions">
+            <div id="settings-index-overview" class="settings-index-overview index-status-bar is-checking" role="status" aria-live="polite" title="Сводка распознавания загружается">
+              <span class="settings-index-overview-dot index-status-dot" aria-hidden="true"></span>
+              <span id="settings-index-overview-text" class="settings-index-overview-text index-status-message">Распознавание: загрузка...</span>
+              <div id="settings-index-progress" class="index-progress settings-index-progress" hidden>
+                <div class="index-progress-track">
+                  <div id="settings-index-progress-fill" class="index-progress-fill"></div>
+                </div>
+                <span id="settings-index-progress-label" class="index-progress-label"></span>
+              </div>
+            </div>
+            <button id="index-refresh-all" type="button" class="secondary index-refresh-button" title="Быстро обновить статусы всех уже найденных индексов">Обновить</button>
+            <button id="settings-audit-shortcut" type="button" class="secondary settings-audit-shortcut" title="Открыть аудит обработки">Аудит</button>
             <button id="tender-sync-button" type="button" class="secondary tender-sync-header-button">Синхронизировать с Google Drive</button>
             <button id="settings-system-status" type="button" class="backend-status service-control-button is-online" data-service="backend" title="Бэкэнд работает" aria-label="Бэкэнд работает" aria-haspopup="menu" aria-expanded="false">
               <span class="backend-status-dot" aria-hidden="true"></span>
@@ -115,14 +158,23 @@
           </div>
         </header>
 
-        <div class="settings-tabs" role="tablist" aria-label="Разделы настроек">
-          <button id="settings-tab-sources" type="button" class="settings-tab active" data-settings-tab="sources" role="tab" aria-selected="true">Источники</button>
-          <button id="settings-tab-llm" type="button" class="settings-tab" data-settings-tab="llm" role="tab" aria-selected="false">LLM</button>
-          <button id="settings-tab-indexes" type="button" class="settings-tab" data-settings-tab="indexes" role="tab" aria-selected="false">Индексы</button>
+        <div class="settings-tabs-row">
+          <div class="settings-tabs" role="tablist" aria-label="Разделы настроек">
+            <button id="settings-tab-sources" type="button" class="settings-tab active" data-settings-tab="sources" role="tab" aria-selected="true">Источники</button>
+            <button id="settings-tab-llm" type="button" class="settings-tab" data-settings-tab="llm" role="tab" aria-selected="false">LLM</button>
+            <button id="settings-tab-indexes" type="button" class="settings-tab" data-settings-tab="indexes" role="tab" aria-selected="false">Индексы</button>
+            <button id="settings-tab-general" type="button" class="settings-tab" data-settings-tab="general" role="tab" aria-selected="false">Общие</button>
+            <button id="settings-tab-audit" type="button" class="settings-tab" data-settings-tab="audit" role="tab" aria-selected="false">Аудит и система</button>
+          </div>
+          <div id="settings-source-actions" class="settings-source-actions" hidden></div>
         </div>
 
         <div class="settings-content">
           <div id="settings-panel-sources" class="settings-tab-panel active" role="tabpanel" aria-labelledby="settings-tab-sources">
+            <header class="settings-section-heading">
+              <h1>Источники</h1>
+              <p>Папки договоров и тендеров, индексация и файлы индекса</p>
+            </header>
             <div class="settings-sources-layout">
               <section class="panel sources-panel settings-project-list">
                 <div class="panel-title-row">
@@ -142,10 +194,62 @@
               </section>
 
               <div id="settings-project-detail" class="settings-project-detail">
-                <section id="selected-source-panel" class="panel">
-                  <div class="panel-title">Настройки папки</div>
-                  <div id="selected-source-settings" class="selected-source-settings"></div>
-                </section>
+                <div class="source-detail-stack">
+                  <section id="selected-source-panel" class="panel selected-source-details-panel">
+                    <div id="selected-source-settings" class="selected-source-settings"></div>
+                  </section>
+
+                  <section id="source-paths-panel" class="panel source-paths-panel" hidden></section>
+
+                  <section id="context-links-panel" class="panel context-links-panel" hidden>
+                    <div class="panel-title-row">
+                      <div>
+                        <div class="panel-title">Google context links</div>
+                        <div class="hint">Документы и таблицы, связанные с выбранным проектом</div>
+                      </div>
+                    </div>
+                    <div class="google-auth-block">
+                      <div id="google-auth-status" class="lm-status checking" role="status">
+                        <span class="lm-status-dot" aria-hidden="true"></span>
+                        <span id="google-auth-status-text">Google: проверка...</span>
+                      </div>
+                      <div class="google-auth-actions">
+                        <button id="google-auth-login" type="button" class="secondary">Войти через Google</button>
+                        <button id="google-auth-logout" type="button" class="secondary">Забыть авторизацию</button>
+                        <button id="google-auth-refresh" type="button" class="secondary">Обновить статус</button>
+                      </div>
+                      <div id="google-auth-detail" class="hint"></div>
+                    </div>
+                    <div id="context-link-list" class="context-link-list"></div>
+                    <form id="context-link-form" class="context-link-form">
+                      <input id="context-link-url" type="url" placeholder="Ссылка на Google Doc, Sheet или Drive">
+                      <input id="context-link-title" type="text" placeholder="Название (необязательно)">
+                      <div class="context-link-actions">
+                        <select id="context-link-kind" aria-label="Тип Google context link">
+                          <option value="auto">Определить автоматически</option>
+                          <option value="doc">Документ</option>
+                          <option value="sheet">Таблица</option>
+                          <option value="kp">Коммерческое предложение</option>
+                          <option value="link">Ссылка</option>
+                        </select>
+                        <button type="submit">Добавить ссылку</button>
+                      </div>
+                      <div id="context-link-status" class="hint" role="status" aria-live="polite"></div>
+                    </form>
+                  </section>
+
+                  <section id="new-source-panel" class="panel" hidden>
+                    <div class="panel-title">Добавить папку в текущий RAG</div>
+                    <form id="source-form" class="stack">
+                      <input id="source-title" type="hidden">
+                      <div class="picker-row">
+                        <input id="source-path" type="text" placeholder="Вставьте путь или выберите папку">
+                        <button id="choose-source-folder" type="button" class="secondary">Выбрать</button>
+                      </div>
+                      <button type="submit">Добавить папку в RAG</button>
+                    </form>
+                  </section>
+                </div>
 
                 <section id="indexed-files-panel" class="panel">
                   <div class="panel-title-row">
@@ -157,35 +261,15 @@
                   </div>
                   <div id="indexed-files-tree" class="indexed-files-tree"></div>
                 </section>
-
-                <section id="new-source-panel" class="panel">
-                  <div class="panel-title">Добавить папку в текущий RAG</div>
-                  <form id="source-form" class="stack">
-                    <input id="source-title" type="hidden">
-                    <div class="picker-row">
-                      <input id="source-path" type="text" placeholder="Вставьте путь или выберите дополнительную папку">
-                      <button id="choose-source-folder" type="button" class="secondary">Выбрать</button>
-                    </div>
-                    <button type="submit">Добавить папку в RAG</button>
-                  </form>
-                </section>
-
-                <section class="panel">
-                  <div class="panel-title">Хранилище</div>
-                  <form id="settings-form" class="stack">
-                    <input id="storage-path" type="text" placeholder="Путь для индексов и Markdown-кэша">
-                    <div class="split-row">
-                      <button id="choose-storage-folder" type="button" class="secondary">Выбрать</button>
-                      <button type="submit">Сохранить</button>
-                    </div>
-                    <div id="settings-status" class="hint"></div>
-                  </form>
-                </section>
               </div>
             </div>
           </div>
 
           <div id="settings-panel-llm" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-llm" hidden>
+          <header class="settings-section-heading">
+            <h1>LLM и приватность</h1>
+            <p>Маршрутизация запросов и контроль передачи фрагментов документов</p>
+          </header>
           <section class="panel">
             <div class="panel-title">LLM</div>
             <form id="llm-form" class="stack">
@@ -193,20 +277,35 @@
                 <input id="llm-enabled" type="checkbox">
                 <span>Включить ответы через LM Studio</span>
               </label>
-              <div class="split-row">
-                <label class="field">
-                  <span class="field-caption">Маршрут чата</span>
-                  <select id="llm-provider" aria-label="Маршрут LLM">
-                    <option value="local">local</option>
-                    <option value="auto">auto local-first</option>
-                    <option value="remote">remote</option>
-                  </select>
-                </label>
-                <label class="check-row">
-                  <input id="remote-context-enabled" type="checkbox">
-                  <span>Разрешить remote context</span>
-                </label>
+              <div class="llm-route-section">
+                <span class="field-caption">Маршрут чата</span>
+                <div class="llm-route-cards" role="group" aria-label="Маршрут LLM">
+                  <button type="button" class="llm-route-card" data-llm-route="local" aria-pressed="true">
+                    <span class="llm-route-radio" aria-hidden="true"></span>
+                    <strong>Только локально</strong>
+                    <span>Документы не покидают эту машину.</span>
+                  </button>
+                  <button type="button" class="llm-route-card" data-llm-route="auto" aria-pressed="false">
+                    <span class="llm-route-radio" aria-hidden="true"></span>
+                    <strong>Авто, local-first</strong>
+                    <span>Сначала локальная модель; remote — по разрешению.</span>
+                  </button>
+                  <button type="button" class="llm-route-card" data-llm-route="remote" aria-pressed="false">
+                    <span class="llm-route-radio" aria-hidden="true"></span>
+                    <strong>Remote</strong>
+                    <span>Внешний endpoint с отдельным согласием.</span>
+                  </button>
+                </div>
+                <select id="llm-provider" class="visually-hidden-control" aria-label="Маршрут LLM" aria-hidden="true" tabindex="-1">
+                  <option value="local">local</option>
+                  <option value="auto">auto local-first</option>
+                  <option value="remote">remote</option>
+                </select>
               </div>
+              <label class="check-row">
+                <input id="remote-context-enabled" type="checkbox">
+                <span>Разрешить remote context</span>
+              </label>
               <label class="check-row">
                 <input id="remote-fallback-local" type="checkbox">
                 <span>Fallback на local после ошибки remote</span>
@@ -314,6 +413,10 @@
           </div>
 
           <div id="settings-panel-indexes" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-indexes" hidden>
+            <header class="settings-section-heading">
+              <h1>Индексы</h1>
+              <p>Векторное хранилище, reranker и диагностика retrieval</p>
+            </header>
             <section class="panel">
               <div class="panel-title-row">
                 <div class="panel-title">Vector store</div>
@@ -415,6 +518,82 @@
               <div id="integrations-status-detail" class="lm-status-detail"></div>
             </section>
           </div>
+
+          <div id="settings-panel-audit" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-audit" hidden>
+            <header class="settings-section-heading">
+              <h1>Аудит и система</h1>
+              <p>Состояние обработки, локальные сервисы и системные операции</p>
+            </header>
+            <section class="panel audit-statusbar-panel">
+              <div class="audit-statusbar-head">
+                <div>
+                  <div class="panel-title">Статус обработки</div>
+                </div>
+                <div id="audit-index-status-bar" class="index-status-bar audit-index-status-bar is-empty" role="status" aria-live="polite">
+                  <span class="index-status-badge">Индексация</span>
+                  <span id="audit-job-status" class="hint index-status-message">Активной индексации нет.</span>
+                  <div id="audit-index-progress" class="index-progress audit-index-progress" hidden>
+                    <div class="index-progress-track">
+                      <div id="audit-index-progress-fill" class="index-progress-fill"></div>
+                    </div>
+                    <span id="audit-index-progress-label" class="index-progress-label"></span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel audit-panel">
+              <div class="panel-title-row">
+                <div>
+                  <div class="panel-title">Аудит обработки</div>
+                  <div id="audit-status-summary" class="hint">Загрузка статусов...</div>
+                </div>
+                <button id="audit-refresh" type="button" class="secondary compact-button">Обновить</button>
+              </div>
+              <div id="audit-status-list" class="audit-list"></div>
+            </section>
+
+            <section class="panel audit-panel audit-movement-panel">
+              <div class="panel-title-row">
+                <div>
+                  <div class="panel-title">Движения с файлами</div>
+                  <div id="audit-movement-summary" class="hint">Загрузка движений...</div>
+                </div>
+              </div>
+              <div id="audit-movement-list" class="audit-list audit-movement-list"></div>
+            </section>
+
+            <section class="danger-zone" aria-labelledby="portal-stop-heading">
+              <div class="danger-zone-copy">
+                <h2 id="portal-stop-heading">Опасная зона</h2>
+                <p>Остановка завершит backend, Qdrant и reranker. Активная индексация продолжится после следующего запуска.</p>
+              </div>
+              <button id="portal-stop-button" type="button" class="portal-stop-button" title="Остановить портал и фоновые сервисы">
+                <span class="portal-stop-icon" aria-hidden="true"></span>
+                <span>Остановить портал</span>
+              </button>
+            </section>
+          </div>
+
+          <div id="settings-panel-general" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-general" hidden>
+            <header class="settings-section-heading">
+              <h1>Общие</h1>
+              <p>Локальное хранилище данных портала</p>
+            </header>
+            <div class="settings-general-layout">
+              <section class="panel storage-settings-panel">
+                <div class="panel-title">Хранилище</div>
+                <form id="settings-form" class="stack">
+                  <input id="storage-path" type="text" placeholder="Путь для индексов и Markdown-кэша">
+                  <div class="split-row">
+                    <button id="choose-storage-folder" type="button" class="secondary">Выбрать</button>
+                    <button id="storage-save-button" type="submit">Сохранить</button>
+                  </div>
+                  <div id="settings-status" class="hint"></div>
+                </form>
+              </section>
+            </div>
+          </div>
         </div>
       </section>
     </main>
@@ -464,6 +643,29 @@
           <button id="folder-select-current" type="button">Выбрать эту папку</button>
         </div>
         <div id="folder-list" class="folder-list"></div>
+      </section>
+    </div>
+
+    <div id="portal-stop-modal" class="modal" hidden>
+      <section class="modal-dialog portal-stop-dialog" role="dialog" aria-modal="true" aria-labelledby="portal-stop-modal-title" aria-describedby="portal-stop-modal-description">
+        <header class="modal-header">
+          <div>
+            <div id="portal-stop-modal-title" class="modal-title">Остановить портал?</div>
+            <div class="folder-current">Это действие прервёт активные фоновые операции</div>
+          </div>
+          <button id="portal-stop-close" type="button" class="icon-button" aria-label="Закрыть">×</button>
+        </header>
+        <div class="portal-stop-dialog-body">
+          <p id="portal-stop-modal-description">Будут остановлены backend, Qdrant и reranker. Чтобы подтвердить действие, введите «СТОП».</p>
+          <label>
+            Подтверждение
+            <input id="portal-stop-confirm-input" type="text" autocomplete="off" placeholder="СТОП">
+          </label>
+        </div>
+        <div class="portal-stop-dialog-actions">
+          <button id="portal-stop-cancel" type="button" class="secondary">Отмена</button>
+          <button id="portal-stop-confirm" type="button" class="danger" disabled>Остановить</button>
+        </div>
       </section>
     </div>
 

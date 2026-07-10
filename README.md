@@ -69,6 +69,36 @@ Remote context запрещен по умолчанию. При включени
 или `error`. Streaming endpoint использует ту же privacy/routing policy, что
 и `/api/chat`.
 
+## Dify adapter
+
+`POST /api/dify/retrieval` дает self-hosted Dify безопасный retrieval-слой поверх
+`LOCAL_RAG`. Dify используется как optional workflow/UI/orchestration layer, а
+не как второй RAG-core. Dify не получает прямой доступ к `data/`, `.env`,
+`config/settings.json`, `config/sources.yaml` или пользовательским документам.
+
+Endpoint требует отдельный токен:
+
+```text
+Authorization: Bearer <LOCALAI_DIFY_ADAPTER_TOKEN>
+```
+
+Задавайте `LOCALAI_DIFY_ADAPTER_TOKEN` только через env на стороне backend и
+secret variable на стороне Dify. Не храните этот токен в prompts, live config,
+логах, screenshots или git. Browser GET `/api/dify/retrieval` показывает только
+non-secret diagnostic page.
+
+Prompt pack для Dify лежит в `docs/dify-localai-prompt-pack/`, архив -
+`docs/dify-localai-prompt-pack.zip`. Контракт adapter endpoint описан в
+`docs/dify-localai-prompt-pack/contracts/localai-dify-retrieval-contract.md`.
+Adapter возвращает только bounded excerpts, citation labels и безопасную
+metadata без абсолютных локальных путей; remote context остается запрещенным,
+пока это явно не разрешено политикой `LOCAL_RAG` и запросом Dify.
+
+Для External Knowledge API в Dify регистрируйте base endpoint
+`http://127.0.0.1:8787/api/dify`; Dify сам вызывает `/retrieval`. Для HTTP tool
+используйте полный `http://127.0.0.1:8787/api/dify/retrieval`. POC checklist:
+`docs/dify-localai-poc.md`.
+
 ## Eval cases
 
 Локальные evals лежат в `evals/*.json`. Файл может содержать один кейс, массив
@@ -127,10 +157,12 @@ imports, key UI markers, and suspicious private defaults without reading live
 config or opening a browser.
 `smoke:api` starts a temporary local server, indexes `fixtures/demo-project`,
 checks real HTTP API endpoints, auth on/off, chat fallback, SSE fallback,
-preview, and source summary. The preview gate opens citations by stable
-chunk target and verifies exact evidence for demo contract amount and payment
-schedule, rather than accepting any file-level preview. It does not require
-LM Studio, Qdrant, OCR, live data, live config, or secrets.
+preview, source summary, and Dify retrieval. The preview gate opens citations by
+stable chunk target and verifies exact evidence for demo contract amount and
+payment schedule, rather than accepting any file-level preview. The Dify gate
+checks the dedicated adapter token, citations, privacy metadata, and response
+redaction. It does not require LM Studio, Qdrant, OCR, live data, live config,
+or secrets.
 
 Manual browser acceptance checklist: `docs/ui-acceptance-checklist.md`. Run it
 with a temp runtime such as `.tmp/ui-smoke-data` and the
@@ -138,8 +170,8 @@ with a temp runtime such as `.tmp/ui-smoke-data` and the
 
 ## Metadata storage
 
-По умолчанию metadata индекса хранится в JSON: `data/state/manifest.json` и
-`data/state/chunks.json`.
+По умолчанию metadata индекса хранится в JSON: `D:\LOCAL_RAG\data\state\manifest.json` и
+`D:\LOCAL_RAG\data\state\chunks.json`.
 
 Для SQLite включите:
 
@@ -155,7 +187,7 @@ with a temp runtime such as `.tmp/ui-smoke-data` and the
 }
 ```
 
-Пустой `databasePath` означает `data/state/metadata.sqlite`. Для временного
+Пустой `databasePath` означает `D:\LOCAL_RAG\data\state\metadata.sqlite`. Для временного
 запуска можно использовать env `RAG_METADATA_PROVIDER=sqlite`.
 
 Миграция текущих JSON metadata в SQLite:
@@ -172,7 +204,7 @@ npm run metadata:migrate:sqlite
   не используется как основное хранилище.
 - `auto` - сначала Qdrant; если он недоступен, используется `vectors.json`
   fallback с warning в diagnostics/job metadata.
-- `json` - явный fallback/debug режим через `data/state/vectors.json`.
+- `json` - явный fallback/debug режим через `D:\LOCAL_RAG\data\state\vectors.json`.
 
 Qdrant sync пересобирает точки безопасно в рамках одного `sourceId`: новые
 vectors готовятся заранее, затем старые точки этого source удаляются и
@@ -183,7 +215,7 @@ vectors готовятся заранее, затем старые точки э
 По умолчанию данные лежат здесь:
 
 ```text
-.\data
+D:\LOCAL_RAG\data
 ```
 
 Путь можно поменять в UI в блоке "Хранилище". Сетевые папки не изменяются и не захламляются Markdown-файлами.

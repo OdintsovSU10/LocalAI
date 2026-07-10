@@ -85,10 +85,12 @@ async function fetchJsonWithTimeout(url, timeoutMs = 1500) {
 export async function managedRerankerStatus(reranker = {}) {
   const settings = managedRerankerSettings(reranker);
   const health = await fetchJsonWithTimeout(settings.healthUrl);
+  const running = Boolean(health.ok);
   return {
     ok: true,
-    running: Boolean(health.ok),
-    state: health.ok ? "running" : "stopped",
+    enabled: settings.enabled,
+    running,
+    state: settings.enabled ? (running ? "running" : "stopped") : "disabled",
     manageable: settings.manageable,
     local: settings.local,
     baseUrl: settings.healthBaseUrl,

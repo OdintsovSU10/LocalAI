@@ -88,6 +88,48 @@ test("auto chat scope still matches a confident project name", () => {
   assert.equal(scope.autoMatch.confident, true);
 });
 
+test("auto chat scope keeps previous project for follow-up questions", () => {
+  const scope = resolveChatSourceScope({
+    question: "what about the warranty period?",
+    requestedSourceId: "",
+    contextSourceId: "alpha",
+    sources
+  });
+
+  assert.equal(scope.source.id, "alpha");
+  assert.equal(scope.sourceId, "alpha");
+  assert.equal(scope.searchAllSources, false);
+  assert.equal(scope.contextSourceUsed, true);
+});
+
+test("confident project mention overrides previous chat context", () => {
+  const scope = resolveChatSourceScope({
+    question: "Beta Plaza contract email",
+    requestedSourceId: "",
+    contextSourceId: "alpha",
+    sources
+  });
+
+  assert.equal(scope.source.id, "beta");
+  assert.equal(scope.sourceId, "beta");
+  assert.equal(scope.searchAllSources, false);
+  assert.equal(scope.contextSourceUsed, false);
+});
+
+test("all-projects intent ignores previous chat context", () => {
+  const scope = resolveChatSourceScope({
+    question: "check all projects for payment terms",
+    requestedSourceId: "",
+    contextSourceId: "alpha",
+    sources
+  });
+
+  assert.equal(scope.source, null);
+  assert.equal(scope.sourceId, "");
+  assert.equal(scope.searchAllSources, true);
+  assert.equal(scope.contextSourceUsed, false);
+});
+
 test("missing explicit source is not converted to all-source search", () => {
   const scope = resolveChatSourceScope({
     question: "Alpha Tower contract email",

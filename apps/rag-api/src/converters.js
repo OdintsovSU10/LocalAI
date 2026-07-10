@@ -15,6 +15,8 @@ import { normalizeText } from "./text.js";
 
 const TEXT_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".csv", ".log"]);
 const PDF_TEXT_MIN_CHARS = numberFromEnv("RAG_PDF_TEXT_MIN_CHARS", 120, { min: 0, max: 10000 });
+const TEXT_NOISE_RATIO = numberFromEnv("RAG_TEXT_NOISE_RATIO", 0.08, { min: 0, max: 1 });
+const TEXT_NOISE_MIN_TOKENS = numberFromEnv("RAG_TEXT_NOISE_MIN_TOKENS", 3, { min: 1, max: 1000 });
 const OCR_MAX_PAGES = numberFromEnv("RAG_OCR_MAX_PAGES", 0, { min: 0, max: 10000 });
 const OCR_SCALE = numberFromEnv("RAG_OCR_SCALE", 2, { min: 1, max: 4 });
 const OCR_LANGS = process.env.RAG_OCR_LANGS || "rus+eng";
@@ -114,6 +116,43 @@ function countMatches(text, pattern) {
   return String(text || "").match(pattern)?.length || 0;
 }
 
+const WORD_TOKEN_RE = /[\p{L}\p{N}]{2,}/gu;
+const LETTER_RE = /\p{L}/u;
+const LATIN_RE = /\p{Script=Latin}/u;
+const CYRILLIC_RE = /\p{Script=Cyrillic}/u;
+const DIGIT_RE = /\p{N}/u;
+
+function recognitionNoiseReport(text) {
+  const tokens = Array.from(String(text || "").matchAll(WORD_TOKEN_RE), (match) => match[0]);
+  let letterTokens = 0;
+  let mixedScriptTokens = 0;
+  let alphaDigitTokens = 0;
+
+  for (const token of tokens) {
+    if (!LETTER_RE.test(token)) continue;
+    letterTokens += 1;
+
+    const hasLatin = LATIN_RE.test(token);
+    const hasCyrillic = CYRILLIC_RE.test(token);
+    const hasDigit = DIGIT_RE.test(token);
+
+    if (hasLatin && hasCyrillic) mixedScriptTokens += 1;
+    else if (token.length >= 4 && hasDigit) alphaDigitTokens += 1;
+  }
+
+  const noisyTokens = mixedScriptTokens + alphaDigitTokens;
+  const noiseRatio = letterTokens ? noisyTokens / letterTokens : 0;
+
+  return {
+    letterTokens,
+    noisyTokens,
+    mixedScriptTokens,
+    alphaDigitTokens,
+    noiseRatio: Number(noiseRatio.toFixed(3)),
+    severe: noisyTokens >= TEXT_NOISE_MIN_TOKENS && noiseRatio >= TEXT_NOISE_RATIO
+  };
+}
+
 export function textQualityReport(markdown, options = {}) {
   const text = normalizeText(markdown);
   const chars = text.length;
@@ -124,18 +163,21 @@ export function textQualityReport(markdown, options = {}) {
   const replacementChars = countMatches(text, /\uFFFD/g);
   const letterRatio = chars ? letters / chars : 0;
   const replacementRatio = chars ? replacementChars / chars : 0;
+  const recognitionNoise = recognitionNoiseReport(text);
   const warnings = [];
 
   if (chars < minChars) warnings.push("too_little_text");
   if (words < minWords) warnings.push("too_few_words");
   if (chars >= minChars && letterRatio < 0.2) warnings.push("low_text_density");
   if (replacementRatio > 0.01) warnings.push("encoding_noise");
+  if (recognitionNoise.severe) warnings.push("ocr_text_noise");
 
   let score = 100;
   if (warnings.includes("too_little_text")) score -= 30;
   if (warnings.includes("too_few_words")) score -= 20;
   if (warnings.includes("low_text_density")) score -= 20;
   if (warnings.includes("encoding_noise")) score -= 25;
+  if (warnings.includes("ocr_text_noise")) score -= 35;
 
   return {
     score: Math.max(0, Math.min(100, score)),
@@ -143,7 +185,11 @@ export function textQualityReport(markdown, options = {}) {
     chars,
     words,
     letterRatio: Number(letterRatio.toFixed(3)),
-    replacementRatio: Number(replacementRatio.toFixed(3))
+    replacementRatio: Number(replacementRatio.toFixed(3)),
+    noiseRatio: recognitionNoise.noiseRatio,
+    noisyTokens: recognitionNoise.noisyTokens,
+    mixedScriptTokens: recognitionNoise.mixedScriptTokens,
+    alphaDigitTokens: recognitionNoise.alphaDigitTokens
   };
 }
 
@@ -151,7 +197,8 @@ function usablePdfTextLayer(report) {
   return Number(report?.chars || 0) >= PDF_TEXT_MIN_CHARS
     && Number(report?.words || 0) >= 10
     && Number(report?.score || 0) >= 70
-    && !report?.warnings?.includes("encoding_noise");
+    && !report?.warnings?.includes("encoding_noise")
+    && !report?.warnings?.includes("ocr_text_noise");
 }
 
 function ocrPageReport(pageNumber, text, confidence) {
@@ -166,8 +213,18 @@ function ocrPageReport(pageNumber, text, confidence) {
     words: quality.words,
     confidence: roundedConfidence,
     letterRatio: quality.letterRatio,
+    noiseRatio: quality.noiseRatio,
+    noisyTokens: quality.noisyTokens,
     warnings: [...new Set(warnings)]
   };
+}
+
+function usableOcrPage(page) {
+  const warnings = new Set(page?.warnings || []);
+  const confidence = Number(page?.confidence);
+  if (Number(page?.chars || 0) < 20 || Number(page?.words || 0) < 3) return false;
+  if (warnings.has("ocr_text_noise") || warnings.has("encoding_noise") || warnings.has("low_text_density")) return false;
+  return !Number.isFinite(confidence) || confidence >= 25;
 }
 
 function recognitionReport(method, markdown, extra = {}) {
@@ -259,6 +316,10 @@ async function convertPdfWithOcrmypdf(filePath, options = {}) {
   await fs.mkdir(OCRMYPDF_CACHE_DIR, { recursive: true });
   const cacheKey = await fileCacheKey(filePath, "ocrmypdf");
   const outputPath = path.join(OCRMYPDF_CACHE_DIR, `${cacheKey}.pdf`);
+
+  if (options.refreshRecognitionCache) {
+    await fs.rm(outputPath, { force: true }).catch(() => {});
+  }
 
   try {
     await fs.access(outputPath);
@@ -471,11 +532,12 @@ async function ocrPdfToMarkdown(filePath, options = {}) {
       });
 
       const hasCachedPage = Boolean(cachedPage) && Object.prototype.hasOwnProperty.call(cachedPage, "text");
-      let text = hasCachedPage ? normalizeText(cachedPage.text || "") : "";
-      let confidence = hasCachedPage ? Number(cachedPage.confidence) : Number.NaN;
-      let cached = hasCachedPage;
+      const useCachedPage = hasCachedPage && !options.refreshRecognitionCache;
+      let text = useCachedPage ? normalizeText(cachedPage.text || "") : "";
+      let confidence = useCachedPage ? Number(cachedPage.confidence) : Number.NaN;
+      let cached = useCachedPage;
 
-      if (!hasCachedPage) {
+      if (!useCachedPage) {
         worker ||= await getOcrWorker(options);
         const image = await document.getPage(pageNumber);
         const result = await worker.recognize(image);
@@ -490,14 +552,18 @@ async function ocrPdfToMarkdown(filePath, options = {}) {
         }, null, 2), "utf8").catch(() => {});
       }
 
-      pages.push({ ...ocrPageReport(pageNumber, text, confidence), cached });
-      if (text) parts.push(`## OCR page ${pageNumber}\n\n${text}`);
+      const pageReport = { ...ocrPageReport(pageNumber, text, confidence), cached };
+      pageReport.usable = usableOcrPage(pageReport);
+      pages.push(pageReport);
+      if (text && pageReport.usable) parts.push(`## OCR page ${pageNumber}\n\n${text}`);
     }
 
     if (totalPages > pageLimit) {
       parts.push(`## OCR status\n\nRecognized ${pageLimit} of ${totalPages} pages. Set RAG_OCR_MAX_PAGES=0 to OCR all pages. Cached page OCR is reused on force reindex.`);
     }
 
+    const acceptedPages = pages.filter((page) => page.usable && page.chars > 0);
+    const rejectedPages = pages.filter((page) => !page.usable && page.chars > 0);
     const markdown = normalizeText(parts.join("\n\n"));
     return {
       markdown,
@@ -506,13 +572,17 @@ async function ocrPdfToMarkdown(filePath, options = {}) {
         ocrLangs: OCR_LANGS,
         ocrPages: pageLimit,
         ocrTotalPages: totalPages,
-        ocrRecognizedPages: pages.filter((page) => page.chars > 0).length,
+        ocrRecognizedPages: acceptedPages.length,
+        ocrRawRecognizedPages: pages.filter((page) => page.chars > 0).length,
+        ocrAcceptedPages: acceptedPages.length,
+        ocrRejectedPages: rejectedPages.map((page) => page.page),
         ocrCachedPages: pages.filter((page) => page.cached).length,
         ocrNewPages: pages.filter((page) => !page.cached).length,
         ocrLimited: totalPages > pageLimit,
         ocrConfidence: average(pages.map((page) => page.confidence)),
         ocrConfidenceP10: percentile(pages.map((page) => page.confidence), 0.1),
-        ocrChars: pages.reduce((sum, page) => sum + page.chars, 0),
+        ocrChars: acceptedPages.reduce((sum, page) => sum + page.chars, 0),
+        ocrRawChars: pages.reduce((sum, page) => sum + page.chars, 0),
         ocrLowConfidencePages: pages
           .filter((page) => Number.isFinite(Number(page.confidence)) && Number(page.confidence) < 50)
           .map((page) => page.page),
@@ -564,16 +634,22 @@ function pdfOcrResult(method, textLayerText, ocrMarkdown, ocrRecognition, extern
   };
 }
 
+function severeRecognitionNoise(report) {
+  return report?.warnings?.includes("ocr_text_noise") || report?.warnings?.includes("encoding_noise");
+}
+
 function choosePdfResult(textResult, ocrResult) {
   const textQuality = textResult.recognition.textLayerQuality || textQualityReport(textResult.markdown);
   const ocrQuality = ocrResult.recognition.ocrQuality || textQualityReport(ocrResult.markdown);
   const ocrHasText = Boolean(String(ocrResult.markdown || "").trim());
   const textHasText = Boolean(String(textResult.markdown || "").trim());
-  const useOcr = (!textHasText && !ocrHasText) || (ocrHasText && (
-    PDF_OCR_MODE === "force"
-    || !usablePdfTextLayer(textQuality)
-    || Number(ocrQuality.score || 0) > Number(textQuality.score || 0) + 10
-  ));
+  const textHasSevereNoise = severeRecognitionNoise(textQuality);
+  const useOcr = PDF_OCR_MODE === "force"
+    ? (ocrHasText || !textHasText || textHasSevereNoise)
+    : (!textHasText && !ocrHasText) || (ocrHasText && (
+      !usablePdfTextLayer(textQuality)
+      || Number(ocrQuality.score || 0) > Number(textQuality.score || 0) + 10
+    )) || (!ocrHasText && textHasSevereNoise);
   const selected = useOcr ? ocrResult : textResult;
 
   return {

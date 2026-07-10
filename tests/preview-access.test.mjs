@@ -44,6 +44,26 @@ test("findPreviewManifestEntry resolves previews through manifest metadata", () 
   assert.equal(byFileId?.path, path.join("docs", "report.pdf"));
 });
 
+test("findPreviewManifestEntry recovers entries with stale source ids by source path", () => {
+  const staleManifest = {
+    files: {
+      stale: {
+        sourceId: "source-old",
+        fileId: "stale",
+        path: "C:\\docs\\report.pdf"
+      }
+    }
+  };
+  const entry = findPreviewManifestEntry({
+    manifest: staleManifest,
+    source: { id: sourceId, path: "C:\\docs" },
+    fileId: "stale",
+    currentSourceIds: new Set([sourceId])
+  });
+
+  assert.equal(entry?.fileId, "stale");
+});
+
 test("chunk metadata wins over unsafe query path when selecting preview entry", () => {
   const entry = findPreviewManifestEntry({
     manifest,

@@ -29,6 +29,13 @@
    - `npm run secrets:migrate` appends secrets to `.env`, clears them from `config/settings.json`, and creates a backup.
    - Secret values are never printed to the console.
 
+7. Add a Dify retrieval adapter and prompt pack.
+   - `POST /api/dify/retrieval` exposes bounded LOCAL_RAG retrieval for Dify External Knowledge / HTTP tool workflows.
+   - Requests require the dedicated env token `LOCALAI_DIFY_ADAPTER_TOKEN`; the normal `RAG_AUTH_TOKEN` is not accepted as the Dify adapter token.
+   - Responses include excerpts, citation labels, safe display metadata, LOCAL_RAG privacy metadata and warnings, but not full files, secrets or absolute local paths.
+   - The reusable prompt pack is available in `docs/dify-localai-prompt-pack/` and `docs/dify-localai-prompt-pack.zip`.
+   - The POC checklist is documented in `docs/dify-localai-poc.md`; Dify remains an optional workflow/UI/orchestration layer, not a second RAG core.
+
 ## Enable Qdrant
 
 ```powershell
@@ -52,7 +59,7 @@ npm run qdrant:start
 This starts Qdrant with:
 
 ```powershell
-$env:QDRANT__STORAGE__STORAGE_PATH="$env:USERPROFILE\Desktop\LOCAL_RAG\data\qdrant"
+$env:QDRANT__STORAGE__STORAGE_PATH="D:\LOCAL_RAG\data\qdrant"
 C:\qdrant\qdrant.exe
 ```
 
@@ -131,6 +138,46 @@ RAG_RERANKER_ENABLED=true
 RAG_RERANKER_BASE_URL=http://127.0.0.1:8080
 RAG_RERANKER_MODEL=jina-reranker-v2-base-multilingual
 RAG_RERANKER_CANDIDATES=30
+```
+
+## Enable Dify adapter
+
+Run Dify self-hosted outside `LOCAL_RAG`.
+
+External Knowledge API endpoint to register in Dify:
+
+```text
+http://127.0.0.1:8787/api/dify
+```
+
+Dify calls `/retrieval` under that endpoint. HTTP tool workflows can call:
+
+```text
+POST http://127.0.0.1:8787/api/dify/retrieval
+Authorization: Bearer <LOCALAI_DIFY_ADAPTER_TOKEN>
+```
+
+Set `LOCALAI_DIFY_ADAPTER_TOKEN` only through backend env and a Dify secret variable. Do not put the real token into Dify prompt text, `config/settings.json`, screenshots, logs or git.
+
+Use the prompt pack files from:
+
+```text
+docs/dify-localai-prompt-pack/
+docs/dify-localai-prompt-pack.zip
+```
+
+The endpoint contract is in:
+
+```text
+docs/dify-localai-prompt-pack/contracts/localai-dify-retrieval-contract.md
+```
+
+The adapter searches the existing LOCAL_RAG index and preserves the same local-first privacy decision used by `/api/chat`, `/api/chat/stream`, `eval:llm` and project summary. Dify should not read `data/`, `.env`, live config or user documents directly.
+
+POC acceptance checklist:
+
+```text
+docs/dify-localai-poc.md
 ```
 
 ## Move stored secrets to `.env`

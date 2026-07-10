@@ -9,17 +9,36 @@ const __dirname = path.dirname(__filename);
 export const projectRoot = path.resolve(__dirname, "../../..");
 export const configPath = path.join(projectRoot, "config", "sources.yaml");
 export const settingsPath = path.join(projectRoot, "config", "settings.json");
+const defaultLocalRagDataDir = "D:\\LOCAL_RAG\\data";
+const legacyRepoDataDir = path.join(projectRoot, "data");
+
+function normalizeComparablePath(value = "") {
+  return path.resolve(String(value || "")).replace(/[\\/]+$/, "").toLowerCase();
+}
 
 export function defaultDataDir() {
-  return path.join(projectRoot, "data");
+  return path.resolve(defaultLocalRagDataDir);
+}
+
+export function isLegacyDefaultDataDir(value = "") {
+  if (!String(value || "").trim()) return false;
+  const normalized = normalizeComparablePath(value);
+  if (normalized === normalizeComparablePath(legacyRepoDataDir)) return true;
+  return /[\\/]desktop[\\/]local_rag[\\/]data$/i.test(normalized);
+}
+
+export function resolveDataDirSetting(value = "") {
+  const configured = String(value || "").trim();
+  if (!configured || isLegacyDefaultDataDir(configured)) return defaultDataDir();
+  return path.resolve(configured);
 }
 
 export function dataDir() {
-  if (process.env.RAG_DATA_DIR) return path.resolve(process.env.RAG_DATA_DIR);
+  if (process.env.RAG_DATA_DIR) return resolveDataDirSetting(process.env.RAG_DATA_DIR);
 
   try {
     const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-    if (settings.dataDir) return path.resolve(settings.dataDir);
+    if (settings.dataDir) return resolveDataDirSetting(settings.dataDir);
   } catch {
     // Missing or invalid settings should not prevent the app from starting.
   }

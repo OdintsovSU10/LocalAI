@@ -1,11 +1,30 @@
 import crypto from "node:crypto";
+import path from "node:path";
 import { defaultEmbeddingSettings, readSettings, readVectors, writeVectors } from "./store.js";
 import { qdrantStatus, syncSourceToQdrant, vectorProviderDecision } from "./vector-store.js";
 
-function withTimeout(timeoutSeconds) {
+function withTimeout(timeoutSeconds, externalSignal = null) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
-  return { controller, timeout };
+  const timeout = setTimeout(() => {
+    controller.abort(new Error(`Embedding request timed out after ${timeoutSeconds}s`));
+  }, timeoutSeconds * 1000);
+  const abortFromExternal = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) abortFromExternal();
+  else externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+  return {
+    controller,
+    cleanup: () => {
+      clearTimeout(timeout);
+      externalSignal?.removeEventListener("abort", abortFromExternal);
+    }
+  };
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error("Индексация остановлена");
+  error.name = "AbortError";
+  throw error;
 }
 
 function embeddingHeaders(settings) {
@@ -47,13 +66,14 @@ export function dotProduct(a, b) {
   return sum;
 }
 
-export async function embedTexts({ embeddings, texts }) {
+export async function embedTexts({ embeddings, texts, signal = null }) {
   const settings = normalizeEmbeddingSettings(embeddings);
   if (!settings.enabled) return [];
   if (!settings.model) throw new Error("Embedding model is not configured");
 
-  const { controller, timeout } = withTimeout(settings.timeoutSeconds);
+  const { controller, cleanup } = withTimeout(settings.timeoutSeconds, signal);
   try {
+    throwIfAborted(signal);
     const response = await fetch(`${settings.baseUrl}/embeddings`, {
       method: "POST",
       headers: embeddingHeaders(settings),
@@ -75,7 +95,7 @@ export async function embedTexts({ embeddings, texts }) {
       .sort((a, b) => Number(a.index || 0) - Number(b.index || 0))
       .map((item) => normalizeVector(item.embedding));
   } finally {
-    clearTimeout(timeout);
+    cleanup();
   }
 }
 
@@ -169,7 +189,19 @@ async function writeJsonVectorFallback({ sourceId, chunks, vectorItems }) {
   return Object.values(items).filter((item) => item?.sourceId === sourceId).length;
 }
 
-export async function ensureChunkEmbeddings({ sourceId, chunks, onProgress = () => {} }) {
+function chunkFileProgress(chunk = {}) {
+  const chunkPath = String(chunk.path || "");
+  const title = String(chunk.title || (chunkPath ? path.basename(chunkPath) : "") || "").trim();
+  if (!title) return {};
+  return {
+    currentFileTitle: title,
+    currentFileRelativePath: String(chunk.relativePath || title),
+    currentFileExtension: path.extname(chunkPath || title).toLowerCase() || ""
+  };
+}
+
+export async function ensureChunkEmbeddings({ sourceId, chunks, signal = null, onProgress = () => {} }) {
+  throwIfAborted(signal);
   const settings = await readSettings();
   const embeddings = normalizeEmbeddingSettings(settings.embeddings);
   const target = await resolveEmbeddingVectorTarget(settings.vectorStore);
@@ -199,6 +231,7 @@ export async function ensureChunkEmbeddings({ sourceId, chunks, onProgress = () 
         vectorStore: settings.vectorStore,
         sourceId,
         chunks,
+        signal,
         vectorItems: {}
       });
     }
@@ -237,15 +270,19 @@ export async function ensureChunkEmbeddings({ sourceId, chunks, onProgress = () 
     vectorsEmbedded: embedded,
     embeddingModel: embeddings.model,
     vectorProviderUsed: target.vectorProviderUsed,
-    warning: target.warning || ""
+    warning: target.warning || "",
+    ...chunkFileProgress(pending[0]?.chunk || chunks[0])
   });
 
   for (let index = 0; index < pending.length; index += embeddings.batchSize) {
+    throwIfAborted(signal);
     const batch = pending.slice(index, index + embeddings.batchSize);
     const batchVectors = await embedTexts({
       embeddings,
+      signal,
       texts: batch.map(({ chunk }) => chunk.text)
     });
+    throwIfAborted(signal);
 
     batch.forEach(({ chunk, hash }, batchIndex) => {
       const vector = batchVectors[batchIndex] || [];
@@ -266,7 +303,8 @@ export async function ensureChunkEmbeddings({ sourceId, chunks, onProgress = () 
       vectorsEmbedded: embedded,
       embeddingModel: embeddings.model,
       vectorProviderUsed: target.vectorProviderUsed,
-      warning: target.warning || ""
+      warning: target.warning || "",
+      ...chunkFileProgress(batch.at(-1)?.chunk || batch[0]?.chunk)
     });
   }
 
@@ -279,7 +317,10 @@ export async function ensureChunkEmbeddings({ sourceId, chunks, onProgress = () 
     vectorsEmbedded: embedded,
     embeddingModel: embeddings.model,
     vectorProviderUsed: target.vectorProviderUsed,
-    warning: target.warning || ""
+    warning: target.warning || "",
+    currentFileTitle: "",
+    currentFileRelativePath: "",
+    currentFileExtension: ""
   });
 
   let vectorStoreResult;
@@ -288,6 +329,7 @@ export async function ensureChunkEmbeddings({ sourceId, chunks, onProgress = () 
       vectorStore: settings.vectorStore,
       sourceId,
       chunks,
+      signal,
       vectorItems: sourceVectorItems
     });
 

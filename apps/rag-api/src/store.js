@@ -12,6 +12,7 @@ import {
   manifestPath,
   markdownCacheDir,
   metadataSqlitePath,
+  resolveDataDirSetting,
   settingsPath,
   sourceSummariesPath,
   stateDir,
@@ -655,7 +656,7 @@ export async function readSettings() {
 
   return {
     dataDir: dataDir(),
-    configuredDataDir: settings.dataDir || defaultDataDir(),
+    configuredDataDir: resolveDataDirSetting(settings.dataDir),
     defaultDataDir: defaultDataDir(),
     envLocked: Boolean(process.env.RAG_DATA_DIR),
     llm,
@@ -684,7 +685,7 @@ export async function writeSettings(settings) {
     search: defaultSearchSettings
   });
   const next = {
-    dataDir: current.dataDir || defaultDataDir(),
+    dataDir: resolveDataDirSetting(current.dataDir),
     llm: normalizeStoredLlmSettings(current.llm || {}),
     embeddings: normalizeStoredEmbeddingSettings(current.embeddings || {}),
     vectorStore: normalizeStoredVectorStoreSettings(current.vectorStore || {}),

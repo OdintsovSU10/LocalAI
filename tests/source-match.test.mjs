@@ -13,6 +13,11 @@ const sources = [
     id: "wave",
     title: "ЛСР_ЖК_WAVE_2 (Борисовские пруды)",
     path: "\\\\server\\share\\ЛСР_ЖК_WAVE_2"
+  },
+  {
+    id: "alia",
+    title: "ASTERUS_ЖК ALIA (ул. Летная)",
+    path: "\\\\server\\share\\ASTERUS_ЖК ALIA (ул. Летная)"
   }
 ];
 
@@ -26,6 +31,18 @@ test("matchSourceForQuestion confidently matches project title and address token
   assert.equal(match.source.id, "balchug");
   assert.equal(match.score, 13);
   assert.deepEqual(match.matchedTokens, ["балчуг", "садовническая"]);
+});
+
+test("matchSourceForQuestion matches Cyrillic wording to Latin project tokens", () => {
+  const match = matchSourceForQuestion(
+    "Какие основные условия по договору алия астериус?",
+    sources
+  );
+
+  assert.equal(match.confident, true);
+  assert.equal(match.source.id, "alia");
+  assert.ok(match.score >= 10);
+  assert.deepEqual(match.matchedTokens, ["алия", "астериус"]);
 });
 
 test("matchSourceForQuestion does not guess from generic contract questions", () => {

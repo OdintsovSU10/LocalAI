@@ -20,9 +20,28 @@ test("buildSourceSummary creates deterministic project metadata", () => {
           status: "warning",
           score: 72,
           chunks: 2,
+          chars: 240,
+          words: 32,
           warnings: ["ocr_limited", "low_ocr_confidence"]
         },
-        recognition: { method: "ocr", ocrLimited: true }
+        recognition: {
+          method: "ocr",
+          ocrLimited: true,
+          ocrPages: 2,
+          ocrRecognizedPages: 2,
+          ocrTotalPages: 4,
+          ocrConfidence: 42,
+          ocrConfidenceP10: 31,
+          ocrLowConfidencePages: [1],
+          ocrEmptyPages: [4]
+        },
+        reindex: {
+          retried: true,
+          status: "resolved",
+          reasons: ["no_chunks"],
+          finalReasons: [],
+          improved: true
+        }
       },
       md1: {
         fileId: "md1",
@@ -33,6 +52,8 @@ test("buildSourceSummary creates deterministic project metadata", () => {
           status: "ok",
           score: 100,
           chunks: 1,
+          chars: 480,
+          words: 76,
           warnings: []
         },
         recognition: { method: "text" }
@@ -73,8 +94,43 @@ test("buildSourceSummary creates deterministic project metadata", () => {
     { warning: "low_ocr_confidence", count: 1 },
     { warning: "ocr_limited", count: 1 }
   ]);
+  assert.deepEqual(summary.recognitionQuality.files, {
+    total: 2,
+    searchable: 2,
+    ok: 1,
+    warning: 1,
+    error: 0,
+    unchecked: 0,
+    withText: 2,
+    textCoveragePercent: 100
+  });
+  assert.equal(summary.recognitionQuality.status, "warning");
+  assert.equal(summary.recognitionQuality.score, 86);
+  assert.deepEqual(summary.recognitionQuality.text, {
+    totalChars: 720,
+    totalWords: 108,
+    avgChars: 360,
+    avgWords: 54
+  });
+  assert.deepEqual(summary.recognitionQuality.ocr, {
+    files: 1,
+    pages: 2,
+    totalPages: 4,
+    coveragePercent: 50,
+    avgConfidence: 42,
+    confidenceP10: 31,
+    limitedFiles: 1,
+    lowConfidenceFiles: 1,
+    lowConfidencePages: 1,
+    emptyPages: 1
+  });
   assert.equal(summary.qualityWarnings.files.length, 1);
   assert.equal(summary.qualityWarnings.files[0].title, "Договор.pdf");
+  assert.equal(summary.reindex.retriedFiles, 1);
+  assert.equal(summary.reindex.resolvedFiles, 1);
+  assert.deepEqual(summary.reindex.byReason, [{ reason: "no_chunks", count: 1 }]);
+  assert.equal(summary.reindex.files[0].status, "resolved");
+  assert.equal(summary.reindex.files[0].improved, true);
   assert.match(summary.deterministicSummary, /2 files, 3 chunks/);
   assert.equal(Object.hasOwn(summary, "llmSummary"), false);
 });
@@ -95,4 +151,7 @@ test("buildSourceSummary falls back to manifest chunk counts", () => {
   assert.equal(summary.fileCount, 2);
   assert.equal(summary.chunkCount, 6);
   assert.equal(summary.qualityWarnings.total, 0);
+  assert.equal(summary.recognitionQuality.status, "warning");
+  assert.equal(summary.recognitionQuality.score, 80);
+  assert.equal(summary.recognitionQuality.files.searchable, 2);
 });

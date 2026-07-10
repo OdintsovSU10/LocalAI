@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { convertToMarkdownWithReport, converterStatus, supportedExtensions } from "./converters.js";
+import { convertToMarkdownWithReport, converterStatus, supportedExtensions, textQualityReport } from "./converters.js";
 import { indexLockPath, markdownCacheDir } from "./paths.js";
 import { chunkMarkdown, normalizeText, tokenize } from "./text.js";
 import { readChunks, readManifest, writeChunks, writeManifest, writeSourceSummary } from "./store.js";
@@ -13,6 +13,13 @@ import { publicContextLinks } from "./context-links.js";
 import { fetchGoogleContextMarkdown, googleContextVirtualPath } from "./google-context.js";
 import { googleAuthCanFetch, googleAuthFetch } from "./google-auth.js";
 import { recognizeTenderDocument, tenderChunkMetadata } from "./tender-recognition.js";
+import {
+  createReindexReport,
+  createReindexStats,
+  qualityReindexDecision,
+  reindexOrchestratorSettings,
+  updateReindexStats
+} from "./reindex-orchestrator.js";
 
 const INDEX_LOCK_STALE_MS = 6 * 60 * 60 * 1000;
 const INDEX_LOCK_WAIT_MS = 1000;
@@ -61,11 +68,13 @@ function lockOwnerIsAlive(pid) {
   }
 }
 
-async function acquireIndexLock(onWait = () => {}) {
+async function acquireIndexLock(onWait = () => {}, options = {}) {
   const lockPath = indexLockPath();
   let waitNotified = false;
+  const signal = options.signal || null;
 
   while (true) {
+    throwIfAborted(signal);
     try {
       await fs.mkdir(path.dirname(lockPath), { recursive: true });
       const handle = await fs.open(lockPath, "wx");
@@ -108,8 +117,20 @@ async function acquireIndexLock(onWait = () => {}) {
         onWait();
       }
       await sleep(INDEX_LOCK_WAIT_MS);
+      throwIfAborted(signal);
     }
   }
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error("Индексация остановлена");
+  error.name = "AbortError";
+  throw error;
+}
+
+function isAbortError(error, signal) {
+  return signal?.aborted || error?.name === "AbortError" || /aborted|cancelled|остановлена/i.test(String(error?.message || ""));
 }
 
 function createScanStats() {
@@ -320,6 +341,15 @@ function indexedRelativePathForFile(source, filePath) {
   return indexedRelativePath(source, filePath, indexRootForFile(source, filePath));
 }
 
+function currentFileProgress(source, filePath, extra = {}) {
+  return {
+    currentFileTitle: path.basename(filePath),
+    currentFileRelativePath: indexedRelativePathForFile(source, filePath),
+    currentFileExtension: path.extname(filePath).toLowerCase() || "",
+    ...extra
+  };
+}
+
 function googleContextLinksForSource(source) {
   return publicContextLinks(source);
 }
@@ -402,6 +432,15 @@ async function clearSourceMarkdownCache(sourceId) {
   await fs.rm(cacheTarget, { recursive: true, force: true });
 }
 
+async function removeMarkdownCacheFile(cacheFile) {
+  if (!cacheFile) return;
+  const cacheRoot = path.resolve(markdownCacheDir());
+  const cacheTarget = path.resolve(String(cacheFile || ""));
+  const relative = path.relative(cacheRoot, cacheTarget);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return;
+  await fs.rm(cacheTarget, { force: true }).catch(() => {});
+}
+
 function countMatches(text, pattern) {
   return String(text || "").match(pattern)?.length || 0;
 }
@@ -442,13 +481,14 @@ function inferRecognition(filePath, markdown, existing = null) {
 
 function verifyIndexedMarkdown(markdown, chunks, recognition = {}) {
   const text = String(markdown || "").trim();
+  const textQuality = textQualityReport(text);
   const chars = text.length;
   const letters = countMatches(text, /\p{L}/gu);
   const words = countMatches(text, /[\p{L}\p{N}]{2,}/gu);
   const replacementChars = countMatches(text, /\uFFFD/g);
   const letterRatio = chars ? letters / chars : 0;
   const replacementRatio = chars ? replacementChars / chars : 0;
-  const warnings = [];
+  const warnings = [...textQuality.warnings];
 
   if (!chunks.length) warnings.push("no_chunks");
   if (chars < 120) warnings.push("too_little_text");
@@ -465,33 +505,68 @@ function verifyIndexedMarkdown(markdown, chunks, recognition = {}) {
   if (Array.isArray(recognition.ocrEmptyPages) && recognition.ocrEmptyPages.length) {
     warnings.push("empty_ocr_pages");
   }
+  if (Array.isArray(recognition.ocrRejectedPages) && recognition.ocrRejectedPages.length) {
+    warnings.push("ocr_rejected_pages");
+  }
+  if (Number(recognition.ocrAcceptedPages) === 0 && Number(recognition.ocrRawRecognizedPages) > 0) {
+    warnings.push("no_usable_ocr_pages");
+  }
   if (recognition.selectedPdfText === "text-layer" && recognition.textLayerQuality?.warnings?.includes("encoding_noise")) {
+    warnings.push("pdf_text_layer_noise");
+  }
+  if (recognition.selectedPdfText === "text-layer" && recognition.textLayerQuality?.warnings?.includes("ocr_text_noise")) {
     warnings.push("pdf_text_layer_noise");
   }
   if (recognition.method === "pdf-empty") warnings.push("empty_pdf_text");
 
-  const status = !chunks.length || chars < 80 ? "error" : warnings.length ? "warning" : "ok";
+  const uniqueWarnings = [...new Set(warnings)];
+  const hasSevereRecognitionNoise = uniqueWarnings.includes("ocr_text_noise") || uniqueWarnings.includes("pdf_text_layer_noise");
+  const status = !chunks.length || chars < 80 || hasSevereRecognitionNoise ? "error" : uniqueWarnings.length ? "warning" : "ok";
   let score = 100;
-  if (warnings.includes("ocr_limited")) score -= 15;
-  if (warnings.includes("low_ocr_confidence")) score -= 25;
-  if (warnings.includes("low_ocr_page_confidence")) score -= 15;
-  if (warnings.includes("empty_ocr_pages")) score -= 10;
-  if (warnings.includes("pdf_text_layer_noise")) score -= 20;
-  if (warnings.includes("low_text_density")) score -= 20;
-  if (warnings.includes("encoding_noise")) score -= 25;
-  if (warnings.includes("too_little_text")) score -= 30;
-  if (warnings.includes("too_few_words")) score -= 20;
-  if (warnings.includes("no_chunks")) score = 0;
+  if (uniqueWarnings.includes("ocr_limited")) score -= 15;
+  if (uniqueWarnings.includes("low_ocr_confidence")) score -= 25;
+  if (uniqueWarnings.includes("low_ocr_page_confidence")) score -= 15;
+  if (uniqueWarnings.includes("empty_ocr_pages")) score -= 10;
+  if (uniqueWarnings.includes("ocr_rejected_pages")) score -= 15;
+  if (uniqueWarnings.includes("no_usable_ocr_pages")) score -= 35;
+  if (uniqueWarnings.includes("pdf_text_layer_noise")) score -= 20;
+  if (uniqueWarnings.includes("ocr_text_noise")) score -= 35;
+  if (uniqueWarnings.includes("low_text_density")) score -= 20;
+  if (uniqueWarnings.includes("encoding_noise")) score -= 25;
+  if (uniqueWarnings.includes("too_little_text")) score -= 30;
+  if (uniqueWarnings.includes("too_few_words")) score -= 20;
+  if (uniqueWarnings.includes("no_chunks")) score = 0;
 
   return {
     status,
     score: Math.max(0, Math.min(100, score)),
-    warnings,
+    warnings: uniqueWarnings,
     chars,
     words,
     chunks: chunks.length,
     letterRatio: Number(letterRatio.toFixed(3)),
+    noiseRatio: textQuality.noiseRatio,
+    noisyTokens: textQuality.noisyTokens,
     checkedAt: new Date().toISOString()
+  };
+}
+
+export function shouldSuppressChunksForQuality(quality = {}) {
+  const warnings = new Set(Array.isArray(quality.warnings) ? quality.warnings : []);
+  return warnings.has("ocr_text_noise") || warnings.has("pdf_text_layer_noise") || warnings.has("no_usable_ocr_pages");
+}
+
+function suppressChunksForQuality(chunks, quality) {
+  if (!chunks.length || !shouldSuppressChunksForQuality(quality)) return { chunks, quality };
+  return {
+    chunks: [],
+    quality: {
+      ...quality,
+      status: "error",
+      chunks: 0,
+      skippedChunks: chunks.length,
+      warnings: [...new Set([...(quality.warnings || []), "chunks_skipped_for_quality"])]
+    }
   };
 }
 
@@ -500,8 +575,11 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
   const roots = indexRootsForSource(source);
   if (!roots.length) throw new Error("source path is required");
   const force = Boolean(options.force);
+  const signal = options.signal || null;
+  throwIfAborted(signal);
   for (const root of roots) {
     await fs.access(root);
+    throwIfAborted(signal);
   }
 
   const manifest = await readManifest();
@@ -517,11 +595,13 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
 
   if (force) {
     onProgress({ phase: "cleanup", message: "Очистка кэша индекса" });
+    throwIfAborted(signal);
     await clearSourceMarkdownCache(source.id);
   }
 
   for (const root of roots) {
     for await (const filePath of walk(root, scanStats, source)) {
+      throwIfAborted(signal);
       const classification = classifyFile(filePath, source, scanStats, root);
       if (classification.eligible) {
         files.push(filePath);
@@ -547,15 +627,19 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
   let cached = 0;
   let failed = 0;
   const errors = [];
+  const reindexSettings = reindexOrchestratorSettings();
+  const reindex = createReindexStats();
 
   async function persistPartialManifest() {
     await writeManifest(manifest);
   }
 
   for (const filePath of files) {
+    throwIfAborted(signal);
     const fileId = stableFileId(source.id, filePath);
     seenFileIds.add(fileId);
     processed += 1;
+    const fileProgress = currentFileProgress(source, filePath);
 
     try {
       const stat = await fs.stat(filePath);
@@ -595,6 +679,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
           cached,
           failed,
           googleContextLinks: googleContextLinks.length,
+          ...fileProgress,
           ...scanStats
         });
         const converted = await convertToMarkdownWithReport(filePath, {
@@ -605,9 +690,11 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
             cached,
             failed,
             googleContextLinks: googleContextLinks.length,
+            ...fileProgress,
             ...scanStats
           })
         });
+        throwIfAborted(signal);
         markdown = converted.markdown;
         recognition = inferRecognition(filePath, markdown, converted.recognition);
         await fs.mkdir(path.dirname(cacheFile), { recursive: true });
@@ -625,15 +712,118 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
         };
       }
 
-      const relativePath = indexedRelativePathForFile(source, filePath);
-      const tenderRecognition = recognizeTenderDocument({ source, filePath, relativePath, markdown });
-      const chunks = chunkMarkdown(
+      let relativePath = indexedRelativePathForFile(source, filePath);
+      let tenderRecognition = recognizeTenderDocument({ source, filePath, relativePath, markdown });
+      let chunks = chunkMarkdown(
         markdown,
         1800,
         220,
         baseChunkMetadata(filePath, recognition, tenderChunkMetadata(tenderRecognition))
       );
-      const quality = verifyIndexedMarkdown(markdown, chunks, recognition);
+      let quality = verifyIndexedMarkdown(markdown, chunks, recognition);
+      ({ chunks, quality } = suppressChunksForQuality(chunks, quality));
+      let reindexReport = null;
+      const decision = qualityReindexDecision({
+        quality,
+        fromCache: Boolean(unchanged),
+        attempt: 0,
+        settings: reindexSettings
+      });
+
+      if (decision.queued) {
+        reindex.queued += 1;
+        const initialQuality = quality;
+        const startedAt = new Date();
+        try {
+          await removeMarkdownCacheFile(cacheFile);
+          await removeMarkdownCacheFile(sourceCacheFile);
+          onProgress({
+            phase: "reindex",
+            message: `Reindex: ${path.basename(filePath)}`,
+            processed,
+            total: totalItems,
+            cached,
+            failed,
+            reindexQueued: reindex.queued,
+            reindexRetried: reindex.retried,
+            reindexResolved: reindex.resolved,
+            reindexUnresolved: reindex.unresolved,
+            reindexFailed: reindex.failed,
+            googleContextLinks: googleContextLinks.length,
+            ...fileProgress,
+            ...scanStats
+          });
+          const converted = await convertToMarkdownWithReport(filePath, {
+            refreshRecognitionCache: true,
+            onProgress: (progress) => onProgress({
+              ...progress,
+              processed,
+              total: totalItems,
+              cached,
+              failed,
+              reindexQueued: reindex.queued,
+              reindexRetried: reindex.retried,
+              reindexResolved: reindex.resolved,
+              reindexUnresolved: reindex.unresolved,
+              reindexFailed: reindex.failed,
+              googleContextLinks: googleContextLinks.length,
+              ...fileProgress,
+              ...scanStats
+            })
+          });
+          throwIfAborted(signal);
+          markdown = converted.markdown;
+          recognition = inferRecognition(filePath, markdown, converted.recognition);
+          await fs.mkdir(path.dirname(cacheFile), { recursive: true });
+          await fs.writeFile(cacheFile, `${frontMatter(source, filePath, stat)}${markdown}\n`, "utf8");
+          manifestEntry = {
+            fileId,
+            sourceId: source.id,
+            sourceTitle: source.title,
+            path: filePath,
+            cacheFile,
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            indexedAt: new Date().toISOString()
+          };
+
+          relativePath = indexedRelativePathForFile(source, filePath);
+          tenderRecognition = recognizeTenderDocument({ source, filePath, relativePath, markdown });
+          chunks = chunkMarkdown(
+            markdown,
+            1800,
+            220,
+            baseChunkMetadata(filePath, recognition, tenderChunkMetadata(tenderRecognition))
+          );
+          quality = verifyIndexedMarkdown(markdown, chunks, recognition);
+          ({ chunks, quality } = suppressChunksForQuality(chunks, quality));
+          reindexReport = createReindexReport({
+            decision,
+            initialQuality,
+            finalQuality: quality,
+            fromCache: Boolean(unchanged),
+            startedAt,
+            finishedAt: new Date(),
+            settings: reindexSettings
+          });
+          if (unchanged) cached = Math.max(0, cached - 1);
+        } catch (retryError) {
+          if (isAbortError(retryError, signal)) throw retryError;
+          reindexReport = createReindexReport({
+            decision,
+            initialQuality,
+            finalQuality: initialQuality,
+            fromCache: Boolean(unchanged),
+            error: retryError.message,
+            startedAt,
+            finishedAt: new Date(),
+            settings: reindexSettings
+          });
+          errors.push({ path: filePath, message: `Quality reindex failed: ${retryError.message}` });
+        }
+        updateReindexStats(reindex, reindexReport);
+      }
+
       manifest.files[fileId] = {
         ...manifestEntry,
         fileId,
@@ -646,7 +836,8 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
         size: stat.size,
         recognition,
         tenderRecognition,
-        quality
+        quality,
+        ...(reindexReport ? { reindex: reindexReport } : {})
       };
       chunks.forEach((chunk, chunkIndex) => {
         const chunkRecord = normalizeChunkRecord(chunk);
@@ -656,6 +847,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
           sourceId: source.id,
           sourceTitle: source.title,
           path: filePath,
+          relativePath,
           title: path.basename(filePath),
           chunkIndex,
           ...chunkRecord.metadata,
@@ -666,6 +858,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
       });
       await persistPartialManifest();
     } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       failed += 1;
       errors.push({ path: filePath, message: error.message });
     }
@@ -678,20 +871,33 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
       cached,
       skipped: cached,
       failed,
+      reindexQueued: reindex.queued,
+      reindexRetried: reindex.retried,
+      reindexResolved: reindex.resolved,
+      reindexUnresolved: reindex.unresolved,
+      reindexFailed: reindex.failed,
       googleContextLinks: googleContextLinks.length,
+      ...fileProgress,
       ...scanStats
     });
   }
 
   for (const link of googleContextLinks) {
+    throwIfAborted(signal);
     const fileId = stableGoogleContextFileId(source.id, link);
     seenFileIds.add(fileId);
     processed += 1;
 
     const initialTitle = link.title || "Google context";
     let filePath = googleContextVirtualPath(link, ".google");
+    let currentGoogleTitle = initialTitle;
     const cacheFile = googleContextCacheFile(source.id, fileId);
     const indexedAt = new Date();
+    const googleFileProgress = () => ({
+      currentFileTitle: currentGoogleTitle || path.basename(filePath),
+      currentFileRelativePath: filePath,
+      currentFileExtension: path.extname(filePath).toLowerCase() || ".google"
+    });
 
     try {
       onProgress({
@@ -704,6 +910,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
         currentGoogleContextLinkId: link.id || "",
         currentGoogleContextTitle: initialTitle,
         googleContextLinks: googleContextLinks.length,
+        ...googleFileProgress(),
         ...scanStats
       });
 
@@ -714,6 +921,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
           googleAuthCanFetch() && !options.googleContextFetch ? googleAuthFetch : null
         )
       });
+      throwIfAborted(signal);
 
       if (!fetched.ok) {
         failed += 1;
@@ -762,6 +970,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
       }
 
       const linkWithTitle = { ...link, title: fetched.title || initialTitle };
+      currentGoogleTitle = linkWithTitle.title || initialTitle;
       filePath = googleContextVirtualPath(linkWithTitle, fetched.extension || ".google");
       const markdown = fetched.markdown;
       const stat = googleContextStat(markdown, indexedAt);
@@ -785,8 +994,9 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
         origin: "google-context",
         contextLinkId: link.id || ""
       };
-      const chunks = chunkMarkdown(markdown, 1800, 220, baseMetadata);
-      const quality = verifyIndexedMarkdown(markdown, chunks, recognition);
+      let chunks = chunkMarkdown(markdown, 1800, 220, baseMetadata);
+      let quality = verifyIndexedMarkdown(markdown, chunks, recognition);
+      ({ chunks, quality } = suppressChunksForQuality(chunks, quality));
       manifest.files[fileId] = googleContextManifestEntry({
         source,
         link: linkWithTitle,
@@ -807,6 +1017,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
           sourceId: source.id,
           sourceTitle: source.title,
           path: filePath,
+          relativePath: filePath,
           title: linkWithTitle.title || path.basename(filePath),
           chunkIndex,
           origin: "google-context",
@@ -819,6 +1030,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
       });
       await persistPartialManifest();
     } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       failed += 1;
       const reason = "google_context_fetch_failed";
       const failureMarkdown = normalizeText(`# ${initialTitle}\n\nGoogle context link was not indexed: ${reason}.`);
@@ -878,7 +1090,13 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
       failed,
       currentGoogleContextLinkId: "",
       currentGoogleContextTitle: "",
+      reindexQueued: reindex.queued,
+      reindexRetried: reindex.retried,
+      reindexResolved: reindex.resolved,
+      reindexUnresolved: reindex.unresolved,
+      reindexFailed: reindex.failed,
       googleContextLinks: googleContextLinks.length,
+      ...googleFileProgress(),
       ...scanStats
     });
   }
@@ -898,12 +1116,18 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
   const vectorResult = await ensureChunkEmbeddings({
     sourceId: source.id,
     chunks: sourceChunks,
+    signal,
     onProgress: (progress) => onProgress({
       ...progress,
       processed,
       total: totalItems,
       cached,
       failed,
+      reindexQueued: reindex.queued,
+      reindexRetried: reindex.retried,
+      reindexResolved: reindex.resolved,
+      reindexUnresolved: reindex.unresolved,
+      reindexFailed: reindex.failed,
       googleContextLinks: googleContextLinks.length,
       ...scanStats
     })
@@ -920,6 +1144,12 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
     cached,
     skipped: cached,
     failed,
+    reindexQueued: reindex.queued,
+    reindexRetried: reindex.retried,
+    reindexResolved: reindex.resolved,
+    reindexUnresolved: reindex.unresolved,
+    reindexFailed: reindex.failed,
+    reindexRecoveredErrors: reindex.recoveredErrors,
     errors,
     skippedFiles,
     googleContextLinks: googleContextLinks.length,
@@ -930,14 +1160,17 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
 }
 
 export async function indexSource(source, onProgress = () => {}, options = {}) {
+  const signal = options.signal || null;
+  throwIfAborted(signal);
   const release = await acquireIndexLock(() => {
     onProgress({
       phase: "queued",
       message: "Ожидание другой индексации"
     });
-  });
+  }, { signal });
 
   try {
+    throwIfAborted(signal);
     return await indexSourceUnlocked(source, onProgress, options);
   } finally {
     await release();

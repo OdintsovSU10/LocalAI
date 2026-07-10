@@ -83,6 +83,18 @@ test("API security allows only Google OAuth callback without Bearer", () => {
   assert.equal(start.statusCode, 401);
 });
 
+test("API security lets the Dify adapter endpoint use its own Bearer token", () => {
+  const result = runMiddleware({ authToken: "rag-token", requireAuth: true }, {
+    authorization: "Bearer dify-adapter-token"
+  }, {
+    method: "POST",
+    path: "/dify/retrieval"
+  });
+
+  assert.equal(result.nextCalled, true);
+  assert.equal(result.statusCode, 200);
+});
+
 test("API security rejects dangerous browser origins", () => {
   const blocked = runMiddleware({ authToken: "secret", requireAuth: true }, {
     origin: "https://evil.example",

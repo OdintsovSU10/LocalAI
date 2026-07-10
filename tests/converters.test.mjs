@@ -40,6 +40,17 @@ test("textQualityReport accepts dense readable text", () => {
   assert.equal(strong.words >= 10, true);
 });
 
+test("textQualityReport flags OCR-like confusable text", () => {
+  const noisy = textQualityReport(
+    "pa60ma pa3pa6oTaHHO HaCTpoeHHO coBMeCTHO npoBepKa o6si 3aKa3a HaCTpouKa",
+    { minChars: 40, minWords: 5 }
+  );
+
+  assert.equal(noisy.warnings.includes("ocr_text_noise"), true);
+  assert.equal(noisy.noisyTokens >= 3, true);
+  assert.equal(noisy.score < 100, true);
+});
+
 test("convertToMarkdownWithReport reads legacy xls commercial proposal sheets", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "localai-xls-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

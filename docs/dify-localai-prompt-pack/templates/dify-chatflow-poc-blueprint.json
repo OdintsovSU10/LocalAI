@@ -1,0 +1,75 @@
+{
+  "name": "LOCAL_RAG optional Dify POC",
+  "purpose": "Use Dify as a workflow canvas over LOCAL_RAG retrieval, not as a second RAG core.",
+  "not_importable": true,
+  "variables": [
+    "user_question",
+    "selected_project",
+    "chat_history_summary",
+    "knowledge_id",
+    "sourceId",
+    "privacy_remote_context_allowed",
+    "LOCALAI_DIFY_EXTERNAL_KNOWLEDGE_ENDPOINT",
+    "LOCALAI_DIFY_RETRIEVAL_URL",
+    "LOCALAI_DIFY_ADAPTER_TOKEN"
+  ],
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "inputs": ["user_question", "selected_project", "chat_history_summary"]
+    },
+    {
+      "id": "privacy_router",
+      "type": "llm_json",
+      "prompt_file": "prompts/05-privacy-router.md",
+      "must_return_json": true,
+      "blocks": ["direct_filesystem_access", "secret_echo", "remote_context_without_localai_allow"]
+    },
+    {
+      "id": "query_rewriter",
+      "type": "llm_json",
+      "prompt_file": "prompts/02-query-rewriter.md",
+      "must_return_json": true
+    },
+    {
+      "id": "localai_retrieval",
+      "type": "external_knowledge_or_http_tool",
+      "external_knowledge_endpoint": "{{LOCALAI_DIFY_EXTERNAL_KNOWLEDGE_ENDPOINT}}",
+      "http_tool_url": "{{LOCALAI_DIFY_RETRIEVAL_URL}}",
+      "auth": "Bearer {{LOCALAI_DIFY_ADAPTER_TOKEN}}",
+      "request_template": "templates/dify-external-knowledge-request.json"
+    },
+    {
+      "id": "result_normalizer",
+      "type": "llm_json",
+      "prompt_file": "prompts/03-retrieval-result-normalizer.md",
+      "must_return_json": true
+    },
+    {
+      "id": "human_gate",
+      "type": "conditional",
+      "condition": "privacy_router.requiresUserConfirmation == true or result_normalizer.hasEvidence == false",
+      "true_route": "no_evidence_or_confirmation",
+      "false_route": "answer_synthesizer"
+    },
+    {
+      "id": "answer_synthesizer",
+      "type": "llm",
+      "prompt_file": "prompts/04-answer-synthesizer.md",
+      "requires_citations": true
+    },
+    {
+      "id": "no_evidence_or_confirmation",
+      "type": "llm",
+      "prompt_file": "prompts/07-no-evidence-refusal.md"
+    }
+  ],
+  "acceptance": [
+    "Dify never indexes LOCAL_RAG documents.",
+    "Dify never reads data/, .env, config/settings.json or config/sources.yaml directly.",
+    "Every document claim in the final answer has a [n] citation from retrieval metadata.",
+    "Empty evidence routes to no-evidence refusal.",
+    "Remote context remains false unless LOCAL_RAG privacy metadata explicitly allows it."
+  ]
+}

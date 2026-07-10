@@ -1,11 +1,10 @@
 import { api, apiErrorMessage, apiStream } from "./modules/api-client.js";
-import { citedSourceNumbers, citationEvidenceForNumber, compactSources, fileName, uniqueSources } from "./modules/citation-helpers.js";
+import { citedSourceNumbers, citationEvidenceForNumber, compactSources, displayedSourcesForAnswer, fileName, uniqueSources } from "./modules/citation-helpers.js";
 import {
   compactRagDebug,
   folderName,
   formatFileSize,
   formatGenerationStats,
-  formatHistoryTime,
   formatLatency,
   formatMs,
   formatResponseMeta,
@@ -25,6 +24,8 @@ const state = {
   sources: [],
   selectedSourceId: "",
   settingsSourceId: "",
+  sourceTitleEditing: false,
+  sourceTitleEditSourceId: "",
   addingSource: false,
   skippedSourceId: "",
   selectedSourcePath: "",
@@ -33,6 +34,7 @@ const state = {
   selectedSourceIds: new Set(),
   deletingSourceIds: new Set(),
   storagePath: "",
+  storageEnvLocked: false,
   llm: {},
   embeddings: {},
   vectorStore: {},
@@ -41,6 +43,13 @@ const state = {
   rerankerProcessStatus: null,
   qdrantProcessStatus: null,
   integrationsStatus: null,
+  difyStatus: null,
+  indexOverview: null,
+  audit: {
+    loading: false,
+    updatedAt: 0,
+    error: ""
+  },
   llmUsage: null,
   localLmStatus: null,
   remoteLmStatus: null,
@@ -63,6 +72,7 @@ const state = {
   skipped: null,
   skippedLoading: false,
   chatSessions: [],
+  chatHistoryMode: "active",
   activeChatId: "",
   chatRequest: {
     controller: null,
@@ -81,7 +91,13 @@ const state = {
   indexPollJobId: "",
   indexPollTimer: null,
   indexProgressHideTimer: null,
+  indexStopRequested: false,
   previewRequestId: 0,
+  tenderSync: {
+    summary: null,
+    selectedTenderLinks: new Map(),
+    excludedAutoLinks: new Map()
+  },
   folderPicker: {
     currentPath: "",
     parentPath: "",
@@ -91,12 +107,13 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 let indexedFileContextMenu = null;
+let sourceViewerPreviousFocus = null;
 const CHAT_HISTORY_KEY = "local-rag-chat-history-v1";
 const ACTIVE_CHAT_KEY = "local-rag-active-chat-v1";
 const REMOTE_LM_DEFAULT_BASE_URL = "https://example-lm-studio/v1";
 const REMOTE_LM_DEFAULT_MODEL = "qwen3.6-27b-mtp";
 const REMOTE_AUTO_TIMEOUT_SECONDS = 300;
-const SETTINGS_TABS = new Set(["sources", "llm", "indexes"]);
+const SETTINGS_TABS = new Set(["general", "sources", "llm", "indexes", "audit"]);
 const LLM_EDITABLE_CONTROL_IDS = [
   "llm-enabled",
   "llm-provider",
@@ -204,6 +221,155 @@ function setText(selector, value) {
   if (element) element.textContent = value;
 }
 
+const INDEX_STATUS_TONES = ["ready", "running", "warning", "error", "empty", "checking"];
+
+function setIndexStatusBarTone(target, tone = "checking") {
+  const bar = typeof target === "string" ? $(target) : target;
+  if (!bar) return;
+  bar.classList.remove(...INDEX_STATUS_TONES.map((item) => `is-${item}`));
+  bar.classList.add(`is-${INDEX_STATUS_TONES.includes(tone) ? tone : "checking"}`);
+}
+
+function indexStatusTone(status = {}) {
+  const health = indexHealthStatus(status);
+  if (health === "stale") return "warning";
+  if (health === "interrupted") return "error";
+  if (status.status === "running") return "running";
+  if (status.status === "failed") return "error";
+  if (status.status === "cancelled") return "warning";
+  if (sourceHasReadyIndex(status)) return "ready";
+  return "empty";
+}
+
+function formatCount(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number.toLocaleString("ru-RU") : "0";
+}
+
+function setIndexOverviewStatus(status, text, title = text) {
+  const box = $("#settings-index-overview");
+  if (!box) return;
+  if (!box.classList.contains("has-progress") || status === "running") {
+    setIndexStatusBarTone(box, status || "checking");
+  }
+  setText("#settings-index-overview-text", text);
+  box.title = title || text;
+}
+
+function qdrantOverviewLabel(qdrant = {}) {
+  if (!qdrant.enabled) return "Qdrant: выключен";
+  if (!qdrant.available) return qdrant.error ? `Qdrant: недоступен` : "Qdrant: нет связи";
+  const points = qdrant.points === null || qdrant.points === undefined
+    ? "точек нет данных"
+    : `${formatCount(qdrant.points)} точек`;
+  return `Qdrant: ${points}`;
+}
+
+function renderIndexOverviewStatus(payload = state.indexOverview) {
+  if (!$("#settings-index-overview")) return;
+  if (!payload) {
+    setIndexOverviewStatus("checking", "Распознавание: загрузка...");
+    return;
+  }
+
+  const files = payload.files || {};
+  const qdrant = payload.qdrant || {};
+  const running = payload.running || {};
+  const issues = payload.issues || {};
+  const recognized = Number(files.recognized || 0);
+  const total = Number(files.total || 0);
+  const indexed = Number(files.indexed || 0);
+  const chunks = Number(files.chunks || 0);
+  const failed = Number(files.failed || 0);
+  const skipped = Number(files.skipped || 0);
+  const denominator = total || indexed;
+  const percent = denominator ? Math.round((recognized / denominator) * 100) : 0;
+  const parts = [
+    `Распознано ${formatCount(recognized)}/${formatCount(denominator)}`,
+    denominator ? `${percent}%` : "",
+    indexed && indexed !== recognized ? `в индексе ${formatCount(indexed)}` : "",
+    chunks ? `${formatCount(chunks)} фрагм.` : "",
+    qdrantOverviewLabel(qdrant)
+  ].filter(Boolean);
+
+  if (running.jobs) {
+    const runningProgress = running.total
+      ? `${formatCount(running.processed)}/${formatCount(running.total)}`
+      : `${formatCount(running.jobs)} job`;
+    parts.push(`идёт: ${runningProgress}`);
+  }
+  if (failed) parts.push(`ошибки ${formatCount(failed)}`);
+  if (skipped) parts.push(`пропущено ${formatCount(skipped)}`);
+
+  if (running.stale) parts.push(`\u043d\u0435\u0442 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0439 ${formatCount(running.stale)}`);
+  if (issues.interruptedJobs) parts.push(`\u043f\u0440\u0435\u0440\u0432\u0430\u043d\u043e ${formatCount(issues.interruptedJobs)}`);
+
+  const titleParts = [
+    `Распознано файлов: ${formatCount(recognized)} из ${formatCount(denominator)}`,
+    `Индексированных файлов: ${formatCount(indexed)}`,
+    `Фрагментов: ${formatCount(chunks)}`,
+    qdrantOverviewLabel(qdrant),
+    running.lastProgressAt ? `\u041f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0439 \u043f\u0440\u043e\u0433\u0440\u0435\u0441\u0441: ${shortDateTime(running.lastProgressAt)}` : "",
+    running.stale ? `\u0417\u0430\u0434\u0430\u0447 \u0431\u0435\u0437 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0439: ${formatCount(running.stale)}` : "",
+    issues.interruptedJobs ? `\u041f\u0440\u0435\u0440\u0432\u0430\u043d\u043d\u044b\u0445 \u0437\u0430\u0434\u0430\u0447: ${formatCount(issues.interruptedJobs)}` : "",
+    qdrant.collection ? `Коллекция: ${qdrant.collection}` : "",
+    qdrant.error ? `Ошибка Qdrant: ${qdrant.error}` : "",
+    files.unknownSources ? `Источников без известного общего числа файлов: ${formatCount(files.unknownSources)}` : ""
+  ].filter(Boolean);
+
+  let status = payload.status || "empty";
+  if (running.jobs) status = running.stale ? "warning" : "running";
+  if (qdrant.enabled && !qdrant.available) status = status === "empty" ? "error" : "warning";
+  if (failed && status === "ready") status = "warning";
+  if (issues.interruptedJobs && status === "empty") status = "warning";
+  setIndexOverviewStatus(status, parts.join(" · "), titleParts.join(" · "));
+}
+
+async function refreshIndexOverviewStatus(options = {}) {
+  if (!$("#settings-index-overview")) return;
+  if (!options.silent) setIndexOverviewStatus("checking", "Распознавание: обновление...");
+  try {
+    const payload = await api("/api/index/status");
+    state.indexOverview = payload;
+    renderIndexOverviewStatus(payload);
+    renderAuditPanel();
+  } catch (error) {
+    state.indexOverview = null;
+    setIndexOverviewStatus("error", apiErrorMessage(error, "Не удалось получить сводку распознавания"));
+    renderAuditPanel();
+  }
+}
+
+async function refreshAllIndexState() {
+  const button = $("#index-refresh-all");
+  if (button) button.disabled = true;
+  setIndexOverviewStatus("checking", "Обновляю статусы индекса...");
+  setText("#job-status", "Обновляю статусы всех найденных индексов...");
+
+  try {
+    const payload = await api("/api/index/refresh", { method: "POST" });
+    if (Array.isArray(payload.sources)) {
+      state.sources = payload.sources;
+      syncSelectedSourceIdsWithSources();
+      renderSources();
+    } else {
+      await loadSources();
+    }
+    state.indexOverview = payload.overview || null;
+    renderIndexOverviewStatus(state.indexOverview);
+    const settingsSource = selectedSettingsSource();
+    if (settingsSource) loadIndexedFiles(settingsSource.id, { force: true, silent: true });
+    const refreshed = Number(payload.refreshedSources || 0);
+    const skipped = Number(payload.skippedEmpty || 0) + Number(payload.skippedRunning || 0);
+    setText("#job-status", `Статусы обновлены: ${formatCount(refreshed)} источников${skipped ? `, пропущено ${formatCount(skipped)}` : ""}.`);
+  } catch (error) {
+    setIndexOverviewStatus("error", apiErrorMessage(error, "Не удалось обновить статусы индекса"));
+    setText("#job-status", apiErrorMessage(error, "Не удалось обновить статусы индекса"));
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function normalizeAppPath(pathname = window.location.pathname) {
   const path = String(pathname || "/").replace(/\/+$/, "") || "/";
   if (path === "/") return "/chat";
@@ -290,6 +456,13 @@ function syncRemoteContextWarning() {
   if (warning) warning.hidden = !enabled;
 }
 
+function syncLlmRouteCards() {
+  const provider = controlValue("#llm-provider") || state.llm.provider || "local";
+  document.querySelectorAll("[data-llm-route]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.llmRoute === provider));
+  });
+}
+
 function syncLlmSecretPlaceholder() {
   const remote = state.llm.remote || {};
   const tokenInput = $("#remote-llm-token");
@@ -304,6 +477,9 @@ function syncLlmFormLock() {
     const element = document.getElementById(id);
     if (element) element.disabled = locked;
   }
+  document.querySelectorAll("[data-llm-route]").forEach((button) => {
+    button.disabled = locked;
+  });
 
   $("#llm-form")?.classList.toggle("is-locked", locked);
   const editButton = $("#edit-llm-settings");
@@ -412,13 +588,46 @@ function setRerankerEditing(isEditing) {
   }
 }
 
+function clearSourceTitleEditing() {
+  state.sourceTitleEditing = false;
+  state.sourceTitleEditSourceId = "";
+}
+
+function isSourceTitleEditing(source) {
+  return Boolean(source?.id && state.sourceTitleEditing && state.sourceTitleEditSourceId === source.id);
+}
+
+function setSourceTitleEditing(isEditing, sourceId = selectedSettingsSource()?.id || "") {
+  state.sourceTitleEditing = Boolean(isEditing && sourceId);
+  state.sourceTitleEditSourceId = state.sourceTitleEditing ? sourceId : "";
+  renderSources();
+  if (state.sourceTitleEditing) {
+    requestAnimationFrame(() => {
+      const input = document.querySelector(".source-title-edit-input");
+      input?.focus();
+      input?.select();
+    });
+  }
+}
+
 function setSourceViewerOpen(isOpen) {
+  const viewer = $("#source-viewer");
+  const wasOpen = Boolean(viewer && !viewer.hidden);
+  if (isOpen && !wasOpen) {
+    sourceViewerPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
   $(".app").classList.toggle("has-source-viewer", isOpen);
-  $("#source-viewer").hidden = !isOpen;
+  viewer.hidden = !isOpen;
+  if (!isOpen && wasOpen) {
+    const returnTarget = sourceViewerPreviousFocus;
+    sourceViewerPreviousFocus = null;
+    if (returnTarget?.isConnected) requestAnimationFrame(() => returnTarget.focus());
+  }
 }
 
 function resetSourcePreview() {
   state.previewRequestId += 1;
+  document.querySelectorAll(".source-citation.active").forEach((citation) => citation.classList.remove("active"));
   $("#preview-title").textContent = "Источник не выбран";
   $("#source-preview").innerHTML = '<div class="empty">Нажмите на ссылку файла в чате, чтобы открыть фрагмент справа.</div>';
   setSourceViewerOpen(false);
@@ -430,6 +639,11 @@ function sourceTitle(sourceId) {
 
 function sourceById(sourceId) {
   return state.sources.find((source) => source.id === sourceId) || null;
+}
+
+function contractSourceById(sourceId) {
+  const source = sourceById(sourceId);
+  return source && isContractSource(source) ? source : null;
 }
 
 function isContractSource(source) {
@@ -446,6 +660,18 @@ function tenderSourcesForUi() {
 
 function sourceTypeLabel(source) {
   return isContractSource(source) ? "Договор" : "Тендер";
+}
+
+function sourceTypeFromTab(tab = state.sourceListTab) {
+  return tab === "tender" ? "tender" : "contract";
+}
+
+function syncNewSourceFormText() {
+  const label = sourceTypeLabel({ sourceType: sourceTypeFromTab() }).toLowerCase();
+  const title = $("#new-source-panel .panel-title");
+  const submitButton = $("#source-form button[type='submit']");
+  if (title) title.textContent = `\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c ${label} \u0432 \u0442\u0435\u043a\u0443\u0449\u0438\u0439 RAG`;
+  if (submitButton) submitButton.textContent = `\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c ${label} \u0432 RAG`;
 }
 
 function sourceListTabForSource(source) {
@@ -479,6 +705,7 @@ function ensureSettingsSourceVisibleInTab() {
   const visibleSources = sourceListTabSources();
   if (visibleSources.some((source) => source.id === state.settingsSourceId)) return;
   state.settingsSourceId = visibleSources[0]?.id || "";
+  clearSourceTitleEditing();
   state.expandedIndexedFolders = new Set([""]);
 }
 
@@ -486,6 +713,7 @@ function setSourceListTab(tab) {
   const nextTab = tab === "tender" ? "tender" : "contract";
   if (state.sourceListTab === nextTab) return;
   state.sourceListTab = nextTab;
+  clearSourceTitleEditing();
   state.sourceSelectionMode = false;
   state.selectedSourceIds.clear();
   ensureSettingsSourceVisibleInTab();
@@ -531,6 +759,7 @@ function selectedBulkSources() {
 
 function setSourceSelectionMode(enabled) {
   state.sourceSelectionMode = Boolean(enabled);
+  if (state.sourceSelectionMode) clearSourceTitleEditing();
   if (!state.sourceSelectionMode) state.selectedSourceIds.clear();
   renderSources();
 }
@@ -652,11 +881,50 @@ function makeChatTitle(text) {
   return clean ? clean.slice(0, 72) : "Новый чат";
 }
 
+function cleanChatTitle(value = "") {
+  const clean = String(value || "")
+    .replace(/^[\s"'«»`]+|[\s"'«»`.,:;!?]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clean ? clean.slice(0, 72) : "";
+}
+
+function formatFullDateTime(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function historyMonthKey(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "unknown";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function historyMonthLabel(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "Без даты";
+  const now = new Date();
+  const currentMonth = date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+  const label = date.toLocaleString("ru-RU", {
+    month: "long",
+    ...(currentMonth ? {} : { year: "numeric" })
+  });
+  return label.slice(0, 1).toUpperCase() + label.slice(1);
+}
+
 function createChatSession(sourceId = "") {
   const now = new Date().toISOString();
   return {
     id: makeId("chat"),
     title: "Новый чат",
+    titleSource: "",
     sourceId,
     createdAt: now,
     updatedAt: now,
@@ -690,6 +958,23 @@ function saveChatHistory() {
   localStorage.setItem(ACTIVE_CHAT_KEY, state.activeChatId || "");
 }
 
+function visibleChatSessions() {
+  return state.chatSessions
+    .filter((session) => !session.archivedAt)
+    .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+}
+
+function archivedChatSessions() {
+  return state.chatSessions
+    .filter((session) => Boolean(session.archivedAt))
+    .sort((a, b) => new Date(b.archivedAt || b.updatedAt || 0) - new Date(a.archivedAt || a.updatedAt || 0));
+}
+
+function setChatHistoryMode(mode) {
+  state.chatHistoryMode = mode === "archived" ? "archived" : "active";
+  renderChatHistory();
+}
+
 function loadChatHistory() {
   try {
     const parsed = JSON.parse(localStorage.getItem(CHAT_HISTORY_KEY) || "[]");
@@ -699,9 +984,9 @@ function loadChatHistory() {
   }
 
   const activeId = localStorage.getItem(ACTIVE_CHAT_KEY) || "";
-  state.activeChatId = state.chatSessions.some((session) => session.id === activeId)
+  state.activeChatId = state.chatSessions.some((session) => session.id === activeId && !session.archivedAt)
     ? activeId
-    : (state.chatSessions[0]?.id || "");
+    : (visibleChatSessions()[0]?.id || "");
 
   if (!state.activeChatId) {
     const session = createChatSession();
@@ -725,30 +1010,104 @@ function renderChatHistory() {
   if (!list) return;
   list.innerHTML = "";
 
-  const sessions = [...state.chatSessions].sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+  const archived = archivedChatSessions();
+  const showingArchived = state.chatHistoryMode === "archived";
+  const sessions = showingArchived ? archived : visibleChatSessions();
+  const activeFilter = $("#history-filter-active");
+  const archivedFilter = $("#history-filter-archived");
+  if (activeFilter) activeFilter.setAttribute("aria-selected", String(!showingArchived));
+  if (archivedFilter) archivedFilter.setAttribute("aria-selected", String(showingArchived));
+  setText("#history-archive-count", archived.length ? `· ${archived.length}` : "");
   if (!sessions.length) {
-    list.innerHTML = '<div class="empty">Истории пока нет.</div>';
+    list.innerHTML = `<div class="empty">${showingArchived ? "Архив пуст." : "Истории пока нет."}</div>`;
     return;
   }
 
+  let currentMonth = "";
   for (const session of sessions) {
+    const monthKey = historyMonthKey(session.updatedAt || session.createdAt);
+    if (monthKey !== currentMonth) {
+      currentMonth = monthKey;
+      const month = document.createElement("div");
+      month.className = "chat-history-month";
+      month.textContent = historyMonthLabel(session.updatedAt || session.createdAt);
+      list.append(month);
+    }
+
     const item = document.createElement("div");
-    item.className = `chat-history-item ${session.id === state.activeChatId ? "active" : ""}`;
+    item.className = `chat-history-item ${!showingArchived && session.id === state.activeChatId ? "active" : ""}`;
     item.innerHTML = `
-      <button type="button" class="chat-history-select">
+      <button type="button" class="chat-history-select" ${showingArchived ? "disabled" : ""}>
         <span class="chat-history-title"></span>
         <span class="chat-history-meta"></span>
       </button>
-      <button type="button" class="chat-history-delete" title="Удалить чат" aria-label="Удалить чат">
-        <span aria-hidden="true">×</span>
-      </button>
+      <div class="chat-history-actions">
+        <button type="button" class="chat-history-menu-button" title="Действия" aria-label="Действия чата">...</button>
+        <div class="chat-history-menu" role="menu">
+          ${showingArchived
+            ? '<button type="button" class="chat-history-restore" role="menuitem">Вернуть</button>'
+            : '<button type="button" class="chat-history-archive" role="menuitem">В архив</button>'}
+          <button type="button" class="chat-history-delete" role="menuitem">Удалить</button>
+        </div>
+      </div>
     `;
     item.querySelector(".chat-history-title").textContent = session.title || "Новый чат";
-    item.querySelector(".chat-history-meta").textContent = `${sourceTitle(session.sourceId)} · ${formatHistoryTime(session.updatedAt)}`;
-    item.querySelector(".chat-history-select").addEventListener("click", () => setActiveChat(session.id));
+    item.querySelector(".chat-history-meta").textContent = sourceTitle(session.sourceId);
+    if (!showingArchived) {
+      item.querySelector(".chat-history-select").addEventListener("click", () => setActiveChat(session.id));
+      item.querySelector(".chat-history-archive").addEventListener("click", () => archiveChat(session.id));
+    } else {
+      item.querySelector(".chat-history-restore").addEventListener("click", () => restoreChat(session.id));
+    }
     item.querySelector(".chat-history-delete").addEventListener("click", () => deleteChat(session.id));
     list.append(item);
   }
+}
+
+function activateNextVisibleChat() {
+  const nextSession = visibleChatSessions()[0];
+
+  if (nextSession) {
+    state.activeChatId = nextSession.id;
+  } else {
+    const emptySession = createChatSession("");
+    state.chatSessions.unshift(emptySession);
+    state.activeChatId = emptySession.id;
+  }
+
+  const activeSession = activeChat();
+  state.selectedSourceId = activeSession?.sourceId && state.sources.some((source) => source.id === activeSession.sourceId)
+    ? activeSession.sourceId
+    : "";
+  resetSourcePreview();
+  renderSources();
+  renderActiveChat();
+  $("#question").focus();
+}
+
+function archiveChat(chatId) {
+  if (state.chatRequest.controller) return;
+
+  const session = state.chatSessions.find((item) => item.id === chatId);
+  if (!session) return;
+
+  session.archivedAt = new Date().toISOString();
+  if (state.activeChatId === chatId) activateNextVisibleChat();
+
+  saveChatHistory();
+  renderChatHistory();
+}
+
+function restoreChat(chatId) {
+  if (state.chatRequest.controller) return;
+
+  const session = state.chatSessions.find((item) => item.id === chatId);
+  if (!session) return;
+
+  delete session.archivedAt;
+  session.updatedAt = new Date().toISOString();
+  saveChatHistory();
+  renderChatHistory();
 }
 
 function deleteChat(chatId) {
@@ -766,27 +1125,7 @@ function deleteChat(chatId) {
   const wasActive = state.activeChatId === chatId;
   state.chatSessions = state.chatSessions.filter((item) => item.id !== chatId);
 
-  if (wasActive) {
-    const nextSession = [...state.chatSessions]
-      .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0))[0];
-
-    if (nextSession) {
-      state.activeChatId = nextSession.id;
-    } else {
-      const emptySession = createChatSession("");
-      state.chatSessions.unshift(emptySession);
-      state.activeChatId = emptySession.id;
-    }
-
-    const activeSession = activeChat();
-    state.selectedSourceId = activeSession?.sourceId && state.sources.some((source) => source.id === activeSession.sourceId)
-      ? activeSession.sourceId
-      : "";
-    resetSourcePreview();
-    renderSources();
-    renderActiveChat();
-    $("#question").focus();
-  }
+  if (wasActive) activateNextVisibleChat();
 
   saveChatHistory();
   renderChatHistory();
@@ -813,6 +1152,7 @@ function setActiveChat(chatId) {
 function startNewChat() {
   if (state.chatRequest.controller) return;
   if (!$("#settings-page").hidden) closeSettings();
+  state.chatHistoryMode = "active";
   state.selectedSourceId = "";
   resetSourcePreview();
 
@@ -867,6 +1207,7 @@ function addMessageRecord(role, text) {
 
   if (role === "user" && (!session.title || session.title === "Новый чат")) {
     session.title = makeChatTitle(text);
+    session.titleSource = "fallback";
   }
 
   saveChatHistory();
@@ -898,6 +1239,7 @@ function openSettings(tabName = "sources", options = {}) {
   renderSources();
   refreshLmStudioStatus();
   refreshLmUsage();
+  refreshIndexOverviewStatus({ silent: true });
   refreshIntegrationsStatus();
   refreshRerankerProcessStatus({ silent: true });
   refreshQdrantProcessStatus({ silent: true });
@@ -910,6 +1252,7 @@ function closeSettings(options = {}) {
   }
 
   state.addingSource = false;
+  clearSourceTitleEditing();
   $("#settings-page").hidden = true;
   $(".sidebar").hidden = false;
   $(".app").classList.remove("settings-mode");
@@ -936,10 +1279,27 @@ function setSettingsTab(tabName, options = {}) {
     panel.classList.toggle("active", isActive);
     panel.hidden = !isActive;
   });
+  const settingsContent = $(".settings-content");
+  if (settingsContent) settingsContent.scrollTop = 0;
+
+  const auditShortcut = $("#settings-audit-shortcut");
+  if (auditShortcut) {
+    const auditActive = nextTabName === "audit";
+    auditShortcut.classList.toggle("active", auditActive);
+    auditShortcut.setAttribute("aria-pressed", String(auditActive));
+  }
+
+  if (nextTabName !== "sources") clearSourceTitleEditing();
 
   if (nextTabName === "indexes") {
     refreshIntegrationsStatus();
   }
+
+  if (nextTabName === "audit") {
+    refreshAuditStatus({ silent: true });
+  }
+
+  renderSettingsSourceActions();
 }
 
 function serviceButtonFor(service) {
@@ -963,7 +1323,7 @@ function setServiceButtonStatus(service, status = "stopped", details = {}) {
   const indicator = serviceButtonFor(service);
   if (!indicator) return;
 
-  const className = {
+  const className = status === "disabled" && details.running ? "is-warning" : ({
     running: "is-online",
     online: "is-online",
     starting: "is-restarting",
@@ -971,12 +1331,13 @@ function setServiceButtonStatus(service, status = "stopped", details = {}) {
     restarting: "is-restarting",
     stopped: "is-offline",
     offline: "is-offline",
+    disabled: "is-offline",
     error: "is-offline",
     unmanaged: "is-offline"
-  }[status] || "is-offline";
+  }[status] || "is-offline");
 
   const title = details.title || details.error || serviceLabel(service);
-  indicator.classList.remove("is-online", "is-restarting", "is-offline");
+  indicator.classList.remove("is-online", "is-restarting", "is-warning", "is-offline");
   indicator.classList.add(className);
   indicator.dataset.serviceState = status;
   indicator.dataset.manageable = String(details.manageable !== false);
@@ -1049,7 +1410,8 @@ async function restartBackend() {
       loadSources(),
       refreshLmStudioStatus(),
       refreshLmUsage(),
-      refreshIntegrationsStatus()
+      refreshIntegrationsStatus(),
+      refreshDifyStatus({ silent: true })
     ]);
   } catch (error) {
     setBackendStatus("offline");
@@ -1080,10 +1442,124 @@ async function stopBackend() {
     });
     await sleep(900);
     setBackendStatus("offline");
+    return true;
   } catch (error) {
     setBackendStatus("online");
     console.warn(apiErrorMessage(error, "Бэкэнд не остановлен"));
+    return false;
   }
+}
+
+function portalStopService(services = [], name = "") {
+  return services.find((service) => service?.service === name) || null;
+}
+
+function applyPortalStopServiceStatuses(services = []) {
+  const reranker = portalStopService(services, "reranker");
+  if (reranker) {
+    const details = {
+      ...(state.rerankerProcessStatus || {}),
+      running: Boolean(reranker.running),
+      manageable: reranker.manageable !== false,
+      state: reranker.state,
+      error: reranker.reason === "stop_failed" ? "Не удалось остановить reranker" : ""
+    };
+    state.rerankerProcessStatus = details;
+    setRerankerProcessStatus(
+      reranker.reason === "stop_failed" ? "error" : (details.manageable ? (details.running ? "running" : "stopped") : "unmanaged"),
+      details
+    );
+  }
+
+  const qdrant = portalStopService(services, "qdrant");
+  if (qdrant) {
+    const details = {
+      ...(state.qdrantProcessStatus || {}),
+      running: Boolean(qdrant.running),
+      manageable: qdrant.manageable !== false,
+      state: qdrant.state,
+      error: qdrant.reason === "stop_failed" ? "Не удалось остановить Qdrant" : ""
+    };
+    state.qdrantProcessStatus = details;
+    setQdrantProcessStatus(
+      qdrant.reason === "stop_failed" ? "error" : (details.manageable ? (details.running ? "running" : "stopped") : "unmanaged"),
+      details
+    );
+  }
+}
+
+let portalStopPreviousFocus = null;
+
+function syncPortalStopConfirmation() {
+  const input = $("#portal-stop-confirm-input");
+  const confirmButton = $("#portal-stop-confirm");
+  if (!confirmButton) return;
+  confirmButton.disabled = String(input?.value || "").trim().toLocaleUpperCase("ru-RU") !== "СТОП";
+}
+
+function openPortalStopConfirmation() {
+  const modal = $("#portal-stop-modal");
+  const input = $("#portal-stop-confirm-input");
+  if (!modal || !input) return;
+  portalStopPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  input.value = "";
+  modal.hidden = false;
+  syncPortalStopConfirmation();
+  requestAnimationFrame(() => input.focus());
+}
+
+function closePortalStopConfirmation({ restoreFocus = true } = {}) {
+  const modal = $("#portal-stop-modal");
+  if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  if (restoreFocus && portalStopPreviousFocus?.isConnected) portalStopPreviousFocus.focus();
+  portalStopPreviousFocus = null;
+}
+
+async function stopPortal() {
+  closePortalStopConfirmation({ restoreFocus: false });
+  const button = $("#portal-stop-button");
+  if (button) {
+    button.disabled = true;
+    button.classList.add("is-stopping");
+    button.title = "Портал и фоновые сервисы останавливаются";
+    button.setAttribute("aria-label", "Портал и фоновые сервисы останавливаются");
+  }
+  closeServiceActionMenu();
+
+  setBackendStatus("stopping");
+  setRerankerProcessStatus("stopping", state.rerankerProcessStatus || {});
+  setQdrantProcessStatus("stopping", state.qdrantProcessStatus || {});
+
+  let stopped = false;
+  try {
+    const payload = await api("/api/system/portal/stop", {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+    stopped = Boolean(payload?.ok);
+    applyPortalStopServiceStatuses(payload?.services || []);
+    await sleep(900);
+    setBackendStatus("offline");
+  } catch (error) {
+    setBackendStatus("online");
+    console.warn(apiErrorMessage(error, "Портал не остановлен"));
+  }
+
+  if (!button) return;
+
+  if (stopped) {
+    button.classList.remove("is-stopping");
+    button.classList.add("is-stopped");
+    button.title = "Портал и управляемые фоновые сервисы остановлены. Запустите ярлык снова, чтобы открыть.";
+    button.setAttribute("aria-label", "Портал остановлен");
+    return;
+  }
+
+  button.disabled = false;
+  button.classList.remove("is-stopping", "is-stopped");
+  button.title = "Остановить портал и фоновые сервисы";
+  button.setAttribute("aria-label", "Остановить портал и фоновые сервисы");
 }
 
 async function runBackendAction(action) {
@@ -1094,6 +1570,8 @@ async function runBackendAction(action) {
 
 function setRerankerProcessStatus(status = "stopped", details = {}) {
   const modelSuffix = details.model ? ` · ${details.model}` : "";
+  const processChanging = ["starting", "stopping", "restarting"].includes(status);
+  const effectiveStatus = !processChanging && details.enabled === false ? "disabled" : status;
   const states = {
     running: {
       title: `Reranker работает${modelSuffix}`
@@ -1110,6 +1588,11 @@ function setRerankerProcessStatus(status = "stopped", details = {}) {
     stopped: {
       title: "Reranker не запущен"
     },
+    disabled: {
+      title: details.running
+        ? "Reranker выключен в настройках; процесс запущен"
+        : "Reranker выключен в настройках"
+    },
     error: {
       title: details.error || "Reranker недоступен"
     },
@@ -1118,8 +1601,8 @@ function setRerankerProcessStatus(status = "stopped", details = {}) {
     }
   };
 
-  const next = states[status] || states.stopped;
-  setServiceButtonStatus("reranker", status, { ...details, title: next.title });
+  const next = states[effectiveStatus] || states.stopped;
+  setServiceButtonStatus("reranker", effectiveStatus, { ...details, title: next.title });
 }
 
 async function refreshRerankerProcessStatus(options = {}) {
@@ -1127,10 +1610,12 @@ async function refreshRerankerProcessStatus(options = {}) {
   try {
     const payload = await api("/api/system/reranker/status");
     state.rerankerProcessStatus = payload;
-    if (!payload.manageable) {
+    if (payload.enabled === false) {
+      setRerankerProcessStatus("disabled", payload);
+    } else if (!payload.manageable) {
       setRerankerProcessStatus("unmanaged", payload);
     } else {
-      setRerankerProcessStatus(payload.running ? "running" : "stopped", payload);
+      setRerankerProcessStatus(payload.state || (payload.running ? "running" : "stopped"), payload);
     }
     return payload;
   } catch (error) {
@@ -1574,7 +2059,7 @@ function formatQdrantSummaryPart(status = {}) {
   if (status.qdrantAvailable === true || qdrantStepState === "done") {
     return qdrantPoints === null ? "Qdrant: точек нет данных" : `Qdrant ${qdrantPoints}`;
   }
-  if (sourceNeedsQdrantReindex(status)) return "Qdrant ожидает переиндексации";
+  if (sourceNeedsQdrantReindex(status) || sourceNeedsQdrantRefresh(status)) return "Qdrant ожидает переиндексации";
   return "";
 }
 
@@ -1596,21 +2081,69 @@ function shortDateTime(value) {
   });
 }
 
+function indexHealthStatus(status = {}) {
+  const healthStatus = String(status.health?.status || "");
+  if (healthStatus) return healthStatus;
+  if (status.status === "failed" && status.phase === "interrupted") return "interrupted";
+  if (status.status === "running") return "active";
+  return String(status.status || "idle");
+}
+
+function indexHealthNeedsAttention(status = {}) {
+  return ["stale", "interrupted"].includes(indexHealthStatus(status));
+}
+
+function formatDurationShort(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value < 0) return "";
+  if (value < 60_000) return `${Math.max(1, Math.round(value / 1000))} \u0441`;
+  const minutes = Math.max(1, Math.round(value / 60_000));
+  if (minutes < 60) return `${minutes} \u043c\u0438\u043d`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} \u0447 ${rest} \u043c\u0438\u043d` : `${hours} \u0447`;
+}
+
+function indexHealthDetail(status = {}, options = {}) {
+  const health = indexHealthStatus(status);
+  const age = formatDurationShort(status.health?.progressAgeMs);
+  const progress = indexProgressText(status);
+  if (health === "stale") {
+    return [`\u043d\u0435\u0442 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0439${age ? ` ${age}` : ""}`, progress].filter(Boolean).join(" · ");
+  }
+  if (health === "interrupted") return "\u043f\u0440\u043e\u0446\u0435\u0441\u0441 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d";
+  if (status.status === "running") {
+    return [options.activeText || "\u043f\u0440\u043e\u0433\u0440\u0435\u0441\u0441 \u0438\u0434\u0435\u0442", progress].filter(Boolean).join(" · ");
+  }
+  return "";
+}
+
 function formatIndexSummary(status = {}) {
   if (status.status === "running") {
-    const total = status.total || 0;
-    const progress = total ? `${status.processed || 0}/${total}` : "";
-    return `Индексируется${progress ? ` ${progress}` : ""}`;
+    const health = indexHealthStatus(status);
+    const detail = indexHealthDetail(status);
+    if (health === "stale") return `\u0418\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f \u0431\u0435\u0437 \u043f\u0440\u043e\u0433\u0440\u0435\u0441\u0441\u0430: ${detail}`;
+    if (health === "interrupted") return `\u0418\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f \u043f\u0440\u0435\u0440\u0432\u0430\u043d\u0430: ${detail}`;
+    return `\u0418\u043d\u0434\u0435\u043a\u0441\u0438\u0440\u0443\u0435\u0442\u0441\u044f${detail ? ` · ${detail}` : ""}`;
   }
 
   if (status.status === "failed") {
+    if (indexHealthStatus(status) === "interrupted") {
+      return `\u0418\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f \u043f\u0440\u0435\u0440\u0432\u0430\u043d\u0430: ${indexHealthDetail(status)}`;
+    }
     return `Ошибка индексации${status.message ? `: ${status.message}` : ""}`;
+  }
+
+  if (status.status === "cancelled") {
+    return "Индексация остановлена";
   }
 
   if (status.status === "completed") {
     const parts = [`индексировано ${status.indexedFiles || 0}`];
     if (status.chunks) parts.push(`фрагментов ${status.chunks}`);
     if (status.vectorsTotal) parts.push(`векторов ${status.vectorsTotal}`);
+    if (status.reindexRetried) parts.push(`\u043f\u043e\u0432\u0442\u043e\u0440\u043e\u0432 ${status.reindexRetried}`);
+    if (status.reindexUnresolved) parts.push(`\u043d\u0443\u0436\u043d\u0430 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 ${status.reindexUnresolved}`);
     const qdrantPart = formatQdrantSummaryPart(status);
     if (qdrantPart) parts.push(qdrantPart);
     const skipped = skippedTotal(status);
@@ -1625,13 +2158,22 @@ function formatIndexSummary(status = {}) {
 
 function formatToolbarIndexInfo(status = {}) {
   if (status.status === "running") {
-    const total = status.total || 0;
-    const progress = total ? `${status.processed || 0}/${total}` : "";
-    return `Индексируется${progress ? ` ${progress}` : ""}`;
+    const health = indexHealthStatus(status);
+    const detail = indexHealthDetail(status);
+    if (health === "stale") return `\u041d\u0435\u0442 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0439 \u043f\u0440\u043e\u0433\u0440\u0435\u0441\u0441\u0430: ${detail}`;
+    if (health === "interrupted") return `\u0418\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f \u043f\u0440\u0435\u0440\u0432\u0430\u043d\u0430: ${detail}`;
+    return `\u0418\u0434\u0435\u0442 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f${detail ? ` · ${detail}` : ""}`;
   }
 
   if (status.status === "failed") {
+    if (indexHealthStatus(status) === "interrupted") {
+      return `\u0418\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f \u043f\u0440\u0435\u0440\u0432\u0430\u043d\u0430: ${indexHealthDetail(status)}`;
+    }
     return `Ошибка индексации${status.message ? `: ${status.message}` : ""}`;
+  }
+
+  if (status.status === "cancelled") {
+    return "Индексация остановлена";
   }
 
   if (status.status === "completed") {
@@ -1670,9 +2212,16 @@ function sourceNeedsQdrantReindex(status = {}) {
     && sourceQdrantStepState(status) === "pending";
 }
 
+function sourceNeedsQdrantRefresh(status = {}) {
+  const hadQdrantFailure = status.qdrantAvailable === false
+    || Boolean(status.qdrantError)
+    || (status.warning && /qdrant/i.test(String(status.warning)));
+  return sourceHasReadyIndex(status) && qdrantIsReadyForIndexing() && hadQdrantFailure;
+}
+
 function indexActionLabel(status = {}) {
   if (status.status === "running") return "Индексируется";
-  if (sourceNeedsQdrantReindex(status)) return "Переиндексировать в Qdrant";
+  if (sourceNeedsQdrantReindex(status) || sourceNeedsQdrantRefresh(status)) return "Переиндексировать в Qdrant";
   return sourceHasReadyIndex(status) ? "Переиндексировать" : "Индексировать";
 }
 
@@ -1687,6 +2236,7 @@ const INDEX_PIPELINE_STEPS = [
 function indexPipelineStepIndex(status = {}) {
   if (status.status === "completed") return INDEX_PIPELINE_STEPS.length - 1;
   const phase = String(status.phase || "").toLowerCase();
+  if (phase === "reindex") return INDEX_PIPELINE_STEPS.findIndex((step) => step.key === "files");
   const index = INDEX_PIPELINE_STEPS.findIndex((step) => step.phases.includes(phase));
   return index >= 0 ? index : 0;
 }
@@ -1699,6 +2249,7 @@ function indexPipelineProgress(status = {}) {
 
 function sourceQdrantStepState(status = {}) {
   const providerUsed = String(status.vectorProviderUsed || status.vectorStoreProvider || "").toLowerCase();
+  if (sourceNeedsQdrantRefresh(status)) return "warning";
   if (status.qdrantAvailable === false || status.qdrantError) return "error";
   if (status.qdrantAvailable === true) return "done";
   if (providerUsed === "qdrant" && status.status === "completed") return "done";
@@ -1711,6 +2262,9 @@ function indexPipelineStepState(status = {}, stepIndex) {
 
   const activeIndex = indexPipelineStepIndex(status);
   if (status.status === "failed") return stepIndex < activeIndex ? "done" : (stepIndex === activeIndex ? "error" : "pending");
+  if (status.status === "running" && indexHealthStatus(status) === "stale") {
+    return stepIndex < activeIndex ? "done" : (stepIndex === activeIndex ? "warning" : "pending");
+  }
   if (status.status === "running") return stepIndex < activeIndex ? "done" : (stepIndex === activeIndex ? "active" : "pending");
 
   const step = INDEX_PIPELINE_STEPS[stepIndex];
@@ -1723,6 +2277,11 @@ function indexPipelineStepState(status = {}, stepIndex) {
 function indexPipelineStepTitle(status = {}, step, stepState) {
   if (stepState === "done") return `${step.label}: готово`;
   if (stepState === "active") return `${step.label}: выполняется`;
+  if (stepState === "warning") {
+    return step.key === "qdrant"
+      ? `${step.label}: сейчас доступен, нужна переиндексация папки`
+      : `${step.label}: требует внимания`;
+  }
   if (stepState === "error") {
     const vectorStore = state.integrationsStatus?.vectorStore || {};
     const qdrantError = status.qdrantError || status.warning || vectorStore.qdrantError;
@@ -1774,6 +2333,7 @@ function indexPipelineText(status = {}) {
   const steps = ["файлы", "фрагменты", "embeddings"];
   const qdrantStepState = sourceQdrantStepState(status);
   if (qdrantStepState === "done") steps.push("Qdrant");
+  else if (qdrantStepState === "warning") steps.push("локальные векторы, нужна переиндексация в Qdrant");
   else if (qdrantStepState === "error") steps.push("локальные векторы, Qdrant недоступен");
   else if (sourceNeedsQdrantReindex(status)) steps.push("Qdrant после переиндексации");
   else if (sourceHasVectorStoreResult(status) || sourceHasReadyIndex(status)) steps.push("локальные векторы");
@@ -1787,7 +2347,413 @@ function indexPipelineText(status = {}) {
   return `Одна кнопка: ${steps.join(" -> ")}${rerankerText}.`;
 }
 
+function auditPanelVisible() {
+  const panel = $("#settings-panel-audit");
+  return Boolean(panel && !panel.hidden);
+}
+
+function auditToneFromStatus(status = "") {
+  if (["running", "starting", "stopping", "queued"].includes(status)) return "running";
+  if (["completed", "ready", "online", "done"].includes(status)) return "ready";
+  if (["warning", "completed_with_errors", "interrupted", "cancelled"].includes(status)) return "warning";
+  if (["failed", "error", "offline"].includes(status)) return "error";
+  return "idle";
+}
+
+function auditPhaseLabel(phase = "") {
+  return {
+    queued: "очередь",
+    cleanup: "очистка кэша",
+    scan: "сканирование",
+    convert: "конвертация",
+    reindex: "\u043f\u043e\u0432\u0442\u043e\u0440",
+    ocr: "OCR",
+    "google-context": "Google context",
+    index: "фрагменты",
+    embed: "векторизация",
+    vector_store: "запись в Qdrant",
+    done: "готово",
+    manifest: "готовый индекс",
+    interrupted: "прервано",
+    error: "ошибка"
+  }[phase] || phase || "ожидание";
+}
+
+function auditProgressText(status = {}) {
+  if (status.phase === "embed") {
+    const processed = Number(status.vectorsProcessed || 0);
+    const total = Number(status.vectorsTotal || 0);
+    return total ? `векторы ${formatCount(processed)}/${formatCount(total)}` : "векторизация";
+  }
+
+  const processed = Number(status.processed || 0);
+  const total = Number(status.total || status.files || 0);
+  if (total) return `${formatCount(processed)}/${formatCount(total)}`;
+  if (status.totalFiles) return `найдено файлов ${formatCount(status.totalFiles)}`;
+  return "";
+}
+
+function auditFileTitleFromPath(value = "") {
+  const parts = String(value || "").split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) || String(value || "");
+}
+
+function auditFileExtensionFromName(value = "") {
+  const match = String(value || "").match(/(\.[A-Za-z0-9]{1,12})$/);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function auditFileFromMessage(message = "") {
+  const text = String(message || "").trim();
+  if (/loading recognition model/i.test(text)) return null;
+
+  const match = text.match(/^(?:OCR|OCRmyPDF|Docling|Reindex|Конвертация):\s*(.+?)(?:\s+\(\d+\/\d+\))?$/i);
+  if (!match) return null;
+
+  const title = auditFileTitleFromPath(match[1].trim());
+  if (!title || title.includes(": loading ")) return null;
+  return {
+    title,
+    relativePath: match[1].trim(),
+    extension: auditFileExtensionFromName(title)
+  };
+}
+
+function auditCurrentFile(status = {}) {
+  const title = String(status.currentFileTitle || "").trim();
+  const relativePath = String(status.currentFileRelativePath || "").trim();
+  if (title || relativePath) {
+    const fallbackTitle = auditFileTitleFromPath(relativePath);
+    return {
+      title: title || fallbackTitle,
+      relativePath: relativePath || title || fallbackTitle,
+      extension: String(status.currentFileExtension || auditFileExtensionFromName(title || relativePath) || "").toLowerCase()
+    };
+  }
+
+  if (status.currentGoogleContextTitle) {
+    const googleTitle = String(status.currentGoogleContextTitle).trim();
+    return {
+      title: googleTitle,
+      relativePath: googleTitle,
+      extension: ".google"
+    };
+  }
+
+  return auditFileFromMessage(status.message);
+}
+
+function auditMovementDetail(status = {}) {
+  if (indexHealthNeedsAttention(status)) return formatIndexSummary(status);
+  if (status.currentGoogleContextTitle) return `Google context: ${status.currentGoogleContextTitle}`;
+  if (status.phase === "embed" || status.phase === "vector_store") return formatJobStatus(status);
+  if (status.message) return status.message;
+  if (status.status === "completed") return formatIndexSummary(status);
+  if (status.status === "failed") return "Ошибка индексации";
+  if (status.status === "cancelled") return "Индексация остановлена";
+  return "Ожидание";
+}
+
+function auditPipelineDetail(status = {}, file = null) {
+  if (status.phase === "ocr") {
+    const page = Number(status.ocrPage || 0);
+    const total = Number(status.ocrPages || status.ocrTotalPages || 0);
+    if (page && total) return `OCR: страница ${formatCount(page)}/${formatCount(total)}`;
+  }
+
+  if (status.phase === "embed" || status.phase === "vector_store") {
+    return formatJobStatus(status);
+  }
+
+  const detail = auditMovementDetail(status);
+  const progress = auditProgressText(status);
+  const parts = [auditPhaseLabel(status.phase)];
+  if (progress) parts.push(progress);
+  if (detail && (!file?.title || !detail.includes(file.title))) parts.push(detail);
+  return [...new Set(parts.filter(Boolean))].join(" · ");
+}
+
+function auditMovementMeta(source = null, status = {}, file = null, prefix = "") {
+  const sourceTitle = source?.title || status.sourceTitle || prefix || "";
+  const sourcePart = sourceTitle
+    ? [source ? sourceTypeLabel(source) : "", sourceTitle].filter(Boolean).join(": ")
+    : "";
+  const pathPart = file?.relativePath && file.relativePath !== file.title ? file.relativePath : "";
+  const updatedPart = status.updatedAt ? `обновлено ${shortDateTime(status.updatedAt)}` : "";
+  return [sourcePart, pathPart, updatedPart].filter(Boolean).join(" · ");
+}
+
+function auditStatusMeta(status = {}) {
+  const parts = [
+    auditPhaseLabel(status.phase),
+    auditProgressText(status),
+    status.force ? "полная переиндексация" : "",
+    status.updatedAt ? `обновлено ${shortDateTime(status.updatedAt)}` : ""
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function auditItemElement({ label, value, detail = "", tone = "idle", meta = "", pipelineStatus = null } = {}) {
+  const item = document.createElement("article");
+  item.className = `audit-list-item is-${tone}`;
+  if (pipelineStatus) item.classList.add("has-pipeline");
+  item.innerHTML = `
+    <span class="audit-list-dot" aria-hidden="true"></span>
+    <span class="audit-list-main">
+      <span class="audit-list-head">
+        <span class="audit-list-label"></span>
+        <strong class="audit-list-value"></strong>
+      </span>
+      <span class="audit-list-meta"></span>
+      <span class="audit-list-detail"></span>
+    </span>
+  `;
+  item.querySelector(".audit-list-label").textContent = label || "";
+  item.querySelector(".audit-list-value").textContent = value || "";
+  const metaNode = item.querySelector(".audit-list-meta");
+  const detailNode = item.querySelector(".audit-list-detail");
+  metaNode.textContent = meta || "";
+  detailNode.textContent = detail || "";
+  metaNode.hidden = !metaNode.textContent;
+  detailNode.hidden = !detailNode.textContent;
+  if (pipelineStatus) {
+    const pipeline = renderIndexPipeline(pipelineStatus);
+    pipeline.classList.add("audit-pipeline");
+    item.querySelector(".audit-list-main").append(pipeline);
+  }
+  return item;
+}
+
+function auditActiveMovements() {
+  const rows = [];
+  const seenSourceIds = new Set();
+
+  for (const source of state.sources) {
+    const status = source?.indexStatus || {};
+    if (status.status !== "running") continue;
+    seenSourceIds.add(source.id);
+    const file = auditCurrentFile(status);
+    rows.push({
+      label: file?.title || source.title || source.id,
+      value: auditPhaseLabel(status.phase),
+      meta: auditMovementMeta(source, status, file),
+      detail: auditPipelineDetail(status, file),
+      tone: indexHealthStatus(status) === "stale" ? "warning" : "running",
+      pipelineStatus: status
+    });
+  }
+
+  const run = state.agentStatus.latestRun;
+  const current = isAgentRunActive(run) ? currentAgentSourceRun(run) : null;
+  if (current && !seenSourceIds.has(current.sourceId)) {
+    const source = sourceById(current.sourceId);
+    const file = auditCurrentFile(current);
+    rows.push({
+      label: file?.title || current.sourceTitle || current.sourceId || "Агент индексации",
+      value: auditPhaseLabel(current.phase),
+      meta: [agentSourcePosition(run, current), auditMovementMeta(source, current, file, current.sourceTitle)].filter(Boolean).join(" · "),
+      detail: auditPipelineDetail(current, file) || current.message || formatAgentRunStatus(run),
+      tone: "running",
+      pipelineStatus: {
+        status: "running",
+        ...current
+      }
+    });
+  }
+
+  return rows;
+}
+
+function auditRecentMovements(limit = 5) {
+  return state.sources
+    .map((source) => ({ source, status: source?.indexStatus || {} }))
+    .filter(({ status }) => status.status && status.status !== "not_indexed")
+    .sort((left, right) => {
+      const leftTime = new Date(left.status.updatedAt || left.status.finishedAt || left.status.startedAt || 0).getTime();
+      const rightTime = new Date(right.status.updatedAt || right.status.finishedAt || right.status.startedAt || 0).getTime();
+      return rightTime - leftTime;
+    })
+    .slice(0, limit)
+    .map(({ source, status }) => ({
+      label: source.title || source.id,
+      value: status.status === "completed" ? "готово" : auditPhaseLabel(status.phase || status.status),
+      meta: [sourceTypeLabel(source), auditStatusMeta(status)].filter(Boolean).join(" · "),
+      detail: auditMovementDetail(status),
+      tone: auditToneFromStatus(status.status)
+    }));
+}
+
+function auditStatusRows(activeMovements = auditActiveMovements()) {
+  const overview = state.indexOverview || {};
+  const files = overview.files || {};
+  const running = overview.running || {};
+  const vectorStore = state.integrationsStatus?.vectorStore || {};
+  const reranker = state.integrationsStatus?.reranker || {};
+  const latestRun = state.agentStatus.latestRun || null;
+  const remoteContextAllowed = Boolean(state.llm?.remote?.enabled || state.llm?.allowRemoteContext);
+  const provider = state.llm?.provider || "local";
+  const fallback = Boolean(state.llm?.fallbackToLocalOnRemoteError);
+  const recognized = Number(files.recognized || 0);
+  const indexed = Number(files.indexed || 0);
+  const total = Number(files.total || indexed || 0);
+  const chunks = Number(files.chunks || 0);
+  const runningJobs = Number(running.jobs || activeMovements.length || 0);
+  const qdrantEnabled = vectorStore.qdrantEnabled ?? overview.qdrant?.enabled;
+  const qdrantAvailable = vectorStore.qdrantAvailable ?? overview.qdrant?.available;
+  const qdrantPoints = optionalNumber(vectorStore.qdrantPoints) ?? optionalNumber(overview.qdrant?.points);
+  const qdrantUnknown = qdrantEnabled === undefined && qdrantAvailable === undefined;
+
+  const rows = [
+    {
+      label: "Бэкенд",
+      value: state.backendProcessStatus?.running === false ? "недоступен" : "работает",
+      tone: state.backendProcessStatus?.running === false ? "error" : "ready",
+      detail: state.backendProcessStatus?.state || "running"
+    },
+    {
+      label: "Индексация",
+      value: runningJobs ? `идёт: ${formatCount(runningJobs)}` : (indexed ? "нет активных jobs" : "индекс ещё пуст"),
+      tone: runningJobs ? "running" : (indexed ? "ready" : "idle"),
+      detail: total ? `распознано ${formatCount(recognized)}/${formatCount(total)}, фрагментов ${formatCount(chunks)}` : ""
+    },
+    {
+      label: "Агент",
+      value: isAgentRunActive(latestRun) || isAgentStarting(latestRun) ? "работает" : (latestRun?.status || "не запускался"),
+      tone: isAgentRunActive(latestRun) || isAgentStarting(latestRun) ? "running" : auditToneFromStatus(latestRun?.status),
+      detail: latestRun ? formatAgentRunStatus(latestRun) : ""
+    },
+    {
+      label: "Векторы",
+      value: qdrantUnknown ? "проверка" : (qdrantEnabled === false ? "JSON fallback" : (qdrantAvailable ? "Qdrant подключён" : "Qdrant недоступен")),
+      tone: qdrantUnknown ? "idle" : (qdrantEnabled === false ? "idle" : (qdrantAvailable ? "ready" : "warning")),
+      detail: qdrantPoints === null ? "" : `точек ${formatCount(qdrantPoints)}`
+    },
+    {
+      label: "Reranker",
+      value: reranker.enabled ? (reranker.configured ? "готов" : "включён без URL") : "выключен",
+      tone: reranker.enabled ? (reranker.configured ? "ready" : "warning") : "idle",
+      detail: reranker.enabled && reranker.model ? `модель ${reranker.model}` : ""
+    },
+    {
+      label: "LLM route",
+      value: provider === "remote"
+        ? (remoteContextAllowed ? "remote context разрешён" : "remote выбран, context выключен")
+        : (provider === "auto" ? "auto local-first" : "local-first"),
+      tone: provider === "remote" && !remoteContextAllowed ? "warning" : "ready",
+      detail: fallback ? "fallback remote -> local разрешён" : "fallback remote -> local выключен"
+    }
+  ];
+
+  if (state.audit.error) {
+    rows.unshift({
+      label: "Аудит",
+      value: "ошибка обновления",
+      tone: "error",
+      detail: state.audit.error
+    });
+  }
+
+  return rows;
+}
+
+function auditSummaryText(activeMovements = auditActiveMovements()) {
+  if (state.audit.loading) return "Обновляю статусы...";
+  if (state.audit.error) return state.audit.error;
+  const overview = state.indexOverview || {};
+  const files = overview.files || {};
+  const recognized = Number(files.recognized || 0);
+  const total = Number(files.total || files.indexed || 0);
+  const updated = state.audit.updatedAt ? shortDateTime(state.audit.updatedAt) : "";
+  const base = activeMovements.length
+    ? `Активно: ${formatCount(activeMovements.length)}`
+    : "Активных процессов нет";
+  const index = total ? `распознано ${formatCount(recognized)}/${formatCount(total)}` : "";
+  return [base, index, updated ? `обновлено ${updated}` : ""].filter(Boolean).join(" · ");
+}
+
+function renderAuditStatusBar(activeMovements = auditActiveMovements()) {
+  const statusNode = $("#audit-job-status");
+  const progress = $("#audit-index-progress");
+  const fill = $("#audit-index-progress-fill");
+  const label = $("#audit-index-progress-label");
+  if (!statusNode || !progress || !fill || !label) return;
+
+  const activeJob = activeMovements.find((row) => row.pipelineStatus)?.pipelineStatus || null;
+  if (!activeJob) {
+    setIndexStatusBarTone("#audit-index-status-bar", state.audit.loading ? "checking" : (state.audit.error ? "error" : "empty"));
+    statusNode.textContent = state.audit.loading ? "Обновляю статусы..." : "Активной индексации нет.";
+    resetIndexProgressTarget({ progress, fill, label });
+    return;
+  }
+
+  setIndexStatusBarTone("#audit-index-status-bar", indexStatusTone(activeJob));
+  statusNode.textContent = jobStatusText(activeJob);
+  renderIndexProgressTarget({ progress, fill, label }, activeJob);
+}
+
+function renderAuditPanel() {
+  const statusList = $("#audit-status-list");
+  const movementList = $("#audit-movement-list");
+  if (!statusList || !movementList) return;
+
+  const activeMovements = auditActiveMovements();
+  const movementRows = activeMovements.length ? activeMovements : auditRecentMovements();
+  renderAuditStatusBar(activeMovements);
+  setText("#audit-status-summary", auditSummaryText(activeMovements));
+  setText(
+    "#audit-movement-summary",
+    activeMovements.length
+      ? `Сейчас в работе: ${formatCount(activeMovements.length)}`
+      : (movementRows.length ? "Активных движений нет; показаны последние статусы." : "Активных движений с файлами сейчас нет.")
+  );
+
+  statusList.innerHTML = "";
+  for (const row of auditStatusRows(activeMovements)) {
+    statusList.append(auditItemElement(row));
+  }
+
+  movementList.innerHTML = "";
+  if (!movementRows.length) {
+    movementList.append(auditItemElement({
+      label: "Сейчас",
+      value: "нет активных движений",
+      tone: "idle",
+      detail: "Индексатор, OCR, embeddings и Qdrant сейчас ничего не записывают."
+    }));
+    return;
+  }
+
+  for (const row of movementRows) {
+    movementList.append(auditItemElement(row));
+  }
+}
+
+async function refreshAuditStatus({ silent = false } = {}) {
+  if (state.audit.loading) return;
+  if (!auditPanelVisible() && silent) return;
+
+  state.audit.loading = true;
+  state.audit.error = "";
+  if (!silent) setText("#audit-status-summary", "Обновляю статусы...");
+  renderAuditPanel();
+
+  const results = await Promise.allSettled([
+    loadSources(),
+    refreshIndexOverviewStatus({ silent: true }),
+    refreshIntegrationsStatus(),
+    refreshAgentStatus({ silent: true })
+  ]);
+  const failed = results.find((result) => result.status === "rejected");
+  state.audit.error = failed ? apiErrorMessage(failed.reason, "Не удалось обновить аудит") : "";
+  state.audit.updatedAt = Date.now();
+  state.audit.loading = false;
+  renderAuditPanel();
+}
+
 function sourceIndexDotClass(status = {}) {
+  const health = indexHealthStatus(status);
+  if (health === "stale") return "is-stalled";
+  if (health === "interrupted") return "is-error";
   if (status.status === "running") return "is-indexing";
   if (status.status === "failed") return "is-error";
   if (sourceHasReadyIndex(status)) return "is-indexed";
@@ -1795,6 +2761,7 @@ function sourceIndexDotClass(status = {}) {
 }
 
 function sourceIndexDotTitle(status = {}) {
+  if (indexHealthNeedsAttention(status)) return formatIndexSummary(status);
   if (status.status === "running") return formatIndexSummary(status);
   if (status.status === "failed") return formatIndexSummary(status);
   if (sourceHasReadyIndex(status)) return "Индекс готов";
@@ -1844,10 +2811,27 @@ function syncSourceStatusFromIndexedFiles(sourceId, indexedFiles = {}) {
 function updateChatReadyBadge(source, status = {}) {
   const badge = $("#chat-ready-status");
   badge.classList.remove("ready", "indexing", "error", "not-ready");
+  const statusBar = $("#chat-index-status-bar");
+  if (!statusBar?.classList.contains("has-progress") || status.status === "running") {
+    setIndexStatusBarTone(statusBar, source ? indexStatusTone(status) : "ready");
+  }
+  const health = indexHealthStatus(status);
 
   if (!source) {
     badge.classList.add("ready");
     badge.textContent = "Авто по вопросу";
+    return;
+  }
+
+  if (health === "stale") {
+    badge.classList.add("error");
+    badge.textContent = "\u041d\u0435\u0442 \u043f\u0440\u043e\u0433\u0440\u0435\u0441\u0441\u0430";
+    return;
+  }
+
+  if (health === "interrupted") {
+    badge.classList.add("error");
+    badge.textContent = "\u0418\u043d\u0434\u0435\u043a\u0441 \u0443\u043f\u0430\u043b";
     return;
   }
 
@@ -1978,6 +2962,202 @@ function renderSourceSummaryCard(source) {
   return card;
 }
 
+function recognitionQualityStatusLabel(status) {
+  return {
+    ok: "\u0445\u043e\u0440\u043e\u0448\u043e",
+    warning: "\u043d\u0443\u0436\u043d\u043e \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c",
+    error: "\u0435\u0441\u0442\u044c \u043e\u0448\u0438\u0431\u043a\u0438",
+    empty: "\u043d\u0435\u0442 \u0434\u0430\u043d\u043d\u044b\u0445"
+  }[status] || "\u043d\u0435\u0442 \u0434\u0430\u043d\u043d\u044b\u0445";
+}
+
+function roundedPercent(value) {
+  const number = optionalNumber(value);
+  return number === null ? "-" : `${Math.round(number)}%`;
+}
+
+function pluralRu(value, one, few, many) {
+  const number = Math.abs(Number(value || 0));
+  const mod10 = number % 10;
+  const mod100 = number % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+function formatRecognitionQualityStatusHint(quality = {}, score = 0) {
+  const files = quality.files || {};
+  const ocr = quality.ocr || {};
+  const parts = [];
+  const errorFiles = Number(files.error || 0);
+  const totalFiles = Number(files.total || 0);
+  const searchable = Number(files.searchable || 0);
+  const filesWithoutSearch = Math.max(0, totalFiles - searchable);
+
+  if (errorFiles > 0) {
+    parts.push(`${formatCount(errorFiles)} ${pluralRu(errorFiles, "\u0444\u0430\u0439\u043b \u0441 \u043e\u0448\u0438\u0431\u043a\u043e\u0439", "\u0444\u0430\u0439\u043b\u0430 \u0441 \u043e\u0448\u0438\u0431\u043a\u0430\u043c\u0438", "\u0444\u0430\u0439\u043b\u043e\u0432 \u0441 \u043e\u0448\u0438\u0431\u043a\u0430\u043c\u0438")}`);
+  }
+  if (filesWithoutSearch > 0) {
+    parts.push(`${formatCount(filesWithoutSearch)} ${pluralRu(filesWithoutSearch, "\u0444\u0430\u0439\u043b \u0431\u0435\u0437 \u043f\u043e\u0438\u0441\u043a\u0430", "\u0444\u0430\u0439\u043b\u0430 \u0431\u0435\u0437 \u043f\u043e\u0438\u0441\u043a\u0430", "\u0444\u0430\u0439\u043b\u043e\u0432 \u0431\u0435\u0437 \u043f\u043e\u0438\u0441\u043a\u0430")}`);
+  }
+  if (Number(ocr.lowConfidenceFiles || 0) > 0) {
+    const count = Number(ocr.lowConfidenceFiles || 0);
+    parts.push(`\u043d\u0438\u0437\u043a\u0430\u044f OCR-\u0443\u0432\u0435\u0440\u0435\u043d\u043d\u043e\u0441\u0442\u044c: ${formatCount(count)} ${pluralRu(count, "\u0444\u0430\u0439\u043b", "\u0444\u0430\u0439\u043b\u0430", "\u0444\u0430\u0439\u043b\u043e\u0432")}`);
+  }
+  if (Number(ocr.emptyPages || 0) > 0) {
+    const count = Number(ocr.emptyPages || 0);
+    parts.push(`\u043f\u0443\u0441\u0442\u044b\u0435 OCR-\u0441\u0442\u0440\u0430\u043d\u0438\u0446\u044b: ${formatCount(count)}`);
+  }
+
+  if (parts.length) {
+    return `\u0421\u0440\u0435\u0434\u043d\u0438\u0439 \u0431\u0430\u043b\u043b ${score}%, \u043d\u043e \u0435\u0441\u0442\u044c \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u044b: ${parts.join("; ")}.`;
+  }
+  if (quality.status === "warning") return `\u0421\u0440\u0435\u0434\u043d\u0438\u0439 \u0431\u0430\u043b\u043b ${score}%, \u043d\u043e \u0435\u0441\u0442\u044c \u0444\u0430\u0439\u043b\u044b \u0434\u043b\u044f \u0440\u0443\u0447\u043d\u043e\u0439 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438.`;
+  if (quality.status === "error") return `\u0421\u0440\u0435\u0434\u043d\u0438\u0439 \u0431\u0430\u043b\u043b ${score}%; \u043e\u0448\u0438\u0431\u043a\u0438 \u0432\u0438\u0434\u043d\u044b \u0432 \u0441\u043f\u0438\u0441\u043a\u0435 \u043d\u0438\u0436\u0435.`;
+  return `\u0421\u0440\u0435\u0434\u043d\u0438\u0439 \u0431\u0430\u043b\u043b ${score}%; \u043a\u0440\u0438\u0442\u0438\u0447\u043d\u044b\u0445 \u043f\u0440\u043e\u0431\u043b\u0435\u043c \u043d\u0435 \u0432\u0438\u0434\u043d\u043e.`;
+}
+
+function formatOcrConfidenceValue(confidence, confidenceP10) {
+  if (confidence === null) return "-";
+  const avg = `\u0441\u0440\u0435\u0434\u043d\u044f\u044f ${Math.round(confidence)}%`;
+  return confidenceP10 === null
+    ? avg
+    : `${avg}; 10% \u0441\u0442\u0440. \u0434\u043e ${Math.round(confidenceP10)}%`;
+}
+
+function appendRecognitionQualityMetric(container, label, value, title = "") {
+  const row = document.createElement("div");
+  row.className = "recognition-quality-metric";
+  if (title) row.title = title;
+  row.innerHTML = `
+    <span class="recognition-quality-metric-label"></span>
+    <span class="recognition-quality-metric-value"></span>
+  `;
+  row.querySelector(".recognition-quality-metric-label").textContent = label;
+  row.querySelector(".recognition-quality-metric-value").textContent = value;
+  container.append(row);
+}
+
+function recognitionQualityFocusItems(summary = {}, quality = {}) {
+  const warnings = Array.isArray(summary?.qualityWarnings?.byWarning) ? summary.qualityWarnings.byWarning : [];
+  const files = quality.files || {};
+  const ocr = quality.ocr || {};
+  const items = [];
+
+  if (Number(files.total || 0) > Number(files.searchable || 0)) {
+    items.push(`\u0444\u0430\u0439\u043b\u044b \u0431\u0435\u0437 \u043f\u043e\u0438\u0441\u043a\u043e\u0432\u044b\u0445 \u0444\u0440\u0430\u0433\u043c\u0435\u043d\u0442\u043e\u0432: ${formatCount(Number(files.total || 0) - Number(files.searchable || 0))}`);
+  }
+  const coveredWarnings = new Set();
+  if (Number(files.total || 0) > Number(files.searchable || 0)) coveredWarnings.add("no_chunks");
+  if (Number(ocr.limitedFiles || 0) > 0) {
+    items.push(`OCR \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043b \u043d\u0435 \u0432\u0441\u0435 \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u044b: ${formatCount(ocr.limitedFiles)}`);
+    coveredWarnings.add("ocr_limited");
+  }
+  if (Number(ocr.lowConfidenceFiles || 0) > 0) {
+    items.push(`\u043d\u0438\u0437\u043a\u0430\u044f OCR-\u0443\u0432\u0435\u0440\u0435\u043d\u043d\u043e\u0441\u0442\u044c: ${formatCount(ocr.lowConfidenceFiles)}`);
+    coveredWarnings.add("low_ocr_confidence");
+    coveredWarnings.add("low_ocr_page_confidence");
+  }
+  if (Number(ocr.emptyPages || 0) > 0) {
+    items.push(`\u043f\u0443\u0441\u0442\u044b\u0435 OCR-\u0441\u0442\u0440\u0430\u043d\u0438\u0446\u044b: ${formatCount(ocr.emptyPages)}`);
+    coveredWarnings.add("empty_ocr_pages");
+  }
+
+  for (const item of warnings) {
+    if (items.length >= 5) break;
+    const warning = item.warning || "";
+    if (coveredWarnings.has(warning)) continue;
+    const label = INDEXED_QUALITY_REASON_LABELS[warning] || warning;
+    const value = `${label}: ${formatCount(item.count)}`;
+    if (!items.includes(value)) items.push(value);
+  }
+
+  if (!items.length) {
+    items.push("\u0421\u043b\u0430\u0431\u044b\u0445 \u043c\u0435\u0441\u0442 \u043f\u043e \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043d\u044b\u043c \u043c\u0435\u0442\u0440\u0438\u043a\u0430\u043c \u043d\u0435 \u0432\u0438\u0434\u043d\u043e.");
+  }
+
+  return items.slice(0, 5);
+}
+
+function renderRecognitionQualityCard(source) {
+  const summary = source?.summary || null;
+  const quality = summary?.recognitionQuality || null;
+  const card = document.createElement("div");
+  card.className = `recognition-quality-card is-${quality?.status || "empty"}`;
+
+  const head = document.createElement("div");
+  head.className = "recognition-quality-head";
+  head.innerHTML = `
+    <div class="recognition-quality-title"></div>
+    <div class="recognition-quality-badge"></div>
+  `;
+  head.querySelector(".recognition-quality-title").textContent = "\u041a\u0430\u0447\u0435\u0441\u0442\u0432\u043e \u0440\u0430\u0441\u043f\u043e\u0437\u043d\u0430\u0432\u0430\u043d\u0438\u044f";
+  head.querySelector(".recognition-quality-badge").textContent = recognitionQualityStatusLabel(quality?.status || "empty");
+  card.append(head);
+
+  if (!quality) {
+    const empty = document.createElement("div");
+    empty.className = "recognition-quality-muted";
+    empty.textContent = "\u041f\u043e\u044f\u0432\u0438\u0442\u0441\u044f \u043f\u043e\u0441\u043b\u0435 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438.";
+    card.append(empty);
+    return card;
+  }
+
+  const score = Math.max(0, Math.min(100, Math.round(Number(quality.score || 0))));
+  const scorebar = document.createElement("div");
+  scorebar.className = "recognition-quality-scorebar";
+  scorebar.style.setProperty("--recognition-score", `${score}%`);
+  scorebar.title = `\u0421\u0440\u0435\u0434\u043d\u0438\u0439 \u0431\u0430\u043b\u043b: ${score}%. \u0421\u0442\u0430\u0442\u0443\u0441 \u0443\u0447\u0438\u0442\u044b\u0432\u0430\u0435\u0442 \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u044b\u0435 \u043e\u0448\u0438\u0431\u043a\u0438 \u0444\u0430\u0439\u043b\u043e\u0432 \u0438 OCR.`;
+  scorebar.innerHTML = '<span></span>';
+  card.append(scorebar);
+
+  const statusNote = document.createElement("div");
+  statusNote.className = "recognition-quality-status-note";
+  statusNote.textContent = formatRecognitionQualityStatusHint(quality, score);
+  card.append(statusNote);
+
+  const metrics = document.createElement("div");
+  metrics.className = "recognition-quality-metrics";
+  const files = quality.files || {};
+  const text = quality.text || {};
+  const ocr = quality.ocr || {};
+  const searchable = optionalNumber(files.searchable) ?? 0;
+  const total = optionalNumber(files.total) ?? 0;
+  const ocrPages = optionalNumber(ocr.pages);
+  const ocrTotalPages = optionalNumber(ocr.totalPages);
+  const confidence = optionalNumber(ocr.avgConfidence);
+  const confidenceP10 = optionalNumber(ocr.confidenceP10);
+  appendRecognitionQualityMetric(metrics, "\u0421\u0440\u0435\u0434\u043d\u0438\u0439 \u0431\u0430\u043b\u043b", `${score}%`);
+  appendRecognitionQualityMetric(metrics, "\u0422\u0435\u043a\u0441\u0442 \u0432 \u043f\u043e\u0438\u0441\u043a\u0435", `${formatCount(searchable)}/${formatCount(total)} (${roundedPercent(files.textCoveragePercent)})`);
+  appendRecognitionQualityMetric(
+    metrics,
+    "OCR \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u044b",
+    ocrTotalPages ? `${formatCount(ocrPages || 0)}/${formatCount(ocrTotalPages)} (${roundedPercent(ocr.coveragePercent)})` : (ocr.files ? "\u043d\u0435\u0442 \u0441\u0442\u0440\u0430\u043d\u0438\u0446" : "\u043d\u0435\u0442 OCR")
+  );
+  appendRecognitionQualityMetric(
+    metrics,
+    "\u0423\u0432\u0435\u0440\u0435\u043d\u043d\u043e\u0441\u0442\u044c OCR",
+    formatOcrConfidenceValue(confidence, confidenceP10),
+    "\u0421\u0440\u0435\u0434\u043d\u044f\u044f \u0443\u0432\u0435\u0440\u0435\u043d\u043d\u043e\u0441\u0442\u044c OCR; \u00ab10% \u0441\u0442\u0440. \u0434\u043e\u00bb \u043f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u0435\u0442 \u043f\u043e\u0440\u043e\u0433 \u0434\u043b\u044f \u0441\u0430\u043c\u044b\u0445 \u0441\u043b\u0430\u0431\u044b\u0445 \u0441\u0442\u0440\u0430\u043d\u0438\u0446."
+  );
+  appendRecognitionQualityMetric(metrics, "\u0424\u0430\u0439\u043b\u044b OCR", `${formatCount(ocr.files || 0)}${ocr.limitedFiles ? `, \u043b\u0438\u043c\u0438\u0442 ${formatCount(ocr.limitedFiles)}` : ""}`);
+  appendRecognitionQualityMetric(metrics, "\u0421\u0438\u043c\u0432\u043e\u043b\u043e\u0432/\u0441\u043b\u043e\u0432", `${formatCount(text.avgChars || 0)}/${formatCount(text.avgWords || 0)} \u0441\u0440.`);
+  card.append(metrics);
+
+  const focus = document.createElement("div");
+  focus.className = "recognition-quality-focus";
+  const focusTitle = document.createElement("div");
+  focusTitle.className = "recognition-quality-focus-title";
+  focusTitle.textContent = "\u0427\u0442\u043e \u0434\u043e\u0440\u0430\u0431\u043e\u0442\u0430\u0442\u044c";
+  const focusList = document.createElement("div");
+  focusList.className = "recognition-quality-focus-list";
+  focusList.textContent = recognitionQualityFocusItems(summary, quality).join("; ");
+  focus.append(focusTitle, focusList);
+  card.append(focus);
+
+  return card;
+}
+
 function renderTenderLinkForm(source) {
   const form = document.createElement("form");
   form.className = "tender-link-form";
@@ -2032,38 +3212,210 @@ function renderTenderLinkForm(source) {
   return form;
 }
 
-function renderSelectedSourceSettings() {
-  const container = $("#selected-source-settings");
-  if (!container) return;
+function renderSourceNameForm(source) {
+  const form = document.createElement("form");
+  form.className = "source-name-form";
 
-  const source = selectedSettingsSource();
-  container.innerHTML = "";
+  const field = document.createElement("label");
+  field.className = "field";
 
-  if (!source) {
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.textContent = "Выберите папку слева или добавьте дополнительную папку в текущий RAG.";
-    container.append(empty);
-    return;
-  }
+  const caption = document.createElement("span");
+  caption.className = "field-caption";
+  caption.textContent = "Наименование";
 
-  const status = source.indexStatus || { status: "not_indexed", message: "Не индексировалось" };
-  const title = document.createElement("div");
-  title.className = "selected-source-title";
-  title.textContent = source.title;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = source.title || "";
+  input.autocomplete = "off";
+  input.setAttribute("aria-label", "Наименование");
 
-  const path = document.createElement("div");
-  path.className = "selected-source-path";
-  path.textContent = source.path;
-
-  const pipeline = document.createElement("div");
-  pipeline.className = "selected-source-pipeline";
-  pipeline.textContent = indexPipelineText(status);
-
-  const stepLine = renderIndexPipeline(status);
+  field.append(caption, input);
 
   const actions = document.createElement("div");
   actions.className = "selected-source-actions";
+  const saveButton = document.createElement("button");
+  saveButton.type = "submit";
+  saveButton.textContent = "Сохранить";
+  actions.append(saveButton);
+
+  const status = document.createElement("div");
+  status.className = "hint";
+
+  form.append(field, actions, status);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveSourceTitle(source.id, input.value, status);
+  });
+
+  return form;
+}
+
+function sourceAdditionalPaths(source) {
+  return Array.isArray(source?.additionalPaths)
+    ? source.additionalPaths.map((entry) => String(entry || "").trim()).filter(Boolean)
+    : [];
+}
+
+function sourcePathRows(source) {
+  return [
+    String(source?.path || "").trim(),
+    ...sourceAdditionalPaths(source)
+  ].filter(Boolean).map((path, index) => ({
+    path,
+    removable: index > 0
+  }));
+}
+
+function folderPathCountLabel(count) {
+  const value = Number(count || 0);
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  const noun = mod10 === 1 && mod100 !== 11
+    ? "путь"
+    : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+      ? "пути"
+      : "путей";
+  const verb = noun === "путь" ? "Загружен" : "Загружено";
+  return `${verb} ${value} ${noun}`;
+}
+
+function folderPathHref(folderPath = "") {
+  const value = String(folderPath || "").trim();
+  if (!value) return "#";
+  const normalized = value.replace(/\\/g, "/");
+  const encoded = (pathValue) => encodeURI(pathValue).replace(/#/g, "%23").replace(/\?/g, "%3F");
+  if (/^[a-zA-Z]:\//.test(normalized)) return `file:///${encoded(normalized)}`;
+  if (normalized.startsWith("//")) return `file://${encoded(normalized.slice(2))}`;
+  if (normalized.startsWith("/")) return `file://${encoded(normalized)}`;
+  return `file:///${encoded(normalized)}`;
+}
+
+function dedupeAdditionalPaths(source, paths = []) {
+  const primaryKey = normalizedSourcePath(source?.path);
+  const seen = new Set();
+  const result = [];
+  for (const entry of paths) {
+    const nextPath = String(entry || "").trim();
+    const key = normalizedSourcePath(nextPath).replace(/\/+$/, "");
+    if (!key || key === primaryKey || seen.has(key)) continue;
+    seen.add(key);
+    result.push(nextPath);
+  }
+  return result;
+}
+
+async function saveSourceAdditionalPaths(sourceId, additionalPaths, statusNode) {
+  if (statusNode) statusNode.textContent = "Сохраняю пути...";
+  try {
+    const source = await api(`/api/sources/${encodeURIComponent(sourceId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ additionalPaths })
+    });
+    replaceSource(source);
+    state.settingsSourceId = source.id;
+    if (state.indexedFiles.sourceId === source.id) loadIndexedFiles(source.id, { force: true, silent: true });
+    renderSources();
+    setText("#job-status", "Пути папок сохранены. Запустите переиндексацию, чтобы добавить новые файлы в индекс.");
+  } catch (error) {
+    if (statusNode) statusNode.textContent = apiErrorMessage(error, "Не удалось сохранить пути");
+  }
+}
+
+function renderSourcePathsPanel(source = selectedSettingsSource()) {
+  const panel = $("#source-paths-panel");
+  if (!panel) return;
+  panel.innerHTML = "";
+  panel.hidden = !source;
+  if (!source) return;
+
+  const header = document.createElement("div");
+  header.className = "source-paths-header";
+  const title = document.createElement("div");
+  title.className = "source-paths-title";
+  title.textContent = "Пути папок";
+  const count = document.createElement("div");
+  count.className = "hint";
+  const pathRows = sourcePathRows(source);
+  count.textContent = folderPathCountLabel(pathRows.length);
+  header.append(title, count);
+
+  const list = document.createElement("div");
+  list.className = "source-paths-list";
+  const additionalPaths = sourceAdditionalPaths(source);
+  for (const row of pathRows) {
+    const item = document.createElement("div");
+    item.className = "source-path-row";
+
+    const meta = document.createElement("div");
+    meta.className = "source-path-meta";
+    const pathLink = document.createElement("a");
+    pathLink.className = "source-path-link";
+    pathLink.href = folderPathHref(row.path);
+    pathLink.target = "_blank";
+    pathLink.rel = "noreferrer";
+    pathLink.title = row.path;
+    pathLink.textContent = row.path;
+    meta.append(pathLink);
+    item.append(meta);
+
+    if (row.removable) {
+      const removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.className = "secondary icon-button compact-icon-button source-path-remove";
+      removeButton.textContent = "×";
+      removeButton.title = "Удалить путь";
+      removeButton.setAttribute("aria-label", `Удалить путь ${row.path}`);
+      removeButton.addEventListener("click", () => {
+        const nextPaths = additionalPaths.filter((entry) => normalizedSourcePath(entry) !== normalizedSourcePath(row.path));
+        saveSourceAdditionalPaths(source.id, nextPaths, panel.querySelector(".source-path-status"));
+      });
+      item.append(removeButton);
+    }
+
+    list.append(item);
+  }
+
+  const form = document.createElement("form");
+  form.className = "source-path-add-form";
+  form.innerHTML = `
+    <input type="text" class="source-path-add-input" placeholder="Добавить путь к папке">
+    <button type="button" class="secondary source-path-pick">Выбрать</button>
+    <button type="submit">Добавить путь</button>
+    <div class="source-path-status hint" aria-live="polite"></div>
+  `;
+  const input = form.querySelector(".source-path-add-input");
+  const status = form.querySelector(".source-path-status");
+  form.querySelector(".source-path-pick").addEventListener("click", async () => {
+    status.textContent = "Открываю проводник...";
+    const selected = await chooseFolder({
+      title: "Выберите путь для этой папки RAG",
+      initialPath: input.value.trim() || source.path
+    });
+    status.textContent = "";
+    if (selected) input.value = selected;
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const nextPath = input.value.trim();
+    if (!nextPath) {
+      status.textContent = "Укажите путь к папке.";
+      return;
+    }
+    const nextPaths = dedupeAdditionalPaths(source, [...additionalPaths, nextPath]);
+    if (nextPaths.length === additionalPaths.length) {
+      status.textContent = "Этот путь уже есть в списке.";
+      return;
+    }
+    saveSourceAdditionalPaths(source.id, nextPaths, status);
+  });
+
+  panel.append(header, list, form);
+}
+
+function createSelectedSourceActions(source, className = "selected-source-actions") {
+  const status = source.indexStatus || { status: "not_indexed", message: "Не индексировалось" };
+  const actions = document.createElement("div");
+  actions.className = className;
   const needsQdrantReindex = sourceNeedsQdrantReindex(status);
 
   const indexButton = document.createElement("button");
@@ -2104,9 +3456,67 @@ function renderSelectedSourceSettings() {
   });
 
   actions.append(indexButton, chooseButton);
-  const blocks = [title, path, stepLine, renderSourceSummaryCard(source), pipeline];
+  if (!isContractSource(source)) {
+    const moveToContractButton = document.createElement("button");
+    moveToContractButton.type = "button";
+    moveToContractButton.className = "secondary";
+    moveToContractButton.textContent = "\u041f\u0435\u0440\u0435\u043d\u0435\u0441\u0442\u0438 \u0432 \u0434\u043e\u0433\u043e\u0432\u043e\u0440\u044b";
+    moveToContractButton.addEventListener("click", () => moveTenderToContracts(source.id));
+    actions.append(moveToContractButton);
+  }
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "danger";
+  deleteButton.textContent = "Удалить";
+  deleteButton.disabled = state.deletingSourceIds.has(source.id) || status.status === "running";
+  deleteButton.title = status.status === "running"
+    ? "Дождитесь завершения индексации перед удалением"
+    : "Удалить папку из RAG";
+  deleteButton.addEventListener("click", () => deleteSource(source.id));
+  actions.append(deleteButton);
+
+  return actions;
+}
+
+function renderSettingsSourceActions(source = selectedSettingsSource()) {
+  const container = $("#settings-source-actions");
+  if (!container) return;
+
+  const settingsOpen = !$("#settings-page")?.hidden;
+  const sourcesTabActive = !$("#settings-panel-sources")?.hidden;
+  const shouldShow = Boolean(settingsOpen && sourcesTabActive && !state.addingSource && source);
+  container.innerHTML = "";
+  container.hidden = !shouldShow;
+  if (!shouldShow) return;
+
+  const actions = createSelectedSourceActions(source, "settings-source-actions-inner");
+  container.append(...Array.from(actions.childNodes));
+}
+
+function renderSelectedSourceSettings() {
+  const container = $("#selected-source-settings");
+  if (!container) return;
+
+  const source = selectedSettingsSource();
+  container.innerHTML = "";
+
+  if (!source) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "Выберите папку слева или добавьте папку в текущий RAG.";
+    container.append(empty);
+    return;
+  }
+
+  const status = source.indexStatus || { status: "not_indexed", message: "Не индексировалось" };
+  const pipeline = document.createElement("div");
+  pipeline.className = "selected-source-pipeline";
+  pipeline.textContent = indexPipelineText(status);
+
+  const stepLine = renderIndexPipeline(status);
+
+  const blocks = [stepLine, renderSourceSummaryCard(source), pipeline, renderRecognitionQualityCard(source)];
   if (!isContractSource(source)) blocks.push(renderTenderLinkForm(source));
-  blocks.push(actions);
   container.append(...blocks);
 }
 
@@ -2251,9 +3661,9 @@ const INDEXED_QUALITY_REASON_LABELS = {
 };
 
 Object.assign(INDEXED_QUALITY_REASON_LABELS, {
-  low_ocr_page_confidence: "low OCR confidence on one or more pages",
-  empty_ocr_pages: "OCR produced empty or near-empty pages",
-  pdf_text_layer_noise: "PDF text layer looks noisy",
+  low_ocr_page_confidence: "низкая уверенность OCR на отдельных страницах",
+  empty_ocr_pages: "пустые или почти пустые OCR-страницы",
+  pdf_text_layer_noise: "текстовый слой PDF выглядит зашумленным",
   unsupported_google_context_link: "Google ссылка пока не поддерживается для индексации",
   unsupported_google_drive_file: "тип Google Drive файла пока не поддерживается",
   empty_google_context_export: "Google export не вернул текст",
@@ -2268,6 +3678,10 @@ function indexedQualityReasons(file) {
     reasons.push(INDEXED_QUALITY_REASON_LABELS[warning] || warning);
   }
   if (!reasons.length && indexedQualityStatus(file) === "error") reasons.push("проверка качества завершилась ошибкой");
+  if (file.reindex?.retried) {
+    const reindexReasons = Array.isArray(file.reindex.reasons) ? file.reindex.reasons.join(", ") : "";
+    reasons.push(`reindex ${file.reindex.status || "done"}${reindexReasons ? `: ${reindexReasons}` : ""}`);
+  }
   return [...new Set(reasons)];
 }
 
@@ -2289,6 +3703,63 @@ function indexedFileSourceLabel(file) {
   if (!file?.sourceType && !file?.sourceTitle) return "";
   const label = sourceTypeLabel(file);
   return file.sourceTitle ? `${label}: ${file.sourceTitle}` : label;
+}
+
+function indexedFilesIndexingPhaseLabel(status = {}) {
+  return {
+    queued: "\u043e\u0436\u0438\u0434\u0430\u0435\u0442 \u0437\u0430\u043f\u0443\u0441\u043a\u0430",
+    cleanup: "\u043e\u0447\u0438\u0441\u0442\u043a\u0430 \u0441\u0442\u0430\u0440\u043e\u0433\u043e \u0438\u043d\u0434\u0435\u043a\u0441\u0430",
+    scan: "\u0441\u043a\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0444\u0430\u0439\u043b\u043e\u0432",
+    convert: "\u0438\u0437\u0432\u043b\u0435\u0447\u0435\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430",
+    reindex: "\u043f\u043e\u0432\u0442\u043e\u0440\u043d\u0430\u044f \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0430",
+    ocr: "OCR \u0440\u0430\u0441\u043f\u043e\u0437\u043d\u0430\u0432\u0430\u043d\u0438\u0435",
+    index: "\u0441\u0431\u043e\u0440\u043a\u0430 \u0444\u0440\u0430\u0433\u043c\u0435\u043d\u0442\u043e\u0432",
+    embed: "\u0432\u0435\u043a\u0442\u043e\u0440\u0438\u0437\u0430\u0446\u0438\u044f",
+    vector_store: "\u0437\u0430\u043f\u0438\u0441\u044c \u0432 Qdrant"
+  }[String(status.phase || "").toLowerCase()] || "\u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f";
+}
+
+function indexedFilesIndexingDetail(status = {}, visibleFiles = 0) {
+  const parts = [indexedFilesIndexingPhaseLabel(status)];
+  const progress = indexProgressText(status);
+  if (progress) parts.push(progress);
+  if (visibleFiles) parts.push(`\u0443\u0436\u0435 \u0432 \u0434\u0435\u0440\u0435\u0432\u0435: ${formatCount(visibleFiles)}`);
+  return parts.join(" \u00b7 ");
+}
+
+function appendIndexedFilesIndexingBanner(container, status = {}, visibleFiles = 0) {
+  const percent = jobProgressPercent(status);
+  const banner = document.createElement("div");
+  banner.className = "indexed-files-indexing";
+  banner.classList.toggle("is-indeterminate", percent == null);
+  banner.style.setProperty("--indexed-progress", percent == null ? "42%" : `${Math.round(percent)}%`);
+  banner.innerHTML = `
+    <span class="indexed-files-indexing-spinner" aria-hidden="true"></span>
+    <span class="indexed-files-indexing-main">
+      <span class="indexed-files-indexing-title"></span>
+      <span class="indexed-files-indexing-detail"></span>
+      <span class="indexed-files-indexing-track" aria-hidden="true"><span></span></span>
+    </span>
+    <span class="indexed-files-indexing-percent"></span>
+  `;
+  banner.querySelector(".indexed-files-indexing-title").textContent = status.force
+    ? "\u041f\u043e\u043b\u043d\u0430\u044f \u043f\u0435\u0440\u0435\u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f \u0432 \u0440\u0430\u0431\u043e\u0442\u0435"
+    : "\u0418\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f \u0432 \u0440\u0430\u0431\u043e\u0442\u0435";
+  banner.querySelector(".indexed-files-indexing-detail").textContent = indexedFilesIndexingDetail(status, visibleFiles);
+  banner.querySelector(".indexed-files-indexing-percent").textContent = percent == null ? "..." : `${Math.round(percent)}%`;
+  container.append(banner);
+}
+
+function appendIndexedFilesIndexingSkeleton(container, rows = 6) {
+  const skeleton = document.createElement("div");
+  skeleton.className = "indexed-files-indexing-skeleton";
+  for (let index = 0; index < rows; index += 1) {
+    const row = document.createElement("div");
+    row.className = "indexed-files-indexing-skeleton-row";
+    row.style.setProperty("--skeleton-delay", `${index * 90}ms`);
+    skeleton.append(row);
+  }
+  container.append(skeleton);
 }
 
 function hideIndexedFileMenu() {
@@ -2374,12 +3845,12 @@ function indexedRecognitionLabel(file) {
     const pages = recognition.ocrTotalPages
       ? `${recognition.ocrPages || recognition.ocrRecognizedPages || 0}/${recognition.ocrTotalPages}`
       : `${recognition.ocrPages || recognition.ocrRecognizedPages || 0}`;
-    const confidence = Number.isFinite(Number(recognition.ocrConfidence)) ? `, ${Math.round(Number(recognition.ocrConfidence))}%` : "";
-    const p10 = Number.isFinite(Number(recognition.ocrConfidenceP10)) ? `, p10 ${Math.round(Number(recognition.ocrConfidenceP10))}%` : "";
+    const confidence = Number.isFinite(Number(recognition.ocrConfidence)) ? `, сред. ${Math.round(Number(recognition.ocrConfidence))}%` : "";
+    const p10 = Number.isFinite(Number(recognition.ocrConfidenceP10)) ? `, 10% стр. до ${Math.round(Number(recognition.ocrConfidenceP10))}%` : "";
     const mode = recognition.pdfOcrMode && recognition.pdfOcrMode !== "auto" ? `, ${recognition.pdfOcrMode}` : "";
     const cachedPages = Number(recognition.ocrCachedPages);
-    const cache = Number.isFinite(cachedPages) && cachedPages > 0 ? `, cache ${cachedPages}` : "";
-    const limited = recognition.ocrLimited ? ", limited" : "";
+    const cache = Number.isFinite(cachedPages) && cachedPages > 0 ? `, кэш ${cachedPages}` : "";
+    const limited = recognition.ocrLimited ? ", лимит" : "";
     return `${recognition.method === "ocrmypdf" ? "OCRmyPDF" : "OCR"} ${pages}${confidence}${p10}${mode}${cache}${limited}`;
   }
   if (recognition.method === "pdf-text") return "PDF текст";
@@ -2488,12 +3959,22 @@ function renderIndexedFilesPanel() {
 
   if (!source) {
     summary.textContent = "";
+    tree.classList.remove("is-indexing");
     tree.innerHTML = '<div class="empty">Выберите папку слева, чтобы увидеть файлы индекса.</div>';
     return;
   }
 
   const current = state.indexedFiles;
+  const status = source.indexStatus || {};
+  const indexing = status.status === "running";
+  tree.classList.toggle("is-indexing", indexing);
   if (current.sourceId !== source.id) {
+    if (indexing) {
+      summary.textContent = `\u0418\u043d\u0434\u0435\u043a\u0441\u0438\u0440\u0443\u0435\u0442\u0441\u044f \u00b7 ${indexedFilesIndexingDetail(status)}`;
+      appendIndexedFilesIndexingBanner(tree, status);
+      appendIndexedFilesIndexingSkeleton(tree);
+      return;
+    }
     summary.textContent = "Загружаю список файлов...";
     tree.innerHTML = '<div class="empty">Читаю текущий индекс папки.</div>';
     return;
@@ -2501,6 +3982,20 @@ function renderIndexedFilesPanel() {
 
   if (current.loading) {
     const files = current.files || [];
+    if (indexing && files.length) {
+      const chunks = current.chunks || files.reduce((sum, file) => sum + Number(file.chunks || 0), 0);
+      const searchable = current.searchable ?? files.filter((file) => Number(file.chunks || 0) > 0).length;
+      summary.textContent = `\u0418\u043d\u0434\u0435\u043a\u0441\u0438\u0440\u0443\u0435\u0442\u0441\u044f \u00b7 ${indexedFilesIndexingDetail(status, files.length)} \u00b7 ${formatCount(searchable)} \u0441 \u0444\u0440\u0430\u0433\u043c\u0435\u043d\u0442\u0430\u043c\u0438 \u00b7 ${formatCount(chunks)} \u0444\u0440\u0430\u0433\u043c\u0435\u043d\u0442\u043e\u0432`;
+      appendIndexedFilesIndexingBanner(tree, status, files.length);
+      renderIndexedFolderChildren(buildIndexedFileTree(files), tree, 0);
+      return;
+    }
+    if (indexing) {
+      summary.textContent = `\u0418\u043d\u0434\u0435\u043a\u0441\u0438\u0440\u0443\u0435\u0442\u0441\u044f \u00b7 ${indexedFilesIndexingDetail(status)}`;
+      appendIndexedFilesIndexingBanner(tree, status);
+      appendIndexedFilesIndexingSkeleton(tree);
+      return;
+    }
     if (files.length) {
       const chunks = current.chunks || files.reduce((sum, file) => sum + Number(file.chunks || 0), 0);
       const searchable = current.searchable ?? files.filter((file) => Number(file.chunks || 0) > 0).length;
@@ -2524,11 +4019,15 @@ function renderIndexedFilesPanel() {
   }
 
   const files = current.files || [];
-  const status = source.indexStatus || {};
-  const indexing = status.status === "running";
   const progress = indexProgressText(status);
 
   if (!files.length) {
+    if (indexing) {
+      summary.textContent = `\u0418\u043d\u0434\u0435\u043a\u0441\u0438\u0440\u0443\u0435\u0442\u0441\u044f${progress ? ` ${progress}` : ""}. \u0413\u043e\u0442\u043e\u0432\u044b\u0445 \u0444\u0430\u0439\u043b\u043e\u0432 \u0432 \u0438\u043d\u0434\u0435\u043a\u0441\u0435 \u043f\u043e\u043a\u0430 \u043d\u0435\u0442.`;
+      appendIndexedFilesIndexingBanner(tree, status);
+      appendIndexedFilesIndexingSkeleton(tree);
+      return;
+    }
     if (indexing) {
       summary.textContent = `Индексируется${progress ? ` ${progress}` : ""}. Готовых файлов в индексе пока нет.`;
       tree.innerHTML = '<div class="empty">Идет распознавание первых документов. Запускать индексацию повторно не нужно.</div>';
@@ -2548,6 +4047,7 @@ function renderIndexedFilesPanel() {
   summary.textContent = indexing
     ? `Индексируется${progress ? ` ${progress}` : ""} · уже доступно: ${indexedSummary}`
     : indexedSummary;
+  if (indexing) appendIndexedFilesIndexingBanner(tree, status, files.length);
   renderIndexedFolderChildren(buildIndexedFileTree(files), tree, 0);
 }
 
@@ -2631,17 +4131,26 @@ function renderSources() {
   list.innerHTML = "";
   select.innerHTML = "";
   const settingsOpen = !$("#settings-page")?.hidden;
-  const addingSource = settingsOpen && (state.addingSource || state.sources.length === 0);
+  const addingSource = settingsOpen && state.addingSource;
+  if (addingSource) clearSourceTitleEditing();
+  if (settingsOpen && !addingSource) ensureSettingsSourceVisibleInTab();
+  const settingsSource = settingsOpen && !addingSource ? selectedSettingsSource() : null;
+  const hasSettingsSource = Boolean(settingsSource);
+  const sourceDetailEmpty = settingsOpen && !addingSource && !hasSettingsSource;
   const activeListSourceId = settingsOpen ? (addingSource ? "" : state.settingsSourceId) : state.selectedSourceId;
 
   $("#settings-project-detail")?.classList.toggle("adding-source", addingSource);
+  $("#settings-project-detail")?.classList.toggle("source-detail-empty", sourceDetailEmpty);
   const selectedSourcePanel = $("#selected-source-panel");
+  const sourcePathsPanel = $("#source-paths-panel");
   const contextLinksPanel = $("#context-links-panel");
   const indexedFilesPanel = $("#indexed-files-panel");
   const newSourcePanel = $("#new-source-panel");
-  if (selectedSourcePanel) selectedSourcePanel.hidden = addingSource;
-  if (contextLinksPanel) contextLinksPanel.hidden = addingSource;
-  if (indexedFilesPanel) indexedFilesPanel.hidden = addingSource;
+  if (selectedSourcePanel) selectedSourcePanel.hidden = addingSource || !hasSettingsSource;
+  if (sourcePathsPanel) sourcePathsPanel.hidden = addingSource || !hasSettingsSource;
+  if (contextLinksPanel) contextLinksPanel.hidden = addingSource || !hasSettingsSource;
+  if (indexedFilesPanel) indexedFilesPanel.hidden = addingSource || !hasSettingsSource;
+  if (newSourcePanel) newSourcePanel.hidden = !addingSource;
   newSourcePanel?.classList.toggle("add-source-mode", addingSource);
   $("#source-add-shortcut")?.classList.toggle("active", addingSource);
   $("#source-add-shortcut")?.setAttribute("aria-pressed", String(addingSource));
@@ -2651,8 +4160,8 @@ function renderSources() {
   }
   syncSelectedSourceIdsWithSources();
   renderSourceSelectionControls();
-  if (settingsOpen && !addingSource) ensureSettingsSourceVisibleInTab();
   syncSourceListTabs();
+  syncNewSourceFormText();
 
   const emptyOption = document.createElement("option");
   emptyOption.value = "";
@@ -2662,9 +4171,42 @@ function renderSources() {
   const visibleSources = settingsOpen ? sourceListTabSources() : state.sources;
 
   for (const source of visibleSources) {
+    const editingTitle = settingsOpen && !state.sourceSelectionMode && isSourceTitleEditing(source);
     const item = document.createElement("div");
-    item.className = `source ${source.id === activeListSourceId ? "active" : ""} ${state.sourceSelectionMode ? "selection-mode" : ""}`;
+    item.className = `source ${source.id === activeListSourceId ? "active" : ""} ${state.sourceSelectionMode ? "selection-mode" : ""} ${editingTitle ? "editing-title" : ""}`;
     item.dataset.sourceId = source.id;
+    if (editingTitle) {
+      const form = document.createElement("form");
+      form.className = "source-title-edit-form";
+      form.innerHTML = `
+        <span class="source-index-dot" aria-hidden="true"></span>
+        <input class="source-title-edit-input" type="text" autocomplete="off">
+        <button type="submit" class="icon-button compact-icon-button" title="Сохранить наименование" aria-label="Сохранить наименование">✓</button>
+        <button type="button" class="secondary icon-button compact-icon-button source-title-edit-cancel" title="Отменить" aria-label="Отменить">×</button>
+        <span class="source-title-edit-status" aria-live="polite"></span>
+      `;
+      const dot = form.querySelector(".source-index-dot");
+      dot.classList.add(sourceIndexDotClass(source.indexStatus));
+      dot.title = sourceIndexDotTitle(source.indexStatus);
+      const input = form.querySelector(".source-title-edit-input");
+      input.value = source.title || "";
+      input.dataset.sourceId = source.id;
+      form.querySelector(".source-title-edit-cancel").addEventListener("click", () => setSourceTitleEditing(false));
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        saveSourceTitle(source.id, input.value, form.querySelector(".source-title-edit-status"));
+      });
+      item.append(form);
+      list.append(item);
+      if (isContractSource(source)) {
+        const option = document.createElement("option");
+        option.value = source.id;
+        option.textContent = source.title;
+        select.append(option);
+      }
+      continue;
+    }
+
     item.innerHTML = `
       ${state.sourceSelectionMode ? '<label class="source-checkbox-wrap"><input type="checkbox" class="source-checkbox"><span aria-hidden="true"></span></label>' : ""}
       <button type="button" class="source-select"></button>
@@ -2704,6 +4246,7 @@ function renderSources() {
       }
       if (settingsOpen) {
         state.addingSource = false;
+        if (state.settingsSourceId !== source.id) clearSourceTitleEditing();
         state.settingsSourceId = source.id;
         if (state.indexedFiles.sourceId !== source.id) state.expandedIndexedFolders = new Set([""]);
       } else {
@@ -2711,6 +4254,20 @@ function renderSources() {
       }
       renderSources();
     });
+    if (settingsOpen && !state.sourceSelectionMode && source.id === activeListSourceId) {
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.className = "secondary icon-button compact-icon-button source-title-edit-button";
+      editButton.textContent = "✎";
+      editButton.title = "Изменить наименование";
+      editButton.setAttribute("aria-label", `Изменить наименование папки ${source.title}`);
+      editButton.addEventListener("click", () => {
+        state.addingSource = false;
+        state.settingsSourceId = source.id;
+        setSourceTitleEditing(true, source.id);
+      });
+      item.append(editButton);
+    }
     list.append(item);
 
     if (!isContractSource(source)) continue;
@@ -2742,14 +4299,17 @@ function renderSources() {
   select.disabled = state.sources.length === 0;
   updateProjectIndexUi();
   renderSelectedSourceSettings();
+  renderSettingsSourceActions(settingsSource);
+  renderSourcePathsPanel(settingsSource);
   renderIndexedFilesPanel();
   renderContextLinks();
-  const settingsSource = selectedSettingsSource();
   if (settingsOpen && !addingSource && settingsSource) ensureIndexedFilesLoaded(settingsSource.id);
   renderChatHistory();
+  renderAuditPanel();
 }
 
 async function loadSources() {
+  const previousSettingsSourceId = state.settingsSourceId;
   state.sources = await api("/api/sources");
   syncSelectedSourceIdsWithSources();
   if (!state.sources.some((source) => source.id === state.selectedSourceId)) {
@@ -2760,9 +4320,7 @@ async function loadSources() {
   }
   const settingsSource = sourceById(state.settingsSourceId);
   if (settingsSource) state.sourceListTab = sourceListTabForSource(settingsSource);
-  if (state.sources.length === 0) {
-    state.addingSource = true;
-  }
+  if (previousSettingsSourceId !== state.settingsSourceId) clearSourceTitleEditing();
   renderSources();
 }
 
@@ -2895,6 +4453,7 @@ function closeSkippedModal() {
 async function loadSettings() {
   const settings = await api("/api/settings");
   state.storagePath = settings.dataDir;
+  state.storageEnvLocked = Boolean(settings.envLocked);
   state.llm = settings.llm || {};
   state.embeddings = settings.embeddings || {};
   state.vectorStore = settings.vectorStore || {};
@@ -2905,6 +4464,7 @@ async function loadSettings() {
   $("#storage-path").value = settings.dataDir;
   $("#llm-enabled").checked = Boolean(state.llm.enabled);
   $("#llm-provider").value = state.llm.provider || "local";
+  syncLlmRouteCards();
   $("#llm-base-url").value = state.llm.baseUrl || "http://127.0.0.1:1234/v1";
   setSelectOptions("#llm-model", state.llm.model ? [state.llm.model] : [], state.llm.model || "", "Локальные модели не загружены");
   $("#remote-context-enabled").checked = Boolean(remoteLlm.enabled || state.llm.allowRemoteContext);
@@ -2930,7 +4490,8 @@ async function loadSettings() {
   $("#reranker-timeout").value = reranker.timeoutSeconds || 30;
   syncRerankerSecretPlaceholder();
   updateRerankerApiKeyHint();
-  setText("#settings-status", settings.envLocked ? "Путь задан переменной RAG_DATA_DIR" : "");
+  syncStorageFormLock();
+  setText("#settings-status", "");
   syncRemoteContextWarning();
   renderAutoRoute();
   syncLlmFormLock();
@@ -2938,19 +4499,31 @@ async function loadSettings() {
   refreshLmStudioStatus();
   refreshRemoteDiagnostics();
   refreshIntegrationsStatus();
+  refreshDifyStatus({ silent: true });
   refreshLmUsage();
+}
+
+function syncStorageFormLock() {
+  $("#storage-path").readOnly = state.storageEnvLocked;
+  $("#choose-storage-folder").disabled = state.storageEnvLocked;
+  $("#storage-save-button").disabled = state.storageEnvLocked;
+  const lockTitle = state.storageEnvLocked ? "Путь задан переменной RAG_DATA_DIR" : "";
+  $("#storage-path").title = lockTitle;
+  $("#choose-storage-folder").title = lockTitle;
+  $("#storage-save-button").title = lockTitle;
 }
 
 async function pickSourceFolder() {
   if (!$("#settings-page")?.hidden && !state.addingSource) {
     state.addingSource = true;
     state.settingsSourceId = "";
+    clearSourceTitleEditing();
     renderSources();
   }
   setText("#settings-status", "");
-  setText("#job-status", "Открываю проводник для выбора дополнительной папки RAG...");
+  setText("#job-status", "Открываю проводник для выбора папки RAG...");
   const selected = await chooseFolder({
-    title: "Выберите дополнительную папку для текущего RAG",
+    title: "Выберите папку для текущего RAG",
     initialPath: $("#source-path").value.trim() || state.selectedSourcePath
   });
   if (!selected) {
@@ -2964,6 +4537,10 @@ async function pickSourceFolder() {
 }
 
 async function pickStorageFolder() {
+  if (state.storageEnvLocked) {
+    setText("#settings-status", "Хранилище задано переменной RAG_DATA_DIR.");
+    return;
+  }
   setText("#settings-status", "Открываю проводник для выбора хранилища...");
   const selected = await chooseFolder({
     title: "Выберите папку для хранения индексов и Markdown",
@@ -2981,6 +4558,7 @@ async function pickStorageFolder() {
 function focusNewSourceForm() {
   state.addingSource = true;
   state.settingsSourceId = "";
+  clearSourceTitleEditing();
   state.selectedSourcePath = "";
   state.sourceSelectionMode = false;
   state.selectedSourceIds.clear();
@@ -2998,6 +4576,7 @@ function syncSourcePathInput() {
   if (!$("#settings-page")?.hidden && !state.addingSource) {
     state.addingSource = true;
     state.settingsSourceId = "";
+    clearSourceTitleEditing();
     renderSources();
   }
   const sourcePath = $("#source-path").value.trim();
@@ -3005,12 +4584,17 @@ function syncSourcePathInput() {
 }
 
 function syncStoragePathInput() {
+  if (state.storageEnvLocked) return;
   state.storagePath = $("#storage-path").value.trim();
   setText("#settings-status", "Нажмите «Сохранить», чтобы применить путь.");
 }
 
 async function saveSettings(event) {
   event.preventDefault();
+  if (state.storageEnvLocked) {
+    setText("#settings-status", "Хранилище задано переменной RAG_DATA_DIR.");
+    return;
+  }
   const dataDir = $("#storage-path").value.trim();
   if (!dataDir) return;
 
@@ -3244,6 +4828,12 @@ function renderIntegrationsStatus(payload = state.integrationsStatus) {
   setDiagnosticBadge("#reranker-diag-state", rerankerState, diagnosticStatusLabel(rerankerState));
   if (!reranker.enabled) {
     setRerankerConnectionStatus("disabled", "Reranker выключен.");
+    setRerankerProcessStatus("disabled", {
+      ...(state.rerankerProcessStatus || {}),
+      enabled: false,
+      running: Boolean(state.rerankerProcessStatus?.running),
+      model: reranker.model || state.rerankerProcessStatus?.model || ""
+    });
   } else if (reranker.configured) {
     setRerankerConnectionStatus("online", `Reranker готов: ${reranker.model} · кандидатов ${reranker.candidateCount}.`);
   } else {
@@ -3269,6 +4859,7 @@ function renderIntegrationsStatus(payload = state.integrationsStatus) {
   ].filter(Boolean).join(" · ");
   setText("#integrations-status-detail", detail);
   syncIndexFormLocks();
+  renderAuditPanel();
 }
 
 async function refreshIntegrationsStatus() {
@@ -3289,6 +4880,7 @@ async function refreshIntegrationsStatus() {
     setRerankerConnectionStatus("offline", `Ошибка проверки reranker: ${error.message}`);
     setText("#integrations-status-detail", error.message);
     syncIndexFormLocks();
+    renderAuditPanel();
   }
 }
 
@@ -3364,6 +4956,7 @@ async function saveRerankerSettings(event) {
   syncRerankerSecretPlaceholder();
   setText("#reranker-status", "Reranker сохранен.");
   await refreshIntegrationsStatus();
+  await refreshRerankerProcessStatus({ silent: true });
   syncIndexFormLocks();
 }
 
@@ -3390,6 +4983,48 @@ function setLmMiniState(stateName, title, detail) {
   mini.classList.add(stateName);
   $("#lm-mini-title").textContent = title;
   $("#lm-mini-detail").textContent = detail;
+}
+
+function setDifyMiniState(stateName, detail, title = detail) {
+  const mini = $("#dify-mini");
+  const detailNode = $("#dify-mini-detail");
+  if (!mini || !detailNode) return;
+  mini.classList.remove("online", "offline", "busy", "checking");
+  mini.classList.add(stateName);
+  detailNode.textContent = detail;
+  mini.title = `Dify: ${title}`;
+}
+
+function renderDifyMiniStatus(status) {
+  if (!status?.configured) {
+    if (status?.adapterTokenConfigured) {
+      setDifyMiniState("busy", "адаптер готов", "адаптер готов, LOCALAI_DIFY_URL не задан");
+    } else {
+      setDifyMiniState("offline", "нет токена", "LOCALAI_DIFY_ADAPTER_TOKEN не задан");
+    }
+    return;
+  }
+
+  if (status.reachable) {
+    const suffix = status.urlLabel ? ` · ${status.urlLabel}` : "";
+    setDifyMiniState("online", "Dify запущен", `Dify отвечает${suffix}`);
+    return;
+  }
+
+  setDifyMiniState("offline", "не отвечает", status.urlLabel ? `Dify не отвечает · ${status.urlLabel}` : "Dify не отвечает");
+}
+
+async function refreshDifyStatus(options = {}) {
+  if (!options.silent) setDifyMiniState("checking", "проверка...");
+  try {
+    const status = await api("/api/dify/status");
+    state.difyStatus = status;
+    renderDifyMiniStatus(status);
+  } catch (error) {
+    state.difyStatus = null;
+    const detail = error?.status === 404 ? "нужен рестарт backend" : "статус недоступен";
+    setDifyMiniState("offline", detail, error.message || detail);
+  }
 }
 
 function formatLmUsageDetail(payload) {
@@ -3861,6 +5496,31 @@ function tenderSyncTotalLabel(key) {
   }[key] || key;
 }
 
+function tenderSyncNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function tenderSyncTotal(summary = {}, key) {
+  return tenderSyncNumber(summary.totals?.[key]);
+}
+
+function tenderSyncTotalKeys(summary = {}) {
+  return summary.apply && summary.applyScope === "unlinked"
+    ? ["foldersOnDisk", "applied", "scopeCreated", "scopeUpdated", "unlinkedReady", "review", "stale"]
+    : ["foldersOnDisk", "created", "updated", "linked", "manualLinked", "autoLinked", "unlinkedReady", "review", "stale"];
+}
+
+function tenderSyncLeadText(summary = {}) {
+  if (summary.apply && summary.applyScope === "unlinked") {
+    return "Созданы только тендеры без договора. Привязанные и спорные строки не записывались.";
+  }
+  if (summary.apply) {
+    return "Источники обновлены. Оставшиеся тендеры без договора можно привязать вручную в группе «Тендеры».";
+  }
+  return "Это предварительный просмотр. Автоматически запишутся только уверенные привязки; спорные строки останутся без договора.";
+}
+
 function tenderSyncActionLabel(action) {
   return {
     create: "Создать",
@@ -3868,13 +5528,133 @@ function tenderSyncActionLabel(action) {
   }[action] || action || "Проверить";
 }
 
+function tenderSyncItemNeedsReview(item = {}) {
+  return Boolean(item.mappingError || (!item.linkedContractId && Array.isArray(item.matchCandidates) && item.matchCandidates.length));
+}
+
+function tenderSyncItemIsUnlinkedReady(item = {}) {
+  return !item.linkedContractId && !tenderSyncItemNeedsReview(item);
+}
+
+function tenderSyncAutoLinkKey(item = {}) {
+  return String(item.tenderId || item.path || item.title || "").trim();
+}
+
+function tenderSyncExcludedAutoLinksPayload() {
+  const excluded = state.tenderSync?.excludedAutoLinks;
+  if (!excluded || typeof excluded.values !== "function") return [];
+  return Array.from(excluded.values())
+    .map((item) => ({
+      tenderId: String(item.tenderId || "").trim(),
+      path: String(item.path || "").trim(),
+      linkedContractId: String(item.linkedContractId || "").trim()
+    }))
+    .filter((item) => item.tenderId || item.path);
+}
+
+function tenderSyncSelectedLinksPayload() {
+  const selected = state.tenderSync?.selectedTenderLinks;
+  if (!selected || typeof selected.values !== "function") return [];
+  return Array.from(selected.values())
+    .map((item) => ({
+      tenderId: String(item.tenderId || "").trim(),
+      path: String(item.path || "").trim(),
+      linkedContractId: String(item.linkedContractId || "").trim()
+    }))
+    .filter((item) => item.linkedContractId && (item.tenderId || item.path));
+}
+
+function tenderSyncItemIsAutoLinkExcluded(item = {}) {
+  const key = tenderSyncAutoLinkKey(item);
+  return Boolean(key && state.tenderSync?.excludedAutoLinks?.has(key));
+}
+
+function tenderSyncSelectedLinkForItem(item = {}) {
+  const key = tenderSyncAutoLinkKey(item);
+  return key ? state.tenderSync?.selectedTenderLinks?.get(key) || null : null;
+}
+
+function tenderSyncSelectedCandidateId(item = {}) {
+  const selectedLink = tenderSyncSelectedLinkForItem(item);
+  return String(selectedLink?.linkedContractId || item.linkedContractId || item.selectedMatchCandidateId || item.excludedLinkedContractId || "").trim();
+}
+
+function tenderSyncDisplayedCandidates(item = {}, limit = 5) {
+  const candidates = Array.isArray(item.matchCandidates) ? item.matchCandidates : [];
+  const max = Math.max(1, Number(limit) || 3);
+  const selectedId = tenderSyncSelectedCandidateId(item);
+  if (selectedId) {
+    const selected = candidates.find((candidate) => candidate.id === selectedId);
+    const rest = candidates.filter((candidate) => candidate.id !== selectedId);
+    return (selected ? [selected, ...rest] : candidates).slice(0, max);
+  }
+  return candidates.slice(0, max);
+}
+
+function tenderSyncPrimaryCandidateTitle(item = {}) {
+  return tenderSyncDisplayedCandidates(item, 1)[0]?.title || "";
+}
+
+function tenderSyncWithExcludedAutoLinks(summary = {}) {
+  const planned = Array.isArray(summary.planned)
+    ? summary.planned.map((item) => {
+        const selectedLink = tenderSyncSelectedLinkForItem(item);
+        if (selectedLink?.linkedContractId) {
+          return {
+            ...item,
+            linkedContractId: selectedLink.linkedContractId,
+            selectedMatchCandidateId: selectedLink.linkedContractId,
+            selectedLinked: true,
+            linkSource: "selected",
+            manualLinked: false,
+            autoLinked: false,
+            autoLinkExcluded: false
+          };
+        }
+        if (!item.autoLinked || !tenderSyncItemIsAutoLinkExcluded(item)) return item;
+        return {
+          ...item,
+          excludedLinkedContractId: item.linkedContractId || "",
+          linkedContractId: "",
+          linkSource: "excluded-auto",
+          autoLinked: false,
+          autoLinkExcluded: true
+        };
+      })
+    : [];
+  const scopedPlanned = summary.applyScope === "unlinked"
+    ? planned.filter((item) => tenderSyncItemIsUnlinkedReady(item))
+    : planned;
+  const totals = {
+    ...(summary.totals || {}),
+    applied: scopedPlanned.length,
+    scopeCreated: scopedPlanned.filter((item) => item.action === "create").length,
+    scopeUpdated: scopedPlanned.filter((item) => item.action === "update").length,
+    linked: planned.filter((item) => item.linkedContractId).length,
+    manualLinked: planned.filter((item) => item.manualLinked).length,
+    selectedLinked: planned.filter((item) => item.selectedLinked).length,
+    autoLinked: planned.filter((item) => item.autoLinked).length,
+    autoLinkExcluded: planned.filter((item) => item.autoLinkExcluded).length,
+    unlinked: planned.filter((item) => !item.linkedContractId).length,
+    unlinkedReady: planned.filter((item) => tenderSyncItemIsUnlinkedReady(item)).length,
+    review: planned.filter((item) => tenderSyncItemNeedsReview(item)).length
+  };
+  return { ...summary, totals, planned };
+}
+
 function tenderSyncItemStatus(item = {}) {
   if (item.mappingError) return { className: "is-error", label: "Ошибка mapping", detail: item.mappingError };
+  if (item.autoLinkExcluded) {
+    return { className: "needs-link", label: "Авто снято", detail: tenderSyncPrimaryCandidateTitle(item) };
+  }
+  if (item.selectedLinked) {
+    return { className: "is-linked", label: "Добавлено вручную", detail: tenderSyncPrimaryCandidateTitle(item) || item.linkedContractId || "" };
+  }
   if (item.manualLinked) {
-    return { className: "is-linked", label: "Привязано вручную", detail: item.matchCandidates?.[0]?.title || item.linkedContractId || "" };
+    return { className: "is-linked", label: "Привязано вручную", detail: tenderSyncPrimaryCandidateTitle(item) || item.linkedContractId || "" };
   }
   if (item.autoLinked) {
-    return { className: "is-linked", label: "Авто-привязка", detail: item.matchCandidates?.[0]?.title || item.linkedContractId || "" };
+    return { className: "is-linked", label: "Авто-привязка", detail: tenderSyncPrimaryCandidateTitle(item) || item.linkedContractId || "" };
   }
   if (item.linkedContractId) return { className: "is-linked", label: "Привязано", detail: item.linkedContractId };
   if (Array.isArray(item.matchCandidates) && item.matchCandidates.length) {
@@ -3891,7 +5671,7 @@ function tenderSyncReviewGroups(planned = []) {
   };
 
   for (const item of planned) {
-    if (item.mappingError || (!item.linkedContractId && Array.isArray(item.matchCandidates) && item.matchCandidates.length)) {
+    if (tenderSyncItemNeedsReview(item)) {
       groups.review.push(item);
     } else if (item.linkedContractId) {
       groups.linked.push(item);
@@ -3916,6 +5696,7 @@ function candidateEvidenceText(candidate = {}, item = {}) {
 function renderTenderSyncCandidate(candidate, item) {
   const line = document.createElement("div");
   line.className = "tender-sync-candidate";
+  const selected = candidate.id && candidate.id === tenderSyncSelectedCandidateId(item);
   const title = document.createElement("span");
   title.className = "tender-sync-candidate-title";
   title.textContent = candidate.title || candidate.id || "Кандидат";
@@ -3924,7 +5705,182 @@ function renderTenderSyncCandidate(candidate, item) {
   evidence.textContent = candidateEvidenceText(candidate, item);
   line.append(title);
   if (evidence.textContent) line.append(evidence);
+  if (candidate.id) {
+    if (selected && item.linkedContractId) {
+      const badge = document.createElement("span");
+      badge.className = "tender-sync-candidate-selected";
+      badge.textContent = item.autoLinked ? "Авто" : "Выбрано";
+      line.append(badge);
+    } else {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "tender-sync-candidate-action";
+      button.textContent = "Добавить";
+      button.addEventListener("click", () => selectTenderSyncCandidate(item, candidate));
+      line.append(button);
+    }
+  }
   return line;
+}
+
+function selectTenderSyncCandidate(item = {}, candidate = {}) {
+  if (!candidate.id) return;
+  const key = tenderSyncAutoLinkKey(item);
+  if (!key) return;
+  state.tenderSync.selectedTenderLinks.set(key, {
+    tenderId: item.tenderId || "",
+    path: item.path || "",
+    linkedContractId: candidate.id,
+    title: item.title || "",
+    contractTitle: candidate.title || candidate.id
+  });
+  state.tenderSync.excludedAutoLinks.delete(key);
+  if (state.tenderSync.summary) showTenderSyncReport(state.tenderSync.summary);
+  setText("#job-status", `Выбран договор для тендера: ${candidate.title || candidate.id}.`);
+}
+
+function tenderSyncCanRemoveAutoLink(item = {}) {
+  return Boolean(item.autoLinked && item.linkedContractId && !item.manualLinked && tenderSyncAutoLinkKey(item));
+}
+
+function removeTenderSyncAutoLink(item = {}) {
+  if (!tenderSyncCanRemoveAutoLink(item)) return;
+  const key = tenderSyncAutoLinkKey(item);
+  state.tenderSync.excludedAutoLinks.set(key, {
+    tenderId: item.tenderId || "",
+    path: item.path || "",
+    linkedContractId: item.linkedContractId || "",
+    title: item.title || ""
+  });
+  state.tenderSync.selectedTenderLinks.delete(key);
+  if (state.tenderSync.summary) showTenderSyncReport(state.tenderSync.summary);
+  setText("#job-status", "Автопривязка снята. При записи этот тендер останется без договора.");
+}
+
+function renderTenderSyncAutoLinkRemoveButton(item = {}) {
+  if (!tenderSyncCanRemoveAutoLink(item)) return null;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "tender-sync-remove-auto-link";
+  button.textContent = "×";
+  button.title = "Убрать автопривязку";
+  button.setAttribute("aria-label", `Убрать автопривязку договора для ${item.title || "тендера"}`);
+  button.addEventListener("click", () => removeTenderSyncAutoLink(item));
+  return button;
+}
+
+function renderTenderSyncMetric(className, value, label, detail) {
+  const card = document.createElement("div");
+  card.className = `tender-sync-metric tender-sync-metric-${className}`;
+
+  const number = document.createElement("div");
+  number.className = "tender-sync-metric-number";
+  number.textContent = `${value}`;
+
+  const text = document.createElement("div");
+  text.className = "tender-sync-metric-text";
+
+  const title = document.createElement("div");
+  title.className = "tender-sync-metric-label";
+  title.textContent = label;
+
+  const subtitle = document.createElement("div");
+  subtitle.className = "tender-sync-metric-detail";
+  subtitle.textContent = detail;
+
+  text.append(title, subtitle);
+  card.append(number, text);
+  return card;
+}
+
+function renderTenderSyncFlowStep(step, title, detail, className = "") {
+  const item = document.createElement("div");
+  item.className = `tender-sync-flow-step${className ? ` ${className}` : ""}`;
+
+  const number = document.createElement("span");
+  number.className = "tender-sync-flow-number";
+  number.textContent = step;
+
+  const text = document.createElement("span");
+  text.className = "tender-sync-flow-text";
+
+  const titleLine = document.createElement("span");
+  titleLine.className = "tender-sync-flow-title";
+  titleLine.textContent = title;
+
+  const detailLine = document.createElement("span");
+  detailLine.className = "tender-sync-flow-detail";
+  detailLine.textContent = detail;
+
+  text.append(titleLine, detailLine);
+  item.append(number, text);
+  return item;
+}
+
+function renderTenderSyncTotals(summary = {}) {
+  const totals = document.createElement("div");
+  totals.className = "tender-sync-totals";
+
+  for (const key of tenderSyncTotalKeys(summary)) {
+    if (!Number.isFinite(Number(summary.totals?.[key]))) continue;
+    const pill = document.createElement("span");
+    pill.className = "tender-sync-pill";
+    pill.textContent = `${tenderSyncTotalLabel(key)}: ${summary.totals[key]}`;
+    totals.append(pill);
+  }
+
+  return totals;
+}
+
+function renderTenderSyncSummary(summary = {}, groups = {}) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "tender-sync-summary";
+
+  const isUnlinkedScope = summary.apply && summary.applyScope === "unlinked";
+  const modeLabel = isUnlinkedScope
+    ? "Запись без договора"
+    : summary.apply
+    ? "Запись завершена"
+    : "Предпросмотр Google Drive";
+
+  const hero = document.createElement("div");
+  hero.className = "tender-sync-hero";
+
+  const copy = document.createElement("div");
+  copy.className = "tender-sync-hero-copy";
+
+  const mode = document.createElement("div");
+  mode.className = `tender-sync-mode${summary.apply ? " is-applied" : " is-dry-run"}`;
+  mode.textContent = modeLabel;
+
+  const lead = document.createElement("div");
+  lead.className = "tender-sync-lead";
+  lead.textContent = tenderSyncLeadText(summary);
+  copy.append(mode, lead);
+
+  const flow = document.createElement("div");
+  flow.className = "tender-sync-flow";
+  flow.append(
+    renderTenderSyncFlowStep("1", "Скан Google Drive", `${tenderSyncTotal(summary, "foldersOnDisk")} папок`),
+    renderTenderSyncFlowStep("2", "Разбор привязок", `${groups.linked?.length || 0} уверенно, ${groups.review?.length || 0} спорно`),
+    renderTenderSyncFlowStep("3", "Запись источников", summary.apply ? "уже выполнена" : "после подтверждения", summary.apply ? "is-done" : "")
+  );
+
+  hero.append(copy, flow);
+
+  const metrics = document.createElement("div");
+  metrics.className = "tender-sync-metrics";
+  metrics.append(
+    renderTenderSyncMetric("folders", tenderSyncTotal(summary, "foldersOnDisk"), "Папок найдено", "из Google Drive"),
+    renderTenderSyncMetric("linked", groups.linked?.length || 0, "Авто-привязка", "запишется с договором"),
+    renderTenderSyncMetric("review", groups.review?.length || 0, "Проверить вручную", "останется без автопривязки"),
+    renderTenderSyncMetric("unlinked", groups.unlinked?.length || 0, "Без договора", "создать отдельными тендерами")
+  );
+
+  const totals = renderTenderSyncTotals(summary);
+  wrapper.append(hero, metrics);
+  if (totals.childElementCount) wrapper.append(totals);
+  return wrapper;
 }
 
 function tenderSyncSectionIntro(key, count) {
@@ -3943,13 +5899,19 @@ function renderTenderSyncSection(titleText, key, items) {
 
   const header = document.createElement("div");
   header.className = "tender-sync-section-header";
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "tender-sync-section-title-wrap";
+  const marker = document.createElement("span");
+  marker.className = "tender-sync-section-marker";
+  marker.setAttribute("aria-hidden", "true");
   const title = document.createElement("div");
   title.className = "tender-sync-section-title";
   title.textContent = titleText;
   const count = document.createElement("span");
   count.className = "tender-sync-section-count";
   count.textContent = `${items.length}`;
-  header.append(title, count);
+  titleWrap.append(marker, title);
+  header.append(titleWrap, count);
 
   const intro = document.createElement("div");
   intro.className = "tender-sync-section-intro";
@@ -3983,14 +5945,25 @@ function renderTenderSyncSection(titleText, key, items) {
     meta.className = "tender-sync-meta";
     meta.textContent = [tenderSyncActionLabel(item.action), item.tenderCategory].filter(Boolean).join(" · ");
 
-    const candidates = (item.matchCandidates || []).slice(0, 3);
+    const candidates = tenderSyncDisplayedCandidates(item);
     const detailText = status.detail || (!item.linkedContractId && candidates.length
       ? "Автомат не записывает привязку, потому что совпадение не уверенное."
       : "");
     const detail = document.createElement("div");
     detail.className = "tender-sync-detail";
-    detail.textContent = detailText;
     detail.hidden = !detailText;
+    if (detailText) {
+      const detailLabel = document.createElement("span");
+      detailLabel.className = "tender-sync-detail-label";
+      detailLabel.textContent = item.autoLinkExcluded
+        ? "Снят договор: "
+        : status.className === "is-linked"
+        ? "Договор: "
+        : status.className === "is-error"
+        ? "Ошибка: "
+        : "Причина: ";
+      detail.append(detailLabel, document.createTextNode(detailText));
+    }
 
     main.append(name, meta);
     if (!detail.hidden) main.append(detail);
@@ -3998,6 +5971,14 @@ function renderTenderSyncSection(titleText, key, items) {
     if (candidates.length) {
       const candidateList = document.createElement("div");
       candidateList.className = "tender-sync-candidates";
+      const candidateTitle = document.createElement("div");
+      candidateTitle.className = "tender-sync-candidates-title";
+      candidateTitle.textContent = item.autoLinkExcluded
+        ? "Совпавшие договоры"
+        : item.linkedContractId
+        ? "Совпавшие договоры"
+        : "Кандидаты на договор";
+      candidateList.append(candidateTitle);
       for (const candidate of candidates) {
         candidateList.append(renderTenderSyncCandidate(candidate, item));
       }
@@ -4008,7 +5989,13 @@ function renderTenderSyncSection(titleText, key, items) {
     badge.className = "tender-sync-status";
     badge.textContent = status.label;
 
-    row.append(main, badge);
+    const rowActions = document.createElement("div");
+    rowActions.className = "tender-sync-row-actions";
+    rowActions.append(badge);
+    const removeButton = renderTenderSyncAutoLinkRemoveButton(item);
+    if (removeButton) rowActions.append(removeButton);
+
+    row.append(main, rowActions);
     list.append(row);
   }
 
@@ -4133,9 +6120,9 @@ function renderTenderSyncTabs(summary, groups) {
   return root;
 }
 
-function renderTenderSyncPlan(summary = {}) {
+function renderTenderSyncPlan(summary = {}, groups = null) {
   const planned = Array.isArray(summary.planned) ? summary.planned : [];
-  const groups = tenderSyncReviewGroups(planned);
+  const resolvedGroups = groups || tenderSyncReviewGroups(planned);
   const container = document.createElement("div");
   container.className = "tender-sync-review";
 
@@ -4147,7 +6134,7 @@ function renderTenderSyncPlan(summary = {}) {
     return container;
   }
 
-  container.append(renderTenderSyncTabs(summary, groups));
+  container.append(renderTenderSyncTabs(summary, resolvedGroups));
   return container;
 }
 
@@ -4160,49 +6147,57 @@ function showTenderSyncReport(summary = {}) {
   const report = $("#tender-sync-report");
   const modal = $("#tender-sync-modal");
   if (!report) return;
+  state.tenderSync.summary = summary;
+  const displaySummary = tenderSyncWithExcludedAutoLinks(summary);
 
   if (modal) modal.hidden = false;
-  setText("#tender-sync-modal-title", summary.apply && summary.applyScope === "unlinked"
+  setText("#tender-sync-modal-title", displaySummary.apply && displaySummary.applyScope === "unlinked"
     ? "Тендеры без договора созданы"
-    : summary.apply
+    : displaySummary.apply
     ? "Синхронизация применена"
-    : "Проверка синхронизации тендеров");
-  setText("#tender-sync-modal-subtitle", summary.apply && summary.applyScope === "unlinked"
+    : "Синхронизация тендеров с Google Drive");
+  setText("#tender-sync-modal-subtitle", displaySummary.apply && displaySummary.applyScope === "unlinked"
     ? "Записаны только источники без договора"
-    : summary.apply
+    : displaySummary.apply
     ? "Источники записаны"
-    : "Dry-run: ничего не записано");
+    : "Предпросмотр: ничего не записано");
   report.innerHTML = "";
+  const planned = Array.isArray(displaySummary.planned) ? displaySummary.planned : [];
+  const groups = tenderSyncReviewGroups(planned);
 
-  const hint = document.createElement("div");
-  hint.className = "tender-sync-lead";
-  hint.textContent = summary.apply && summary.applyScope === "unlinked"
-    ? "Созданы только тендеры без договора. Привязанные и спорные строки не записывались."
-    : summary.apply
-    ? "Источники обновлены. Оставшиеся тендеры без договора можно привязать вручную в группе «Тендеры»."
-    : "Это только предварительный просмотр. Автоматически запишутся только зеленые привязки; спорные строки останутся без договора.";
-
-  const totals = document.createElement("div");
-  totals.className = "tender-sync-totals";
-  const totalKeys = summary.apply && summary.applyScope === "unlinked"
-    ? ["foldersOnDisk", "applied", "scopeCreated", "scopeUpdated", "unlinkedReady", "review", "stale"]
-    : ["foldersOnDisk", "created", "updated", "linked", "manualLinked", "autoLinked", "unlinkedReady", "review", "stale"];
-  for (const key of totalKeys) {
-    if (!Number.isFinite(Number(summary.totals?.[key]))) continue;
-    const pill = document.createElement("span");
-    pill.className = "tender-sync-pill";
-    pill.textContent = `${tenderSyncTotalLabel(key)}: ${summary.totals[key]}`;
-    totals.append(pill);
-  }
-
-  report.append(hint, totals);
-  report.append(renderTenderSyncPlan(summary));
+  report.append(renderTenderSyncSummary(displaySummary, groups));
+  report.append(renderTenderSyncPlan(displaySummary, groups));
   report.scrollTop = 0;
+}
+
+function tenderSyncErrorDetails(error) {
+  const diagnostics = error?.payload?.tenderSync || null;
+  const details = [];
+  if (error?.status === 404 && String(error.message || "") === "HTTP 404") {
+    details.push("Маршрут /api/tenders/sync не найден. Перезапустите backend, чтобы подхватить актуальный API.");
+  }
+  if (diagnostics?.tenderRoot) {
+    details.push(`Корень тендеров: ${diagnostics.tenderRoot}`);
+  }
+  if (diagnostics && diagnostics.rootExists === false) {
+    details.push("Google Drive Desktop не отдал эту папку или RAG_TENDER_ROOT указывает не туда.");
+  }
+  const missing = Number(diagnostics?.categoriesMissing || 0);
+  const categoryErrors = Number(diagnostics?.categoryErrors || 0);
+  if (missing || categoryErrors) {
+    details.push(`Категории: доступно ${formatCount(diagnostics.categoriesReadable)}, недоступно ${formatCount(missing + categoryErrors)}.`);
+  }
+  return details;
 }
 
 async function syncTenders(options = {}) {
   const apply = typeof options === "boolean" ? options : Boolean(options.apply);
   const scope = typeof options === "object" && options.scope ? options.scope : "all";
+  if (!apply) {
+    state.tenderSync.summary = null;
+    state.tenderSync.selectedTenderLinks.clear();
+    state.tenderSync.excludedAutoLinks.clear();
+  }
   const button = $("#tender-sync-button");
   if (button) {
     button.disabled = true;
@@ -4218,7 +6213,13 @@ async function syncTenders(options = {}) {
     if (apply) params.set("apply", "true");
     if (scope !== "all") params.set("scope", scope);
     const query = params.toString();
-    const payload = await api(`/api/tenders/sync${query ? `?${query}` : ""}`, { method: "POST" });
+    const selectedTenderLinks = tenderSyncSelectedLinksPayload();
+    const excludedAutoLinks = tenderSyncExcludedAutoLinksPayload();
+    const requestOptions = { method: "POST" };
+    if (selectedTenderLinks.length || excludedAutoLinks.length) {
+      requestOptions.body = JSON.stringify({ selectedTenderLinks, excludedAutoLinks });
+    }
+    const payload = await api(`/api/tenders/sync${query ? `?${query}` : ""}`, requestOptions);
     showTenderSyncReport(payload);
     if (apply) {
       state.sources = Array.isArray(payload.sources) ? payload.sources : await api("/api/sources");
@@ -4230,6 +6231,7 @@ async function syncTenders(options = {}) {
         ensureSettingsSourceVisibleInTab();
       }
       renderSources();
+      refreshIndexOverviewStatus({ silent: true });
       setText("#job-status", scope === "unlinked"
         ? "Тендеры без договора созданы."
         : "Тендеры синхронизированы.");
@@ -4246,6 +6248,13 @@ async function syncTenders(options = {}) {
       empty.className = "empty";
       empty.textContent = apiErrorMessage(error, "Не удалось синхронизировать тендеры");
       report.append(empty);
+      const details = tenderSyncErrorDetails(error);
+      if (details.length) {
+        const detail = document.createElement("div");
+        detail.className = "tender-sync-detail";
+        detail.textContent = details.join(" ");
+        report.append(detail);
+      }
     }
   } finally {
     if (button) {
@@ -4259,23 +6268,36 @@ async function addSource(event) {
   event.preventDefault();
   const sourcePath = $("#source-path").value.trim();
   const title = $("#source-title").value.trim() || folderName(sourcePath);
+  const sourceType = sourceTypeFromTab();
   if (!sourcePath) {
-    setText("#job-status", "Выберите дополнительную папку для текущего RAG.");
+    setText("#job-status", "Выберите папку для текущего RAG.");
     return;
   }
 
-  const source = await api("/api/sources", {
-    method: "POST",
-    body: JSON.stringify({ path: sourcePath, title })
-  });
-  state.selectedSourceId = source.id;
-  state.settingsSourceId = source.id;
-  state.sourceListTab = sourceListTabForSource(source);
-  state.addingSource = false;
-  state.selectedSourcePath = "";
-  $("#source-title").value = "";
-  $("#source-path").value = "";
-  await loadSources();
+  try {
+    const source = await api("/api/sources", {
+      method: "POST",
+      body: JSON.stringify({ path: sourcePath, title, sourceType })
+    });
+    state.selectedSourceId = source.id;
+    state.settingsSourceId = source.id;
+    state.sourceListTab = sourceListTabForSource(source);
+    state.addingSource = false;
+    clearSourceTitleEditing();
+    state.selectedSourcePath = "";
+    $("#source-title").value = "";
+    $("#source-path").value = "";
+    await loadSources();
+    const addedAsRequested = sourceListTabForSource(source) === sourceType;
+    setText(
+      "#job-status",
+      addedAsRequested
+        ? (sourceType === "tender" ? "Тендер добавлен в RAG." : "Договор добавлен в RAG.")
+        : `Папка уже была добавлена как ${sourceTypeLabel(source).toLowerCase()}; открыл её в соответствующей вкладке.`
+    );
+  } catch (error) {
+    setText("#job-status", apiErrorMessage(error, "Не удалось добавить папку в RAG"));
+  }
 }
 
 async function deleteSelectedSources() {
@@ -4293,6 +6315,7 @@ async function deleteSelectedSources() {
   if (targetIds.has(state.settingsSourceId)) {
     state.settingsSourceId = sourceListTabSources()[0]?.id || state.sources[0]?.id || "";
   }
+  if (targetIds.has(state.sourceTitleEditSourceId)) clearSourceTitleEditing();
   if (targetIds.has(state.skippedSourceId)) {
     state.skippedSourceId = "";
     state.skipped = null;
@@ -4306,7 +6329,7 @@ async function deleteSelectedSources() {
   resetSourcePreview();
   state.selectedSourceIds.clear();
   state.sourceSelectionMode = false;
-  state.addingSource = state.sources.length === 0;
+  state.addingSource = false;
   renderSources();
   setText("#job-status", `Выбранные папки удалены из списка: ${targets.length}. Очищаю индекс в фоне...`);
 
@@ -4316,7 +6339,7 @@ async function deleteSelectedSources() {
       body: JSON.stringify({ ids: [...targetIds] })
     });
     state.sources = Array.isArray(payload.sources) ? payload.sources : await api("/api/sources");
-    state.addingSource = state.sources.length === 0;
+    state.addingSource = false;
     setText("#job-status", `Выбранные папки удалены из RAG: ${targets.length}. Файлы на диске не тронуты.`);
   } catch (error) {
     try {
@@ -4337,6 +6360,112 @@ function replaceSource(nextSource) {
     state.sources[index] = nextSource;
   } else {
     state.sources.push(nextSource);
+  }
+}
+
+async function saveSourceTitle(sourceId, title, statusNode) {
+  const nextTitle = String(title || "").trim();
+  if (!nextTitle) {
+    if (statusNode) statusNode.textContent = "Введите наименование.";
+    return;
+  }
+
+  if (statusNode) statusNode.textContent = "Сохраняю наименование...";
+  try {
+    const source = await api(`/api/sources/${encodeURIComponent(sourceId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ title: nextTitle })
+    });
+    replaceSource(source);
+    state.settingsSourceId = source.id;
+    clearSourceTitleEditing();
+    renderSources();
+    setText("#job-status", "Наименование сохранено.");
+  } catch (error) {
+    if (statusNode) statusNode.textContent = apiErrorMessage(error, "Не удалось сохранить наименование");
+  }
+}
+
+async function deleteSource(sourceId) {
+  if (!sourceId || state.deletingSourceIds.size > 0) return;
+  const source = sourceById(sourceId);
+  if (!source) return;
+
+  const confirmed = window.confirm(`Удалить ${sourceTypeLabel(source).toLowerCase()} из RAG: ${source.title}?\n\nФайлы на диске не удаляются.`);
+  if (!confirmed) return;
+
+  const previousSources = state.sources;
+  state.deletingSourceIds = new Set([sourceId]);
+  renderSources();
+  setText("#job-status", `Удаляю ${sourceTypeLabel(source).toLowerCase()} из RAG...`);
+
+  try {
+    const payload = await api(`/api/sources/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
+    state.sources = Array.isArray(payload.sources) ? payload.sources : await api("/api/sources");
+    syncSelectedSourceIdsWithSources();
+
+    if (state.selectedSourceId === sourceId) state.selectedSourceId = "";
+    if (state.skippedSourceId === sourceId) {
+      state.skippedSourceId = "";
+      state.skipped = null;
+    }
+    if (state.indexedFiles.sourceId === sourceId) resetIndexedFilesState();
+    state.chatSessions.forEach((session) => {
+      if (session.sourceId === sourceId) session.sourceId = "";
+    });
+    saveChatHistory();
+    resetSourcePreview();
+    state.sourceSelectionMode = false;
+    state.selectedSourceIds.clear();
+    state.expandedIndexedFolders = new Set([""]);
+    state.addingSource = false;
+    if (state.sourceTitleEditSourceId === sourceId) clearSourceTitleEditing();
+
+    if (!state.addingSource) {
+      const visibleSources = sourceListTabSources();
+      const nextSource = visibleSources[0] || state.sources[0] || null;
+      state.settingsSourceId = nextSource?.id || "";
+      if (nextSource) state.sourceListTab = sourceListTabForSource(nextSource);
+    } else {
+      state.settingsSourceId = "";
+    }
+
+    setText("#job-status", `${sourceTypeLabel(source)} удалён из RAG. Файлы на диске не тронуты.`);
+  } catch (error) {
+    state.sources = previousSources;
+    setText("#job-status", apiErrorMessage(error, "Не удалось удалить папку из RAG"));
+  } finally {
+    state.deletingSourceIds.clear();
+    renderSources();
+  }
+}
+
+async function moveTenderToContracts(sourceId) {
+  const source = sourceById(sourceId);
+  if (!source || isContractSource(source)) return;
+
+  const confirmed = window.confirm(`\u041f\u0435\u0440\u0435\u043d\u0435\u0441\u0442\u0438 \u0442\u0435\u043d\u0434\u0435\u0440 \u0432 \u0434\u043e\u0433\u043e\u0432\u043e\u0440\u044b: ${source.title}?\n\n\u041f\u0430\u043f\u043a\u0430 \u043e\u0441\u0442\u0430\u043d\u0435\u0442\u0441\u044f \u043d\u0430 \u0434\u0438\u0441\u043a\u0435, \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a \u0431\u0443\u0434\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u043a\u0430\u043a \u0434\u043e\u0433\u043e\u0432\u043e\u0440.`);
+  if (!confirmed) return;
+
+  setText("#job-status", "\u041f\u0435\u0440\u0435\u043d\u043e\u0448\u0443 \u0442\u0435\u043d\u0434\u0435\u0440 \u0432 \u0434\u043e\u0433\u043e\u0432\u043e\u0440\u044b...");
+  try {
+    const nextSource = await api(`/api/sources/${encodeURIComponent(sourceId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ sourceType: "contract" })
+    });
+    replaceSource(nextSource);
+    state.settingsSourceId = nextSource.id;
+    state.selectedSourceId = nextSource.id;
+    state.sourceListTab = "contract";
+    state.addingSource = false;
+    clearSourceTitleEditing();
+    state.sourceSelectionMode = false;
+    state.selectedSourceIds.clear();
+    if (state.indexedFiles.sourceId === sourceId) loadIndexedFiles(sourceId, { force: true, silent: true });
+    renderSources();
+    setText("#job-status", "\u0422\u0435\u043d\u0434\u0435\u0440 \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0451\u043d \u0432 \u0434\u043e\u0433\u043e\u0432\u043e\u0440\u044b. \u0417\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 \u043f\u0435\u0440\u0435\u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044e, \u0447\u0442\u043e\u0431\u044b \u043e\u0431\u043d\u043e\u0432\u0438\u0442\u044c \u043c\u0435\u0442\u0430\u0434\u0430\u043d\u043d\u044b\u0435 \u0438\u043d\u0434\u0435\u043a\u0441\u0430.");
+  } catch (error) {
+    setText("#job-status", apiErrorMessage(error, "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0442\u0438 \u0442\u0435\u043d\u0434\u0435\u0440 \u0432 \u0434\u043e\u0433\u043e\u0432\u043e\u0440\u044b"));
   }
 }
 
@@ -4412,6 +6541,15 @@ function isAgentRunActive(run) {
   return run?.status === "running";
 }
 
+function sourceIndexingActive() {
+  return Boolean(state.indexPollJobId)
+    || state.sources.some((source) => source?.indexStatus?.status === "running");
+}
+
+function isIndexingActive(run = state.agentStatus.latestRun) {
+  return isAgentRunActive(run) || isAgentStarting(run) || sourceIndexingActive();
+}
+
 function isAgentStarting(run) {
   const requestedAt = Number(state.agentStatus.requestedAt || 0);
   if (!requestedAt) return false;
@@ -4432,15 +6570,102 @@ function formatAgentTotals(run = {}) {
   return parts.join("; ");
 }
 
+function currentAgentSourceRun(run = {}) {
+  const sources = Array.isArray(run.sources) ? run.sources : [];
+  return sources.find((source) => source.status === "running") || null;
+}
+
+function agentSourcePosition(run = {}, sourceRun = null) {
+  const sources = Array.isArray(run.sources) ? run.sources : [];
+  const totalSources = Number(run.totals?.sources || 0);
+  if (!totalSources && !sources.length) return "";
+
+  const sourceIndex = sourceRun ? sources.indexOf(sourceRun) + 1 : Math.min(sources.length, totalSources || sources.length);
+  if (!sourceIndex) return totalSources ? `папок ${totalSources}` : "";
+  return `папка ${sourceIndex}${totalSources ? `/${totalSources}` : ""}`;
+}
+
+function formatAgentPhase(phase = "") {
+  const labels = {
+    cleanup: "подготовка",
+    scan: "сканирование",
+    read: "чтение файлов",
+    chunk: "разбор фрагментов",
+    embed: "векторизация",
+    vector_store: "запись в Qdrant"
+  };
+  return labels[phase] || "индексация";
+}
+
+function formatAgentRunStatus(run = {}) {
+  if (isAgentStarting(run) && !isAgentRunActive(run)) return "Индексация запускается...";
+
+  const currentSource = currentAgentSourceRun(run);
+  const sourceLabel = agentSourcePosition(run, currentSource);
+  const prefix = sourceLabel ? `Идёт индексация: ${sourceLabel}` : "Идёт индексация";
+  if (!currentSource) return prefix;
+
+  if (currentSource.phase === "embed") {
+    const vectorsProcessed = Number(currentSource.vectorsProcessed || 0);
+    const vectorsTotal = Number(currentSource.vectorsTotal || 0);
+    return vectorsTotal
+      ? `${prefix}, векторы ${vectorsProcessed}/${vectorsTotal}`
+      : `${prefix}, векторизация`;
+  }
+
+  if (currentSource.phase === "ocr") {
+    const ocrPage = Number(currentSource.ocrPage || 0);
+    const ocrPages = Number(currentSource.ocrPages || 0);
+    const processed = Number(currentSource.processed || 0);
+    const total = Number(currentSource.total || 0);
+    const sourceProgress = total ? `, ${processed}/${total}` : "";
+    return ocrPages
+      ? `${prefix}, OCR ${ocrPage || 0}/${ocrPages}${sourceProgress}`
+      : `${prefix}, OCR${sourceProgress}`;
+  }
+
+  const total = Number(currentSource.total || 0);
+  const processed = Number(currentSource.processed || 0);
+  const phase = formatAgentPhase(currentSource.phase);
+  return total ? `${prefix}, ${phase} ${processed}/${total}` : `${prefix}, ${phase}`;
+}
+
+function showAgentRunProgress(run = {}) {
+  const currentSource = currentAgentSourceRun(run);
+  showIndexProgress({
+    ...(currentSource || {}),
+    status: "running",
+    phase: currentSource?.phase || "scan",
+    message: formatAgentRunStatus(run)
+  });
+}
+
 function updateAgentButton(run = state.agentStatus.latestRun) {
   const button = $("#agent-run-button");
-  if (!button) return;
+  const forceButton = $("#agent-force-run-button");
+  const stopButton = $("#index-stop-button");
+  if (!button && !forceButton && !stopButton) return;
 
   const starting = isAgentStarting(run);
-  const running = isAgentRunActive(run) || starting;
-  button.disabled = running;
-  button.textContent = running ? "Агент работает" : "Запустить агента";
-  button.title = running ? "Проверка папок уже выполняется" : "Проверить все выбранные папки";
+  const running = isIndexingActive(run);
+  const title = isAgentRunActive(run) || starting ? formatAgentRunStatus(run) : "Идёт индексация";
+  if (button) {
+    button.disabled = running;
+    button.textContent = running ? "Идёт индексация" : "Обновить индекс";
+    button.title = running ? title : "Проверить изменения во всех папках";
+  }
+  if (forceButton) {
+    forceButton.disabled = running;
+    forceButton.textContent = "Полная переиндексация";
+    forceButton.title = running
+      ? `${title}. Дождитесь завершения индексации, чтобы запустить полную переиндексацию.`
+      : "Принудительно переиндексировать все папки";
+  }
+  if (stopButton) {
+    stopButton.hidden = !running;
+    stopButton.disabled = state.indexStopRequested || !running;
+    stopButton.title = state.indexStopRequested ? "Остановка уже запрошена" : "Остановить текущую индексацию";
+  }
 }
 
 function clearAgentPollTimer() {
@@ -4462,48 +6687,93 @@ async function refreshAgentStatus({ silent = false } = {}) {
   const previous = state.agentStatus.latestRun;
   state.agentStatus.latestRun = run;
   updateAgentButton(run);
+  renderAuditPanel();
 
   const running = isAgentRunActive(run) || isAgentStarting(run);
   if (running) {
     ensureAgentPollTimer();
-    if (!silent) setText("#job-status", "Агент запущен: проверяю выбранные папки");
+    const status = formatAgentRunStatus(run);
+    if (!state.indexPollJobId) showAgentRunProgress(run);
+    setText("#job-status", status);
     return run;
   }
 
   clearAgentPollTimer();
   if (previous?.status === "running" && run?.id === previous.id) {
+    if (!state.indexPollJobId) hideIndexProgress(3000);
     const summary = formatAgentTotals(run);
-    setText("#job-status", `Агент завершил проверку${summary ? `: ${summary}` : ""}`);
+    const stopped = run?.status === "cancelled";
+    const interrupted = run?.status === "interrupted";
+    state.indexStopRequested = false;
+    setText(
+      "#job-status",
+      interrupted
+        ? "Индексация прервана; запустите заново"
+        : (stopped ? "Индексация остановлена" : `Индексация завершена${summary ? `: ${summary}` : ""}`)
+    );
     await loadSources();
+    refreshIndexOverviewStatus({ silent: true }).catch(() => {});
     if (state.selectedSourceId) loadIndexedFiles(state.selectedSourceId, { force: true });
   } else if (!silent && run) {
     const updated = shortDateTime(run.finishedAt || run.startedAt);
     const summary = formatAgentTotals(run);
-    setText("#job-status", `Последний запуск агента: ${run.status}${updated ? `, ${updated}` : ""}${summary ? `; ${summary}` : ""}`);
+    const statusLabel = run.message || run.status;
+    setText("#job-status", `Последняя индексация: ${statusLabel}${updated ? `, ${updated}` : ""}${summary ? `; ${summary}` : ""}`);
   }
 
   return run;
 }
 
-async function runAgent() {
+async function runAgent(options = {}) {
+  const force = Boolean(options.force);
   const button = $("#agent-run-button");
+  const forceButton = $("#agent-force-run-button");
   if (button) button.disabled = true;
+  if (forceButton) forceButton.disabled = true;
   state.agentStatus.requestedAt = Date.now();
-  setText("#job-status", "Запускаю агента для всех выбранных папок");
+  setText("#job-status", force ? "Запускаю полную переиндексацию всех папок" : "Проверяю изменения во всех папках");
   updateAgentButton(state.agentStatus.latestRun);
 
   try {
     await api("/api/agent/run", {
       method: "POST",
-      body: JSON.stringify({ force: false })
+      body: JSON.stringify({ force })
     });
-    setText("#job-status", "Агент запущен: проверяю выбранные папки");
+    setText("#job-status", force ? "Полная переиндексация запущена" : "Обновление индекса запущено");
     ensureAgentPollTimer();
     await refreshAgentStatus({ silent: true });
   } catch (error) {
     state.agentStatus.requestedAt = 0;
     updateAgentButton(state.agentStatus.latestRun);
-    setText("#job-status", `Не удалось запустить агента: ${error.message}`);
+    setText("#job-status", `${force ? "Не удалось запустить полную переиндексацию" : "Не удалось запустить обновление индекса"}: ${error.message}`);
+  }
+}
+
+async function stopIndexing() {
+  if (!isIndexingActive()) {
+    setText("#job-status", "Активной индексации нет.");
+    updateAgentButton();
+    return;
+  }
+
+  state.indexStopRequested = true;
+  updateAgentButton();
+  setText("#job-status", "Останавливаю индексацию...");
+
+  try {
+    const result = await api("/api/index/stop", { method: "POST" });
+    if (!result.stopRequested) {
+      state.indexStopRequested = false;
+      setText("#job-status", "Активной индексации нет.");
+      updateAgentButton();
+      return;
+    }
+    ensureAgentPollTimer();
+    await refreshAgentStatus({ silent: true }).catch(() => {});
+  } catch (error) {
+    state.indexStopRequested = false;
+    updateAgentButton();
+    setText("#job-status", apiErrorMessage(error, "Не удалось остановить индексацию"));
   }
 }
 
@@ -4528,6 +6798,10 @@ function formatJobStatus(job) {
 
   if (job.status === "completed") {
     return job.failed ? `Готово, есть ошибки: ${job.failed}` : "";
+  }
+
+  if (job.status === "cancelled") {
+    return "Индексация остановлена";
   }
 
   if (job.phase === "embed") {
@@ -4562,6 +6836,7 @@ function clampPercent(value) {
 function jobProgressPercent(job = {}) {
   if (job.status === "completed") return 100;
   if (job.status === "failed") return clampPercent(job.progressPercent || 100);
+  if (job.status === "cancelled") return clampPercent(job.progressPercent || 100);
   if (job.phase === "queued") return 1;
   if (job.phase === "cleanup") return 2;
   if (job.phase === "scan") return null;
@@ -4587,37 +6862,96 @@ function jobProgressPercent(job = {}) {
   return clampPercent(8 + (processed / total) * 72);
 }
 
+function jobStatusText(job = {}) {
+  const health = indexHealthStatus(job);
+  const formatted = formatJobStatus(job);
+  if (health === "stale") {
+    const age = formatDurationShort(job.health?.progressAgeMs);
+    return `\u041d\u0435\u0442 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0439 \u043f\u0440\u043e\u0433\u0440\u0435\u0441\u0441\u0430${age ? ` ${age}` : ""}${formatted ? `: ${formatted}` : ""}`;
+  }
+  if (health === "interrupted") return "\u0418\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f \u043f\u0440\u0435\u0440\u0432\u0430\u043d\u0430; \u043f\u0440\u043e\u0446\u0435\u0441\u0441 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d";
+  if (formatted) return formatted;
+  if (job.status === "completed") return "Готово";
+  if (job.status === "failed") return "Ошибка индексации";
+  if (job.status === "cancelled") return "Индексация остановлена";
+  return job.message || auditPhaseLabel(job.phase || job.status);
+}
+
+function indexProgressTargets() {
+  return [
+    {
+      progress: $("#index-progress"),
+      fill: $("#index-progress-fill"),
+      label: $("#index-progress-label")
+    },
+    {
+      progress: $("#settings-index-progress"),
+      fill: $("#settings-index-progress-fill"),
+      label: $("#settings-index-progress-label")
+    },
+    {
+      progress: $("#audit-index-progress"),
+      fill: $("#audit-index-progress-fill"),
+      label: $("#audit-index-progress-label")
+    }
+  ].filter((target) => target.progress && target.fill && target.label);
+}
+
+function renderIndexProgressTarget({ progress, fill, label }, job = {}) {
+  const percent = jobProgressPercent(job);
+  const health = indexHealthStatus(job);
+  const bar = progress.closest(".index-status-bar");
+  progress.hidden = false;
+  if (bar) {
+    bar.classList.add("has-progress");
+    setIndexStatusBarTone(bar, indexStatusTone(job));
+  }
+  progress.classList.toggle("is-indeterminate", percent == null);
+  progress.classList.toggle("is-failed", job.status === "failed");
+  progress.classList.toggle("is-completed", job.status === "completed");
+  progress.classList.toggle("is-stalled", health === "stale" || health === "interrupted");
+  fill.style.width = percent == null ? "" : `${percent}%`;
+  label.textContent = health === "stale"
+    ? "\u0437\u0430\u0432\u0438\u0441\u043b\u043e"
+    : (health === "interrupted" ? "\u0443\u043f\u0430\u043b\u043e" : (job.status === "failed"
+      ? "ошибка"
+      : (job.status === "cancelled" ? "стоп" : (percent == null ? "..." : `${Math.round(percent)}%`))));
+  progress.title = jobStatusText(job);
+}
+
+function resetIndexProgressTarget({ progress, fill, label }) {
+  progress.hidden = true;
+  progress.closest(".index-status-bar")?.classList.remove("has-progress");
+  progress.classList.remove("is-indeterminate", "is-failed", "is-completed", "is-stalled");
+  fill.style.width = "0%";
+  label.textContent = "";
+}
+
 function showIndexProgress(job = {}) {
-  const progress = $("#index-progress");
-  const fill = $("#index-progress-fill");
-  const label = $("#index-progress-label");
-  if (!progress || !fill || !label) return;
+  const targets = indexProgressTargets();
+  if (!targets.length) return;
 
   if (state.indexProgressHideTimer) {
     clearTimeout(state.indexProgressHideTimer);
     state.indexProgressHideTimer = null;
   }
 
-  const percent = jobProgressPercent(job);
-  progress.hidden = false;
-  progress.classList.toggle("is-indeterminate", percent == null);
-  progress.classList.toggle("is-failed", job.status === "failed");
-  progress.classList.toggle("is-completed", job.status === "completed");
-  fill.style.width = percent == null ? "" : `${percent}%`;
-  label.textContent = job.status === "failed" ? "ошибка" : (percent == null ? "..." : `${Math.round(percent)}%`);
-  progress.title = formatJobStatus(job);
+  for (const target of targets) renderIndexProgressTarget(target, job);
+  const text = jobStatusText(job);
+  if (text) {
+    setText("#job-status", text);
+    setText("#settings-index-overview-text", text);
+    const settingsOverview = $("#settings-index-overview");
+    if (settingsOverview) settingsOverview.title = text;
+  }
+  setText("#audit-job-status", jobStatusText(job));
 }
 
 function hideIndexProgress(delayMs = 0) {
-  const progress = $("#index-progress");
-  if (!progress) return;
+  const targets = indexProgressTargets();
+  if (!targets.length) return;
   const hide = () => {
-    progress.hidden = true;
-    progress.classList.remove("is-indeterminate", "is-failed", "is-completed");
-    const fill = $("#index-progress-fill");
-    const label = $("#index-progress-label");
-    if (fill) fill.style.width = "0%";
-    if (label) label.textContent = "";
+    for (const target of targets) resetIndexProgressTarget(target);
   };
   if (state.indexProgressHideTimer) clearTimeout(state.indexProgressHideTimer);
   state.indexProgressHideTimer = delayMs ? setTimeout(hide, delayMs) : null;
@@ -4634,16 +6968,18 @@ async function pollJob(jobId) {
   const timer = setInterval(async () => {
     try {
       const job = await api(`/api/jobs/${jobId}`);
-      status.textContent = formatJobStatus(job);
+      status.textContent = jobStatusText(job);
       showIndexProgress(job);
       const source = state.sources.find((item) => item.id === job.sourceId);
       if (source) {
         source.indexStatus = {
           ...source.indexStatus,
           id: job.id,
+          type: job.type || "",
           status: job.status,
           phase: job.phase,
           message: job.message,
+          health: job.health || null,
           force: Boolean(job.force),
           processed: job.processed || 0,
           total: job.total || job.files || 0,
@@ -4655,6 +6991,12 @@ async function pollJob(jobId) {
           vectorsProcessed: job.vectorsProcessed || 0,
           vectorsCached: job.vectorsCached || 0,
           vectorsEmbedded: job.vectorsEmbedded || 0,
+          reindexQueued: job.reindexQueued || 0,
+          reindexRetried: job.reindexRetried || 0,
+          reindexResolved: job.reindexResolved || 0,
+          reindexUnresolved: job.reindexUnresolved || 0,
+          reindexFailed: job.reindexFailed || 0,
+          reindexRecoveredErrors: job.reindexRecoveredErrors || 0,
           embeddingEnabled: job.embeddingEnabled,
           embeddingModel: job.embeddingModel,
           vectorStoreProvider: job.vectorStoreProvider || "",
@@ -4663,17 +7005,25 @@ async function pollJob(jobId) {
           qdrantPoints: optionalNumber(job.qdrantPoints),
           vectorCount: optionalNumber(job.vectorCount),
           qdrantError: job.qdrantError || "",
+          warning: job.warning || "",
           failed: job.failed || 0,
           skippedTotal: (job.unsupportedFiles || 0) + (job.temporaryFiles || 0) + (job.excludedFiles || 0),
           unsupportedFiles: job.unsupportedFiles || 0,
           temporaryFiles: job.temporaryFiles || 0,
           excludedFiles: job.excludedFiles || 0,
           unsupportedByExt: job.unsupportedByExt || {},
+          googleContextLinks: job.googleContextLinks || 0,
+          currentGoogleContextLinkId: job.currentGoogleContextLinkId || "",
+          currentGoogleContextTitle: job.currentGoogleContextTitle || "",
+          currentFileTitle: job.currentFileTitle || "",
+          currentFileRelativePath: job.currentFileRelativePath || "",
+          currentFileExtension: job.currentFileExtension || "",
           startedAt: job.startedAt,
           updatedAt: job.updatedAt,
           finishedAt: job.finishedAt
         };
         renderSources();
+        updateAgentButton();
         if (
           job.status === "running"
           && state.indexedFiles.sourceId === job.sourceId
@@ -4683,15 +7033,18 @@ async function pollJob(jobId) {
           loadIndexedFiles(job.sourceId, { force: true, silent: true });
         }
       }
-      if (job.status === "completed" || job.status === "failed") {
+      if (["completed", "failed", "cancelled"].includes(job.status)) {
         clearInterval(timer);
         if (state.indexPollTimer === timer) {
           state.indexPollTimer = null;
           state.indexPollJobId = "";
         }
+        state.indexStopRequested = false;
         showIndexProgress(job);
         hideIndexProgress(job.status === "completed" ? 1800 : 5000);
         loadSources();
+        updateAgentButton();
+        refreshIndexOverviewStatus({ silent: true });
         if (job.status === "completed") refreshIntegrationsStatus();
         if (job.status === "completed") loadIndexedFiles(job.sourceId, { force: true });
         if (!$("#skipped-modal").hidden) loadSkippedFiles();
@@ -4702,6 +7055,8 @@ async function pollJob(jobId) {
         state.indexPollTimer = null;
         state.indexPollJobId = "";
       }
+      state.indexStopRequested = false;
+      updateAgentButton();
       status.textContent = error.message;
       hideIndexProgress(3000);
     }
@@ -4712,10 +7067,31 @@ async function pollJob(jobId) {
 async function indexSelected(force = false, sourceIdOverride = "") {
   const sourceId = sourceIdOverride || $("#source-select").value;
   if (!sourceId) return;
+  const source = state.sources.find((item) => item.id === sourceId);
+  const previousIndexStatus = source ? { ...(source.indexStatus || {}) } : null;
+  if (source) {
+    source.indexStatus = {
+      ...(source.indexStatus || {}),
+      status: "running",
+      phase: "queued",
+      message: force
+        ? "\u041f\u043e\u043b\u043d\u0430\u044f \u043f\u0435\u0440\u0435\u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438"
+        : "\u0418\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u044f \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u0438",
+      force: Boolean(force),
+      processed: 0,
+      total: Number(source.indexStatus?.total || source.indexStatus?.eligibleFiles || 0),
+      currentFileTitle: "",
+      currentFileRelativePath: "",
+      currentFileExtension: "",
+      startedAt: new Date().toISOString()
+    };
+  }
   if (state.indexedFiles.sourceId === sourceId) {
     resetIndexedFilesState(sourceId);
     renderIndexedFilesPanel();
   }
+  if (source) renderSources();
+  updateAgentButton();
   $("#job-status").textContent = force ? "Запуск полной переиндексации" : "Запуск индексации";
   showIndexProgress({ status: "running", phase: "queued", message: force ? "Полная переиндексация в очереди" : "Индексация в очереди" });
   let job;
@@ -4730,24 +7106,31 @@ async function indexSelected(force = false, sourceIdOverride = "") {
       : `Не удалось запустить индексацию: ${error.message}`;
     $("#job-status").textContent = apiErrorMessage(error, "Не удалось запустить индексацию");
     hideIndexProgress(5000);
+    if (source) source.indexStatus = previousIndexStatus || source.indexStatus;
     renderSources();
+    updateAgentButton();
     return;
   }
   showIndexProgress(job);
-  const source = state.sources.find((item) => item.id === sourceId);
   if (source) {
     source.indexStatus = {
       ...source.indexStatus,
       id: job.id,
+      type: job.type || "",
       status: job.status,
       phase: job.phase,
       message: job.message,
+      health: job.health || null,
       force: Boolean(job.force),
       processed: job.processed || 0,
       total: job.total || 0,
+      currentFileTitle: job.currentFileTitle || "",
+      currentFileRelativePath: job.currentFileRelativePath || "",
+      currentFileExtension: job.currentFileExtension || "",
       startedAt: job.startedAt
     };
     renderSources();
+    updateAgentButton();
   }
   pollJob(job.id);
 }
@@ -4912,6 +7295,30 @@ function setMessageRagDebug(message, payload = {}, sources = []) {
   }
 }
 
+async function generateChatTitleForSession(sessionId, question, answer, matchedSource = null) {
+  const session = state.chatSessions.find((item) => item.id === sessionId);
+  if (!session || session.archivedAt || session.titleSource === "llm") return;
+
+  try {
+    const payload = await api("/api/chat/title", {
+      method: "POST",
+      body: JSON.stringify({
+        question,
+        answer,
+        sourceTitle: matchedSource?.title || sourceTitle(session.sourceId)
+      })
+    });
+    const title = cleanChatTitle(payload.title);
+    if (!title) return;
+    session.title = title;
+    session.titleSource = payload.fallbackUsed ? "fallback" : "llm";
+    saveChatHistory();
+    renderChatHistory();
+  } catch {
+    // Title generation is a convenience; the chat answer should stay untouched.
+  }
+}
+
 function applyMatchedSource(match) {
   if (!match?.id || !state.sources.some((source) => source.id === match.id)) return;
   state.selectedSourceId = match.id;
@@ -4967,7 +7374,11 @@ function renderMessageTextContent(message, text, sources = []) {
       button.className = "source-citation";
       button.textContent = citationText;
       button.title = source.citationLabel || source.title || fileName(source.path);
-      button.addEventListener("click", () => openSourcePreview(previewSource));
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".source-citation.active").forEach((citation) => citation.classList.remove("active"));
+        button.classList.add("active");
+        openSourcePreview(previewSource);
+      });
       textElement.append(button);
     } else {
       const span = document.createElement("span");
@@ -5006,10 +7417,12 @@ function setMessageMeta(message, text, options = {}) {
   }
 }
 
-function createMessageElement(role, text, messageId = "", meta = "", sources = []) {
+function createMessageElement(role, text, messageId = "", meta = "", sources = [], createdAt = "") {
   const message = document.createElement("article");
   message.className = `message ${role}`;
   if (messageId) message.dataset.messageId = messageId;
+  const timestamp = formatFullDateTime(createdAt);
+  if (timestamp) message.title = timestamp;
   message.innerHTML = `
     <div class="message-text"></div>
   `;
@@ -5029,7 +7442,7 @@ function renderActiveChat() {
   }
 
   for (const item of session.messages) {
-    const message = createMessageElement(item.role, item.text, item.id, item.meta || "", item.sources || []);
+    const message = createMessageElement(item.role, item.text, item.id, item.meta || "", item.sources || [], item.createdAt || item.updatedAt || "");
     thread.append(message);
     if (item.sources?.length) {
       renderMessageSources(message, item.sources, item.text, { autoOpen: false, persist: false });
@@ -5046,7 +7459,7 @@ function appendMessage(role, text, options = {}) {
 
   const shouldPersist = options.persist !== false;
   const record = shouldPersist ? addMessageRecord(role, text) : null;
-  const message = createMessageElement(role, text, record?.id || "");
+  const message = createMessageElement(role, text, record?.id || "", "", [], record?.createdAt || "");
   thread.append(message);
   scrollChatToBottom();
   return message;
@@ -5076,17 +7489,18 @@ function renderMessageSources(message, sources = [], answerText = "", options = 
     };
   });
   const unique = uniqueSources(enriched);
-  if (!unique.length) return;
+  const displaySources = displayedSourcesForAnswer(unique, answerText, { maxUncited: options.maxVisibleSources || 8 });
+  if (!displaySources.length) return;
 
   const block = document.createElement("div");
   block.className = "message-sources";
 
   const title = document.createElement("div");
   title.className = "message-sources-title";
-  title.textContent = "Найденные файлы";
+  title.textContent = cited.length ? "Использованные источники" : "Найденные файлы";
   block.append(title);
 
-  unique.forEach((source, index) => {
+  displaySources.forEach((source, index) => {
     const link = document.createElement("a");
     link.href = "#source-preview";
     link.className = "source-link";
@@ -5117,11 +7531,11 @@ function renderMessageSources(message, sources = [], answerText = "", options = 
   if (options.persist !== false) {
     const record = findMessageRecord(message);
     if (record) {
-      record.sources = compactSources(unique);
+      record.sources = compactSources(displaySources);
       touchActiveChat();
     }
   }
-  if (options.autoOpen === true) openSourcePreview(unique[0]);
+  if (options.autoOpen === true) openSourcePreview(displaySources[0]);
   scrollChatToBottom();
 }
 
@@ -5358,8 +7772,12 @@ async function chat(event) {
 
   const sourceId = $("#source-select").value;
   const session = ensureActiveChat();
-  session.sourceId = sourceId;
-  touchActiveChat();
+  const sessionId = session.id;
+  const contextSourceId = !sourceId && contractSourceById(session.sourceId) ? session.sourceId : "";
+  if (sourceId) {
+    session.sourceId = sourceId;
+    touchActiveChat();
+  }
 
   appendMessage("user", question);
   $("#question").value = "";
@@ -5380,7 +7798,7 @@ async function chat(event) {
     await apiStream("/api/chat/stream", {
       method: "POST",
       signal: controller.signal,
-      body: JSON.stringify({ question, sourceId })
+      body: JSON.stringify({ question, sourceId, contextSourceId })
     }, ({ event: streamEvent, payload }) => {
       if (streamEvent === "status") {
         if (streamedAnswer) return;
@@ -5438,6 +7856,7 @@ async function chat(event) {
     setMessageMeta(pending, formatResponseMeta(payload));
     renderMessageSources(pending, finalSources, finalAnswer);
     setMessageRagDebug(pending, { ...payload, answer: finalAnswer, sources: finalSources }, finalSources);
+    generateChatTitleForSession(sessionId, question, finalAnswer, payload.matchedSource).catch(() => {});
     refreshRemoteDiagnostics();
   } catch (error) {
     stopThinkingStatus();
@@ -5456,6 +7875,8 @@ async function chat(event) {
 
 $("#source-form").addEventListener("submit", addSource);
 $("#source-add-shortcut")?.addEventListener("click", focusNewSourceForm);
+$("#index-refresh-all")?.addEventListener("click", refreshAllIndexState);
+$("#settings-audit-shortcut")?.addEventListener("click", () => setSettingsTab("audit"));
 $("#tender-sync-button")?.addEventListener("click", () => syncTenders({ apply: false }));
 document.querySelectorAll("[data-source-list-tab]").forEach((button) => {
   button.addEventListener("click", () => setSourceListTab(button.dataset.sourceListTab));
@@ -5489,6 +7910,7 @@ $("#edit-vector-store-settings")?.addEventListener("click", () => setVectorStore
 $("#edit-reranker-settings")?.addEventListener("click", () => setRerankerEditing(true));
 $("#refresh-remote-diagnostics").addEventListener("click", refreshRemoteDiagnostics);
 $("#refresh-integrations-status").addEventListener("click", refreshIntegrationsStatus);
+$("#audit-refresh")?.addEventListener("click", () => refreshAuditStatus());
 $("#google-auth-login")?.addEventListener("click", startGoogleAuth);
 $("#google-auth-logout")?.addEventListener("click", logoutGoogleAuth);
 $("#google-auth-refresh")?.addEventListener("click", refreshIntegrationsStatus);
@@ -5519,9 +7941,18 @@ $("#reranker-url").addEventListener("input", () => {
 });
 ["#llm-enabled", "#llm-provider", "#llm-model", "#remote-context-enabled", "#remote-fallback-local", "#remote-llm-runtime", "#remote-llm-model"].forEach((selector) => {
   $(selector)?.addEventListener("change", () => {
+    syncLlmRouteCards();
     syncRemoteContextWarning();
     renderAutoRoute();
     syncLlmFormLock();
+  });
+});
+document.querySelectorAll("[data-llm-route]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const select = $("#llm-provider");
+    if (!select || button.disabled) return;
+    select.value = button.dataset.llmRoute;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
   });
 });
 ["#llm-base-url", "#remote-llm-base-url", "#remote-llm-token"].forEach((selector) => {
@@ -5533,6 +7964,37 @@ $("#reranker-url").addEventListener("input", () => {
 $("#new-chat-button").addEventListener("click", startNewChat);
 $("#source-viewer-close")?.addEventListener("click", resetSourcePreview);
 $("#settings-open").addEventListener("click", openSettings);
+$("#audit-open-link")?.addEventListener("click", (event) => {
+  event.preventDefault();
+  navigateToPath("/settings/audit");
+});
+$("#history-filter-active")?.addEventListener("click", () => setChatHistoryMode("active"));
+$("#history-filter-archived")?.addEventListener("click", () => setChatHistoryMode("archived"));
+$("#portal-stop-button")?.addEventListener("click", openPortalStopConfirmation);
+$("#portal-stop-close")?.addEventListener("click", () => closePortalStopConfirmation());
+$("#portal-stop-cancel")?.addEventListener("click", () => closePortalStopConfirmation());
+$("#portal-stop-confirm-input")?.addEventListener("input", syncPortalStopConfirmation);
+$("#portal-stop-confirm-input")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !$("#portal-stop-confirm")?.disabled) stopPortal();
+});
+$("#portal-stop-confirm")?.addEventListener("click", stopPortal);
+$("#portal-stop-modal")?.addEventListener("click", (event) => {
+  if (event.target.id === "portal-stop-modal") closePortalStopConfirmation();
+});
+$("#portal-stop-modal")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const focusable = [...event.currentTarget.querySelectorAll("button:not(:disabled), input:not(:disabled)")];
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
 $("#settings-back").addEventListener("click", closeSettings);
 document.querySelectorAll(".service-control-button").forEach((button) => {
   button.addEventListener("click", (event) => {
@@ -5552,6 +8014,20 @@ document.addEventListener("keydown", (event) => {
 });
 document.querySelectorAll("[data-settings-tab]").forEach((button) => {
   button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab));
+  button.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    const tabs = [...document.querySelectorAll(".settings-tab[data-settings-tab]")];
+    const currentIndex = tabs.indexOf(button);
+    if (currentIndex < 0) return;
+    event.preventDefault();
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? tabs.length - 1
+        : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[nextIndex].focus();
+    setSettingsTab(tabs[nextIndex].dataset.settingsTab);
+  });
 });
 window.addEventListener("popstate", applyRoute);
 $("#folder-close").addEventListener("click", () => closeFolderModal(""));
@@ -5565,7 +8041,16 @@ $("#folder-select-current").addEventListener("click", () => {
 $("#folder-modal").addEventListener("click", (event) => {
   if (event.target.id === "folder-modal") closeFolderModal("");
 });
-$("#agent-run-button")?.addEventListener("click", runAgent);
+$("#agent-run-button")?.addEventListener("click", () => runAgent({ force: false }));
+$("#agent-force-run-button")?.addEventListener("click", () => runAgent({ force: true }));
+$("#index-stop-button")?.addEventListener("click", stopIndexing);
+$("#index-actions-menu")?.addEventListener("click", (event) => {
+  if (event.target.closest("button")) event.currentTarget.removeAttribute("open");
+});
+document.addEventListener("click", (event) => {
+  const menu = $("#index-actions-menu");
+  if (menu?.hasAttribute("open") && !event.target.closest("#index-actions-menu")) menu.removeAttribute("open");
+});
 $("#tender-sync-close")?.addEventListener("click", closeTenderSyncModal);
 $("#tender-sync-modal")?.addEventListener("click", (event) => {
   if (event.target.id === "tender-sync-modal") closeTenderSyncModal();
@@ -5597,6 +8082,16 @@ $("#stop-button").addEventListener("click", stopChat);
 $("#chat-form").addEventListener("submit", chat);
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  const indexMenu = $("#index-actions-menu");
+  if (indexMenu?.hasAttribute("open")) {
+    indexMenu.removeAttribute("open");
+    indexMenu.querySelector("summary")?.focus();
+    return;
+  }
+  if ($("#portal-stop-modal") && !$("#portal-stop-modal").hidden) {
+    closePortalStopConfirmation();
+    return;
+  }
   if ($("#tender-sync-modal") && !$("#tender-sync-modal").hidden) {
     closeTenderSyncModal();
     return;
@@ -5614,6 +8109,7 @@ document.addEventListener("keydown", (event) => {
 
 async function init() {
   await Promise.all([loadSettings(), loadSources()]);
+  await refreshDifyStatus();
   await refreshAgentStatus({ silent: true });
   loadChatHistory();
   applyRoute();
@@ -5627,3 +8123,10 @@ setInterval(refreshLmStudioStatus, 20000);
 setInterval(refreshLmUsage, 3000);
 setInterval(refreshRemoteDiagnostics, 7000);
 setInterval(refreshIntegrationsStatus, 10000);
+setInterval(() => refreshDifyStatus({ silent: true }), 10000);
+setInterval(() => {
+  if (auditPanelVisible()) refreshAuditStatus({ silent: true });
+}, 4000);
+setInterval(() => {
+  if (!$("#settings-page")?.hidden) refreshIndexOverviewStatus({ silent: true });
+}, 10000);

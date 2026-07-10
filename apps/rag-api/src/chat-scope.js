@@ -18,16 +18,27 @@ export function hasAllSourcesIntent(question = "") {
   return allSourcesIntentPatterns.some((pattern) => pattern.test(text));
 }
 
-export function resolveChatSourceScope({ question = "", requestedSourceId = "", sources = [] } = {}) {
+export function resolveChatSourceScope({
+  question = "",
+  requestedSourceId = "",
+  contextSourceId = "",
+  sources = []
+} = {}) {
   const contracts = contractSources(sources);
   const requested = String(requestedSourceId || "").trim();
+  const contextRequested = String(contextSourceId || "").trim();
   const allSourcesRequested = hasAllSourcesIntent(question);
   let source = requested && !allSourcesRequested ? (contracts.find((item) => item.id === requested) || null) : null;
   let autoMatch = null;
+  let contextSourceUsed = false;
 
   if (!source && !requested && !allSourcesRequested) {
     autoMatch = matchSourceForQuestion(question, contracts);
     source = autoMatch.source;
+    if (!source && contextRequested) {
+      source = contracts.find((item) => item.id === contextRequested) || null;
+      contextSourceUsed = Boolean(source);
+    }
   }
 
   const searchAllSources = allSourcesRequested || (!source && !requested);
@@ -38,6 +49,7 @@ export function resolveChatSourceScope({ question = "", requestedSourceId = "", 
     sourceId: source?.id || "",
     searchSourceIds,
     autoMatch,
+    contextSourceUsed,
     searchAllSources,
     requestedSourceMissing: Boolean(requested && !source && !allSourcesRequested)
   };

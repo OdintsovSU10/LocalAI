@@ -1,0 +1,11 @@
+{
+  "user_question": "",
+  "selected_project": "",
+  "chat_history_summary": "",
+  "knowledge_id": "",
+  "sourceId": "",
+  "privacy_remote_context_allowed": false,
+  "LOCALAI_DIFY_EXTERNAL_KNOWLEDGE_ENDPOINT": "http://127.0.0.1:8787/api/dify",
+  "LOCALAI_DIFY_RETRIEVAL_URL": "http://127.0.0.1:8787/api/dify/retrieval",
+  "LOCALAI_DIFY_ADAPTER_TOKEN": "SET_IN_DIFY_SECRET_VARIABLES_ONLY"
+}

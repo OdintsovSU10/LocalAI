@@ -11,10 +11,11 @@ import { chunksPath, markdownCacheDir, projectRoot } from "./paths.js";
 import { ensureStorage, readChunks, readJobs, readManifest, readSettings, readSourceSummaries, readSources, readVectors, writeChunks, writeJobs, writeManifest, writeSettings, writeSourceSummaries, writeSources, writeVectors } from "./store.js";
 import { indexSource, scanSkippedFiles } from "./indexer.js";
 import { ensureChunkEmbeddings } from "./embeddings.js";
-import { readDailyAgentRuns, runDailyIndexAgent } from "./daily-agent.js";
+import { dailyAgentLockStatus, publicDailyAgentRun, readDailyAgentRuns, runDailyIndexAgent } from "./daily-agent.js";
 import { searchChunksWithMetadata } from "./search.js";
+import { authorizeDifyAdapterRequest, runDifyRetrieval } from "./dify-adapter.js";
 import { countQdrantVectorsBySource, qdrantStatus } from "./vector-store.js";
-import { buildCompletedVectorBackfillJob, buildVectorBackfillRows } from "./vector-backfill-status.js";
+import { buildCompletedVectorBackfillJob, buildVectorBackfillRows, countJsonVectorsBySource } from "./vector-backfill-status.js";
 import { managedQdrantStatus, restartManagedQdrant, startManagedQdrant, stopManagedQdrant } from "./qdrant-process.js";
 import { listFolders, listRoots, openFileInSystem, revealFileInSystem } from "./filesystem.js";
 import { chooseFolderWithExplorer } from "./dialog.js";
@@ -26,6 +27,7 @@ import { managedRerankerStatus, restartManagedReranker, startManagedReranker, st
 import { matchSourceForQuestion } from "./source-match.js";
 import { applySourcePatch } from "./source-updates.js";
 import { resolveChatSourceScope } from "./chat-scope.js";
+import { expandedChatRetrievalQuery, hasBroadAnswerIntent } from "./chat-intent.js";
 import {
   contractSources,
   contractForTender,
@@ -45,14 +47,28 @@ import { createApiSecurityMiddleware, readApiSecurityConfig, warnIfUnsafeNetwork
 import { findKnownSource, resolveMarkdownCachePath, resolvePreviewTarget } from "./preview-access.js";
 import { startSseResponse, writeSseEvent } from "./sse.js";
 import { normalizeContextLink, publicContextLinks, resolveContextLinkTitle } from "./context-links.js";
+import {
+  allSourcesIndexEntries,
+  indexSourceIdsForSources,
+  indexedEntryQualityStatus,
+  indexedEntriesForSource,
+  indexProgressHealth,
+  indexedSnapshotForAllSources,
+  indexedSnapshotForSource,
+  manifestChunkCount,
+  mergeIndexedSnapshotStatus as mergeIndexSnapshotStatus,
+  sourceForIndexEntry
+} from "./index-status.js";
 
 const app = express();
 const apiSecurity = readApiSecurityConfig();
 const jobs = new Map();
+const jobControllers = new Map();
 const execFileAsync = promisify(execFile);
 const llmRequests = new Map();
 const lastLlmGenerations = new Map();
 let agentRunInProcess = false;
+let agentRunController = null;
 let lastLlmActivity = null;
 let usageCache = { at: 0, payload: null };
 let cpuUsageSample = null;
@@ -278,6 +294,10 @@ async function persistJob(job) {
   await writeJobs(persisted);
 }
 
+function isAbortError(error) {
+  return error?.name === "AbortError" || /aborted|cancelled|остановлена/i.test(String(error?.message || ""));
+}
+
 function latestJobForSource(sourceId, persistedJobs = {}) {
   const candidates = [
     ...Object.values(persistedJobs || {}),
@@ -317,18 +337,24 @@ function optionalNumber(value) {
 }
 
 function publicJobStatus(job) {
+  const rawJob = job;
   job = normalizePublicJob(job);
   if (!job) return { status: "not_indexed", message: "Не индексировалось" };
 
   const skippedTotal = (job.unsupportedFiles || 0) + (job.temporaryFiles || 0) + (job.excludedFiles || 0);
   const qdrantPoints = optionalNumber(job.qdrantPoints);
   const vectorCount = optionalNumber(job.vectorCount);
+  const alive = Boolean(rawJob?.status === "running" && rawJob?.id && jobs.has(rawJob.id));
+  const health = indexProgressHealth(rawJob || job, { alive });
   return {
     id: job.id,
     type: job.type || "",
+    sourceId: job.sourceId || "",
+    sourceTitle: job.sourceTitle || "",
     status: job.status,
     phase: job.phase,
     message: job.message,
+    health,
     force: Boolean(job.force),
     processed: job.processed || 0,
     total: job.total || job.files || 0,
@@ -361,10 +387,19 @@ function publicJobStatus(job) {
     temporaryFiles: job.temporaryFiles || 0,
     excludedFiles: job.excludedFiles || 0,
     unreadableDirectories: job.unreadableDirectories || 0,
+    reindexQueued: job.reindexQueued || 0,
+    reindexRetried: job.reindexRetried || 0,
+    reindexResolved: job.reindexResolved || 0,
+    reindexUnresolved: job.reindexUnresolved || 0,
+    reindexFailed: job.reindexFailed || 0,
+    reindexRecoveredErrors: job.reindexRecoveredErrors || 0,
     unsupportedByExt: job.unsupportedByExt || {},
     googleContextLinks: job.googleContextLinks || 0,
     currentGoogleContextLinkId: job.currentGoogleContextLinkId || "",
     currentGoogleContextTitle: job.currentGoogleContextTitle || "",
+    currentFileTitle: job.currentFileTitle || "",
+    currentFileRelativePath: job.currentFileRelativePath || "",
+    currentFileExtension: job.currentFileExtension || "",
     startedAt: job.startedAt,
     updatedAt: job.updatedAt,
     finishedAt: job.finishedAt
@@ -448,42 +483,140 @@ async function findChunk(predicate) {
   return found;
 }
 
-function manifestChunkCount(entry) {
-  const count = Number(entry?.quality?.chunks ?? entry?.chunks ?? 0);
-  return Number.isFinite(count) && count > 0 ? count : 0;
+function knownIndexableFileCount(status = {}, snapshot = {}) {
+  return Math.max(
+    Number(status.total || 0),
+    Number(status.eligibleFiles || 0),
+    Number(snapshot.files || 0)
+  );
 }
 
-function indexedSnapshotForSource(sourceId, manifest = {}) {
-  const entries = Object.values(manifest.files || {}).filter((entry) => entry?.sourceId === sourceId);
-  const chunksTotal = entries.reduce((sum, entry) => sum + manifestChunkCount(entry), 0);
-  const indexedAt = entries
-    .map((entry) => entry.indexedAt)
-    .filter(Boolean)
-    .sort()
-    .at(-1);
+function knownScannedFileCount(status = {}, indexableFiles = 0) {
+  return Math.max(
+    Number(status.totalFiles || 0),
+    Number(indexableFiles || 0)
+  );
+}
 
+function fallbackVectorStoreStatus(settings = {}, error = null) {
+  const vectorStore = settings.vectorStore || {};
+  const qdrant = vectorStore.qdrant || {};
   return {
-    files: entries.length,
-    searchable: entries.filter((entry) => manifestChunkCount(entry) > 0).length,
-    chunks: chunksTotal,
-    indexedAt
+    configuredProvider: vectorStore.provider || "",
+    vectorProviderUsed: vectorStore.provider === "json" ? "json" : "qdrant",
+    qdrantEnabled: Boolean(vectorStore.enabled),
+    qdrantAvailable: false,
+    qdrantCollection: qdrant.collection || "",
+    collectionName: qdrant.collection || "",
+    qdrantPoints: 0,
+    vectorCount: 0,
+    qdrantError: error?.message || "",
+    warning: ""
   };
 }
 
-function indexedSnapshotForAllSources(manifest = {}) {
-  const entries = Object.values(manifest.files || {}).filter((entry) => entry?.sourceId);
-  const chunksTotal = entries.reduce((sum, entry) => sum + manifestChunkCount(entry), 0);
-  const indexedAt = entries
-    .map((entry) => entry.indexedAt)
-    .filter(Boolean)
-    .sort()
-    .at(-1);
+async function safeQdrantStatus(settings = {}) {
+  try {
+    return await qdrantStatus(settings.vectorStore);
+  } catch (error) {
+    return fallbackVectorStoreStatus(settings, error);
+  }
+}
+
+function buildIndexOverview({ sources = [], persistedJobs = {}, manifest = {}, vectorStore = {} } = {}) {
+  const entries = allSourcesIndexEntries(sources, manifest);
+  const recognizedEntries = entries.filter((entry) => (
+    manifestChunkCount(entry) > 0 && indexedEntryQualityStatus(entry) !== "error"
+  ));
+  const quality = { ok: 0, warning: 0, error: 0, unchecked: 0 };
+  for (const entry of entries) {
+    const status = indexedEntryQualityStatus(entry);
+    if (Object.hasOwn(quality, status)) quality[status] += 1;
+    else quality.unchecked += 1;
+  }
+
+  let knownIndexableFiles = 0;
+  let knownScannedFiles = 0;
+  let failedFiles = 0;
+  let skippedFiles = 0;
+  let sourcesWithIndex = 0;
+  let unknownSources = 0;
+  let interruptedJobs = 0;
+  const currentSourceIds = new Set(sources.map((source) => source?.id).filter(Boolean));
+
+  for (const source of sources) {
+    const snapshot = indexedSnapshotForSource(source, manifest, { currentSourceIds });
+    const status = publicJobStatus(latestJobForSource(source.id, persistedJobs));
+    const indexable = knownIndexableFileCount(status, snapshot);
+    knownIndexableFiles += indexable;
+    knownScannedFiles += knownScannedFileCount(status, indexable);
+    failedFiles += Number(status.failed || 0);
+    skippedFiles += Number(status.skippedTotal || 0);
+    if (snapshot.files || status.status !== "not_indexed") sourcesWithIndex += 1;
+    if (!indexable && !snapshot.files && status.status === "not_indexed") unknownSources += 1;
+    if (status.health?.status === "interrupted") interruptedJobs += 1;
+  }
+
+  const runningJobs = Array.from(jobs.values()).filter((job) => job?.status === "running");
+  const runningStatuses = runningJobs.map((job) => publicJobStatus(job));
+  const staleRunningJobs = runningStatuses.filter((status) => status.health?.status === "stale");
+  const runningTotal = runningJobs.reduce((sum, job) => sum + Number(job.total || job.files || 0), 0);
+  const runningProcessed = runningJobs.reduce((sum, job) => sum + Number(job.processed || 0), 0);
+  const chunks = entries.reduce((sum, entry) => sum + manifestChunkCount(entry), 0);
+  const total = knownIndexableFiles || entries.length;
+  const qdrantPoints = optionalNumber(vectorStore.qdrantPoints);
 
   return {
-    files: entries.length,
-    searchable: entries.filter((entry) => manifestChunkCount(entry) > 0).length,
-    chunks: chunksTotal,
-    indexedAt
+    status: runningJobs.length
+      ? (staleRunningJobs.length ? "warning" : "running")
+      : (recognizedEntries.length ? ((failedFiles || interruptedJobs) ? "warning" : "ready") : (interruptedJobs ? "warning" : "empty")),
+    files: {
+      recognized: recognizedEntries.length,
+      indexed: entries.length,
+      total,
+      scanned: knownScannedFiles || total,
+      chunks,
+      failed: failedFiles,
+      skipped: skippedFiles,
+      quality,
+      totalKnown: knownIndexableFiles > 0,
+      unknownSources
+    },
+    sources: {
+      total: sources.length,
+      withIndex: sourcesWithIndex
+    },
+    running: {
+      jobs: runningJobs.length,
+      active: Math.max(0, runningJobs.length - staleRunningJobs.length),
+      stale: staleRunningJobs.length,
+      processed: runningProcessed,
+      total: runningTotal,
+      lastProgressAt: runningStatuses
+        .map((status) => status.health?.lastProgressAt)
+        .filter(Boolean)
+        .sort()
+        .at(-1) || ""
+    },
+    issues: {
+      staleJobs: staleRunningJobs.length,
+      interruptedJobs
+    },
+    qdrant: {
+      enabled: Boolean(vectorStore.qdrantEnabled),
+      available: vectorStore.qdrantAvailable === true,
+      provider: vectorStore.vectorProviderUsed || vectorStore.configuredProvider || "",
+      configuredProvider: vectorStore.configuredProvider || "",
+      collection: vectorStore.qdrantCollection || vectorStore.collectionName || "",
+      points: qdrantPoints,
+      error: vectorStore.qdrantError || "",
+      warning: vectorStore.warning || ""
+    },
+    updatedAt: entries
+      .map((entry) => entry.indexedAt)
+      .filter(Boolean)
+      .sort()
+      .at(-1) || ""
   };
 }
 
@@ -648,8 +781,9 @@ function publicContextLinksWithIndexStatus(source, manifest = null, latestJob = 
 function publicSource(source, persistedJobs = {}, manifest = null, sourceSummary = null, allSources = []) {
   const latestJob = latestJobForSource(source.id, persistedJobs);
   const status = publicJobStatus(latestJob);
+  const currentSourceIds = new Set((allSources || []).map((item) => item?.id).filter(Boolean));
   const indexStatus = manifest
-    ? mergeIndexedSnapshotStatus(status, indexedSnapshotForSource(source.id, manifest))
+    ? mergeIndexSnapshotStatus(status, indexedSnapshotForSource(source, manifest, { currentSourceIds }))
     : status;
   const linkedContract = isTenderSource(source) ? contractForTender(source, allSources) : null;
   return {
@@ -700,7 +834,8 @@ function publicIndexedFile(source, entry, chunkCount = null) {
     chunks,
     recognition: entry.recognition || null,
     tenderRecognition: entry.tenderRecognition || null,
-    quality: entry.quality || null
+    quality: entry.quality || null,
+    reindex: entry.reindex || null
   };
 }
 
@@ -976,14 +1111,213 @@ async function vectorBackfillRowsForState({ sources = [], chunks = [], vectors =
   });
 }
 
+function aggregateCount(counts, sourceIds = []) {
+  return sourceIds.reduce((sum, sourceId) => {
+    if (!sourceId) return sum;
+    if (counts instanceof Map) return sum + Number(counts.get(sourceId) || 0);
+    return sum + Number(counts?.[sourceId] || 0);
+  }, 0);
+}
+
+function indexedSourceIdsForRefresh(source, manifest = {}, currentSourceIds = new Set()) {
+  const ids = new Set([source.id]);
+  for (const entry of indexedEntriesForSource(source, manifest, { currentSourceIds })) {
+    if (entry?.sourceId) ids.add(entry.sourceId);
+  }
+  return [...ids].filter(Boolean);
+}
+
+function refreshedVectorStatus({ settings = {}, qdrantCountsStatus = {}, jsonVectors = 0, qdrantVectors = 0 } = {}) {
+  const vectorStore = settings.vectorStore || {};
+  const provider = String(vectorStore.provider || "auto").trim().toLowerCase();
+  const enabled = vectorStore.enabled !== false;
+  const qdrantAvailable = qdrantCountsStatus.qdrantAvailable === true;
+  const qdrantCollection = qdrantCountsStatus.qdrantCollection || qdrantCountsStatus.collectionName || vectorStore.qdrant?.collection || "";
+  const qdrantError = qdrantCountsStatus.qdrantError || "";
+
+  if (!enabled || provider === "json") {
+    return {
+      vectorStoreProvider: "json",
+      configuredProvider: provider || "json",
+      vectorProviderUsed: "json",
+      jsonVectors,
+      qdrantVectors,
+      storedVectors: jsonVectors,
+      vectorCount: jsonVectors
+    };
+  }
+
+  if (qdrantAvailable && qdrantVectors > 0) {
+    return {
+      vectorStoreProvider: "qdrant",
+      configuredProvider: provider || "auto",
+      vectorProviderUsed: "qdrant",
+      qdrantAvailable: true,
+      qdrantCollection,
+      collectionName: qdrantCollection,
+      qdrantPoints: qdrantVectors,
+      jsonVectors,
+      qdrantVectors,
+      storedVectors: qdrantVectors,
+      vectorCount: qdrantVectors
+    };
+  }
+
+  if (!qdrantAvailable && provider === "auto" && jsonVectors > 0) {
+    return {
+      vectorStoreProvider: "json",
+      configuredProvider: "auto",
+      vectorProviderUsed: "json",
+      qdrantAvailable: false,
+      qdrantCollection,
+      collectionName: qdrantCollection,
+      qdrantError,
+      warning: qdrantCountsStatus.warning || (qdrantError ? `Qdrant unavailable, using vectors.json fallback: ${qdrantError}` : "Qdrant unavailable, using vectors.json fallback"),
+      jsonVectors,
+      qdrantVectors,
+      storedVectors: jsonVectors,
+      vectorCount: jsonVectors
+    };
+  }
+
+  return {
+    configuredProvider: provider || "auto",
+    jsonVectors,
+    qdrantVectors,
+    storedVectors: Math.max(jsonVectors, qdrantVectors),
+    vectorCount: Math.max(jsonVectors, qdrantVectors),
+    ...(qdrantAvailable ? {} : { qdrantAvailable: false, qdrantCollection, collectionName: qdrantCollection, qdrantError })
+  };
+}
+
+function refreshedIndexJobForSource({ source, snapshot, vectorStatus = {}, now = new Date().toISOString() } = {}) {
+  const indexedAt = snapshot.indexedAt || now;
+  return {
+    id: crypto.randomUUID(),
+    type: "index_refresh",
+    sourceId: source.id,
+    sourceTitle: source.title,
+    status: "completed",
+    phase: "done",
+    message: "Статус восстановлен из существующего индекса",
+    processed: snapshot.files,
+    total: snapshot.files,
+    totalFiles: snapshot.files,
+    eligibleFiles: snapshot.files,
+    indexedFiles: snapshot.files,
+    chunks: snapshot.chunks,
+    vectorsTotal: Math.max(Number(vectorStatus.storedVectors || 0), snapshot.chunks),
+    vectorsProcessed: Number(vectorStatus.storedVectors || 0),
+    vectorsCached: Number(vectorStatus.storedVectors || 0),
+    vectorsEmbedded: 0,
+    ready: snapshot.chunks > 0,
+    startedAt: now,
+    updatedAt: now,
+    finishedAt: indexedAt,
+    ...vectorStatus
+  };
+}
+
+async function refreshExistingIndexState() {
+  const [sources, persistedJobs, manifest, vectors, settings, sourceSummaries] = await Promise.all([
+    readSources(),
+    readJobs(),
+    readManifest(),
+    readVectors(),
+    readSettings(),
+    readSourceSummaries()
+  ]);
+
+  const currentSourceIds = new Set(sources.map((source) => source?.id).filter(Boolean));
+  const sourceIdsByCurrentId = new Map();
+  const allIndexSourceIds = new Set();
+
+  for (const source of sources) {
+    const sourceIds = indexedSourceIdsForRefresh(source, manifest, currentSourceIds);
+    sourceIdsByCurrentId.set(source.id, sourceIds);
+    sourceIds.forEach((sourceId) => allIndexSourceIds.add(sourceId));
+  }
+
+  const [qdrantCountsStatus, jsonVectorCounts] = await Promise.all([
+    countQdrantVectorsBySource({
+      vectorStore: settings.vectorStore,
+      sourceIds: [...allIndexSourceIds]
+    }),
+    Promise.resolve(countJsonVectorsBySource(vectors))
+  ]);
+
+  const targetIds = new Set(sources.map((source) => source.id));
+  const nextJobs = Object.fromEntries(
+    Object.entries(persistedJobs || {}).filter(([, job]) => !(job?.type === "index_refresh" && targetIds.has(String(job.sourceId || ""))))
+  );
+  const now = new Date().toISOString();
+  const refreshedSourceIds = [];
+  let skippedRunning = 0;
+  let skippedEmpty = 0;
+
+  for (const source of sources) {
+    if (sourceHasRunningJob(source.id)) {
+      skippedRunning += 1;
+      continue;
+    }
+
+    const snapshot = indexedSnapshotForSource(source, manifest, { currentSourceIds });
+    if (!snapshot.files && !snapshot.chunks) {
+      skippedEmpty += 1;
+      continue;
+    }
+
+    const sourceIds = sourceIdsByCurrentId.get(source.id) || [source.id];
+    const vectorStatus = refreshedVectorStatus({
+      settings,
+      qdrantCountsStatus,
+      jsonVectors: aggregateCount(jsonVectorCounts, sourceIds),
+      qdrantVectors: aggregateCount(qdrantCountsStatus.counts, sourceIds)
+    });
+    const job = refreshedIndexJobForSource({ source, snapshot, vectorStatus, now });
+    nextJobs[job.id] = job;
+    refreshedSourceIds.push(source.id);
+  }
+
+  await writeJobs(nextJobs);
+
+  const vectorStore = await safeQdrantStatus(settings);
+  const overview = buildIndexOverview({ sources, persistedJobs: nextJobs, manifest, vectorStore });
+  return {
+    status: "completed",
+    refreshedSources: refreshedSourceIds.length,
+    skippedRunning,
+    skippedEmpty,
+    totalSources: sources.length,
+    overview,
+    sources: sources.map((source) => publicSource(
+      source,
+      nextJobs,
+      manifest,
+      sourceSummaries.summaries?.[source.id] || null,
+      sources
+    ))
+  };
+}
+
 function withFallbackSources(answer, sourceCount) {
   const text = String(answer || "").trim();
   if (!text || /(^|\n)\s*Источники\s*:/i.test(text)) return text;
 
-  const count = Math.min(Math.max(Number(sourceCount || 0), 0), 3);
-  if (!count) return text;
+  const maxSourceNumber = Math.max(Number(sourceCount || 0), 0);
+  if (!maxSourceNumber) return text;
 
-  const refs = Array.from({ length: count }, (_, index) => `[${index + 1}]`).join(", ");
+  const cited = Array.from(text.matchAll(/\[(\d+)\]/g), (match) => Number(match[1]))
+    .filter((number, index, numbers) => (
+      Number.isInteger(number)
+      && number > 0
+      && number <= maxSourceNumber
+      && numbers.indexOf(number) === index
+    ));
+  const sourceNumbers = cited.length
+    ? cited.slice(0, 12)
+    : Array.from({ length: Math.min(maxSourceNumber, 3) }, (_value, index) => index + 1);
+  const refs = sourceNumbers.map((number) => `[${number}]`).join(", ");
   return `${text}\n\nИсточники: ${refs}.`;
 }
 
@@ -996,7 +1330,16 @@ function buildRagContext(results, profile = {}) {
     .join("\n\n");
 }
 
-function buildChatMessages(question, context) {
+function buildChatMessages(question, context, options = {}) {
+  const broadAnswer = Boolean(options.broadAnswer);
+  const broadInstructions = broadAnswer
+    ? [
+        "Запрос широкий или обзорный: сначала собери все разные релевантные факты из контекста, затем дай сводку прямо в ответе.",
+        "Не отвечай двумя общими пунктами, если контекст содержит больше: перечисли предметные условия отдельными строками или короткими разделами.",
+        "Для условий договора проверь и отрази, если есть в контексте: предмет/стороны, документы и редакции, цену и изменения цены, сроки, оплату и аванс, гарантийное удержание или обеспечение, ответственность и допсоглашения.",
+        "Если важная категория не подтверждена найденными фрагментами, так и напиши: «в найденных фрагментах не подтверждено»."
+      ]
+    : [];
   return [
     {
       role: "system",
@@ -1019,6 +1362,7 @@ function buildChatMessages(question, context) {
         "Если в контексте есть несколько разных значений по одному вопросу, например разные редакции договора или допсоглашения, не выбирай одно молча: перечисли варианты и укажи документы или пункты.",
         "Если вопрос задан по нескольким проектам, всем проектам или в контексте много файлов, не ограничивайся одним-двумя пунктами: сгруппируй ответ по проектам/документам и перечисли найденные значения по каждому релевантному источнику.",
         "Если одно и то же значение встречается в нескольких документах, укажи значение один раз и рядом перечисли документы/проекты, где оно подтверждено.",
+        ...broadInstructions,
         "В конце ответа укажи источники номерами в формате: Источники: [1], [2]."
       ].join(" ")
     },
@@ -1049,6 +1393,78 @@ function compactAnswerText(value) {
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[ \t]{2,}/g, " ")
     .trim();
+}
+
+function sanitizeChatTitle(value = "") {
+  const title = String(value || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/^[\s"'«»`]+|[\s"'«»`.,:;!?]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return title.slice(0, 72);
+}
+
+function fallbackChatTitle(question = "") {
+  const title = sanitizeChatTitle(question);
+  return title || "Новый чат";
+}
+
+function buildChatTitleMessages({ question = "", answer = "", sourceTitle = "" } = {}) {
+  const compactQuestion = compactAnswerText(question).slice(0, 900);
+  const compactAnswer = compactAnswerText(answer).slice(0, 1400);
+  return [
+    {
+      role: "system",
+      content: [
+        "Ты называешь чат по смыслу переписки.",
+        "Верни только короткое русское название, 2-6 слов.",
+        "Не добавляй дату, кавычки, двоеточие, точку, markdown или пояснения.",
+        "Не раскрывай секреты, токены, ключи или приватные URL."
+      ].join(" ")
+    },
+    {
+      role: "user",
+      content: `/no_think\n\nПроект: ${sourceTitle || "Авто"}\n\nВопрос:\n${compactQuestion}\n\nОтвет:\n${compactAnswer}`
+    }
+  ];
+}
+
+async function generateChatTitle({ settings = {}, question = "", answer = "", sourceTitle = "", signal } = {}) {
+  const fallbackTitle = fallbackChatTitle(question);
+  const candidates = chatLlmCandidates(settings).filter((llm) => llm.enabled !== false);
+  if (!candidates.length) return { title: fallbackTitle, fallbackUsed: true };
+
+  let lastError = null;
+  for (const candidate of candidates) {
+    if (candidate.missingRemoteContext || candidate.missingBaseUrl || candidate.missingApiKey) {
+      lastError = new Error("LLM route is not configured for title generation");
+      if (!candidate.allowAutoFallback) break;
+      continue;
+    }
+
+    try {
+      const reply = await chatCompletion({
+        llm: candidate,
+        signal,
+        messages: buildChatTitleMessages({ question, answer, sourceTitle })
+      });
+      const title = sanitizeChatTitle(reply.text);
+      if (title) {
+        return {
+          title,
+          model: reply.model,
+          provider: candidate.provider,
+          fallbackUsed: false
+        };
+      }
+    } catch (error) {
+      lastError = error;
+      if (signal?.aborted) throw error;
+      if (!candidate.allowAutoFallback) break;
+    }
+  }
+
+  return { title: fallbackTitle, fallbackUsed: true, error: lastError?.message || "" };
 }
 
 function resultExcerptForFallback(result, question) {
@@ -1099,16 +1515,37 @@ const chatContextProfiles = [
   { name: "tight", maxSources: 6, maxCharsPerSource: 900 }
 ];
 
+const broadChatContextProfiles = [
+  { name: "broad", maxSources: 14, maxCharsPerSource: 1200 },
+  { name: "broad-tight", maxSources: 10, maxCharsPerSource: 900 }
+];
+
 const allSourcesChatContextProfiles = [
   { name: "all-sources-compact", maxSources: 16, maxCharsPerSource: 900 },
   { name: "all-sources-tight", maxSources: 12, maxCharsPerSource: 700 }
 ];
+
+const allSourcesBroadChatContextProfiles = [
+  { name: "all-sources-broad", maxSources: 20, maxCharsPerSource: 900 },
+  { name: "all-sources-broad-tight", maxSources: 14, maxCharsPerSource: 700 }
+];
+
+function chatContextProfilesForRequest({ sourceId = "", broadAnswer = false } = {}) {
+  if (sourceId) return broadAnswer ? broadChatContextProfiles : chatContextProfiles;
+  return broadAnswer ? allSourcesBroadChatContextProfiles : allSourcesChatContextProfiles;
+}
+
+function chatSearchLimit({ searchAllSources = false, broadAnswer = false } = {}) {
+  if (searchAllSources) return broadAnswer ? 36 : 24;
+  return broadAnswer ? 20 : 12;
+}
 
 async function runChatLlm({
   llmCandidates,
   results,
   question,
   sourceId,
+  broadAnswer = false,
   signal,
   stream = false,
   onToken = () => {}
@@ -1118,7 +1555,7 @@ async function runChatLlm({
   let lastLlmError = null;
   let promptChars = 0;
   const llmStartedAt = Date.now();
-  const contextProfiles = sourceId ? chatContextProfiles : allSourcesChatContextProfiles;
+  const contextProfiles = chatContextProfilesForRequest({ sourceId, broadAnswer });
 
   for (let candidateIndex = 0; candidateIndex < llmCandidates.length; candidateIndex += 1) {
     const candidateLlm = llmCandidates[candidateIndex];
@@ -1163,7 +1600,7 @@ async function runChatLlm({
             llm: candidateLlm,
             signal,
             onProgress: (progress) => updateLlmRequest(llmRequestId, progress),
-            messages: buildChatMessages(question, context)
+            messages: buildChatMessages(question, context, { broadAnswer })
           };
           reply = stream
             ? await chatCompletionStream({ ...completionArgs, onToken })
@@ -1529,6 +1966,260 @@ function scheduleBackendStop() {
   setTimeout(() => process.exit(0), 250).unref?.();
 }
 
+function portalServiceResult(service, patch = {}) {
+  return {
+    service,
+    state: patch.state || "unknown",
+    running: Boolean(patch.running),
+    stopped: Boolean(patch.stopped),
+    skipped: Boolean(patch.skipped),
+    manageable: patch.manageable !== false,
+    reason: patch.reason || ""
+  };
+}
+
+function abortPortalBackendWork() {
+  const now = new Date().toISOString();
+  let requested = 0;
+
+  for (const [jobId, controller] of jobControllers.entries()) {
+    const job = jobs.get(jobId);
+    if (!job || job.status !== "running") continue;
+    requested += 1;
+    Object.assign(job, {
+      phase: job.phase || "stopping",
+      message: "Portal shutdown requested",
+      stopRequestedAt: now,
+      updatedAt: now
+    });
+    jobs.set(jobId, job);
+    persistJob(job).catch(() => {});
+    controller.abort(new Error("Portal shutdown requested"));
+  }
+
+  if (agentRunController && !agentRunController.signal.aborted) {
+    requested += 1;
+    agentRunController.abort(new Error("Portal shutdown requested"));
+  }
+
+  return portalServiceResult("backend-work", {
+    state: requested ? "stopping" : "idle",
+    stopped: requested > 0,
+    skipped: requested === 0,
+    reason: requested ? "abort_requested" : "not_running"
+  });
+}
+
+async function stopManagedPortalProcess(service, statusFn, stopFn, settings) {
+  try {
+    const current = await statusFn(settings);
+    if (!current.manageable) {
+      return portalServiceResult(service, {
+        state: current.state || (current.running ? "running" : "stopped"),
+        running: Boolean(current.running),
+        skipped: true,
+        manageable: false,
+        reason: "unmanaged"
+      });
+    }
+    if (!current.running) {
+      return portalServiceResult(service, {
+        state: "stopped",
+        stopped: true,
+        skipped: true,
+        reason: "not_running"
+      });
+    }
+
+    const next = await stopFn(settings);
+    return portalServiceResult(service, {
+      state: next.state || (next.running ? "running" : "stopped"),
+      running: Boolean(next.running),
+      stopped: !next.running,
+      reason: next.running ? "still_running" : ""
+    });
+  } catch {
+    return portalServiceResult(service, {
+      state: "error",
+      running: true,
+      stopped: false,
+      reason: "stop_failed"
+    });
+  }
+}
+
+function configuredEnvValue(...names) {
+  for (const name of names) {
+    const value = String(process.env[name] || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function configuredPath(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return path.resolve(projectRoot, raw);
+}
+
+async function fileExists(filePath = "") {
+  if (!filePath) return false;
+  try {
+    const stats = await fs.stat(filePath);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function directoryExists(directoryPath = "") {
+  if (!directoryPath) return false;
+  try {
+    const stats = await fs.stat(directoryPath);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function findComposeFileInDirectory(directoryPath = "") {
+  if (!(await directoryExists(directoryPath))) return "";
+  for (const name of ["docker-compose.yaml", "docker-compose.yml", "compose.yaml", "compose.yml"]) {
+    const candidate = path.join(directoryPath, name);
+    if (await fileExists(candidate)) return candidate;
+  }
+  return "";
+}
+
+async function resolveDifyComposeFileFromEnv() {
+  const explicitCompose = configuredPath(configuredEnvValue("LOCALAI_DIFY_COMPOSE_FILE"));
+  if (await fileExists(explicitCompose)) return explicitCompose;
+
+  const explicitDirectory = configuredPath(configuredEnvValue("LOCALAI_DIFY_DIR"));
+  for (const candidate of [explicitDirectory, explicitDirectory ? path.join(explicitDirectory, "docker") : ""]) {
+    const composeFile = await findComposeFileInDirectory(candidate);
+    if (composeFile) return composeFile;
+  }
+
+  return "";
+}
+
+async function runDifyStopCommand(command) {
+  const directory = configuredPath(configuredEnvValue("LOCALAI_DIFY_STOP_DIR", "LOCALAI_DIFY_START_DIR", "LOCALAI_DIFY_DIR")) || projectRoot;
+  if (!(await directoryExists(directory))) {
+    throw new Error("Dify stop directory was not found");
+  }
+
+  await execFileAsync("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    command
+  ], {
+    cwd: directory,
+    env: process.env,
+    windowsHide: true,
+    timeout: 60000,
+    maxBuffer: 1024 * 128
+  });
+}
+
+async function runDifyComposeDown(composeFile) {
+  const composeDirectory = path.dirname(composeFile);
+  const composeName = path.basename(composeFile);
+  await execFileAsync("docker", ["compose", "-f", composeName, "down"], {
+    cwd: composeDirectory,
+    env: process.env,
+    windowsHide: true,
+    timeout: 90000,
+    maxBuffer: 1024 * 128
+  });
+}
+
+async function waitForDifyStopped(timeoutMs = 20000) {
+  const startedAt = Date.now();
+  let status = await difyRuntimeStatus();
+  if (!status.configured) return null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!status.reachable) return status;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    status = await difyRuntimeStatus();
+  }
+
+  return status;
+}
+
+async function stopDifyPortalProcess() {
+  try {
+    const current = await difyRuntimeStatus();
+    const stopCommand = configuredEnvValue("LOCALAI_DIFY_STOP_COMMAND");
+    const composeFile = await resolveDifyComposeFileFromEnv();
+
+    if (!stopCommand && !composeFile) {
+      return portalServiceResult("dify", {
+        state: current.reachable ? "running" : "stopped",
+        running: Boolean(current.reachable),
+        stopped: !current.reachable,
+        skipped: true,
+        manageable: false,
+        reason: current.configured ? "unmanaged" : "not_configured"
+      });
+    }
+
+    if (stopCommand) {
+      await runDifyStopCommand(stopCommand);
+    } else {
+      await runDifyComposeDown(composeFile);
+    }
+
+    const next = await waitForDifyStopped();
+    const running = next ? Boolean(next.reachable) : false;
+    return portalServiceResult("dify", {
+      state: running ? "running" : "stopped",
+      running,
+      stopped: !running,
+      reason: running ? "still_running" : ""
+    });
+  } catch {
+    return portalServiceResult("dify", {
+      state: "error",
+      running: true,
+      stopped: false,
+      reason: "stop_failed"
+    });
+  }
+}
+
+async function stopPortalBackgroundProcesses() {
+  let settings = {};
+  let settingsResult = null;
+  try {
+    settings = await readSettings();
+  } catch {
+    settingsResult = portalServiceResult("settings", {
+      state: "error",
+      skipped: true,
+      manageable: false,
+      reason: "read_failed"
+    });
+  }
+
+  const services = [
+    abortPortalBackendWork(),
+    ...(settingsResult ? [settingsResult] : [])
+  ];
+
+  const stopped = await Promise.all([
+    stopManagedPortalProcess("reranker", managedRerankerStatus, stopManagedReranker, settings.reranker),
+    stopManagedPortalProcess("qdrant", managedQdrantStatus, stopManagedQdrant, settings.vectorStore),
+    stopDifyPortalProcess()
+  ]);
+
+  return services.concat(stopped);
+}
+
 app.get("/api/system/backend/status", async (_req, res) => {
   res.json({
     ok: true,
@@ -1556,6 +2247,23 @@ app.post("/api/system/backend/stop", async (_req, res, next) => {
       state: "stopping",
       stopping: true,
       manageable: true
+    });
+    scheduleBackendStop();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/system/portal/stop", async (_req, res, next) => {
+  try {
+    const services = await stopPortalBackgroundProcesses();
+    res.status(202).json({
+      ok: true,
+      running: false,
+      state: "stopping",
+      stopping: true,
+      manageable: true,
+      services
     });
     scheduleBackendStop();
   } catch (error) {
@@ -1688,6 +2396,33 @@ app.get("/api/vector-store/status", async (_req, res, next) => {
   try {
     const settings = await readSettings();
     res.json(await qdrantStatus(settings.vectorStore));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/index/status", async (_req, res, next) => {
+  try {
+    const [sources, persistedJobs, manifest, settings] = await Promise.all([
+      readSources(),
+      readJobs(),
+      readManifest(),
+      readSettings()
+    ]);
+    res.json(buildIndexOverview({
+      sources,
+      persistedJobs,
+      manifest,
+      vectorStore: await safeQdrantStatus(settings)
+    }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/index/refresh", async (_req, res, next) => {
+  try {
+    res.json(await refreshExistingIndexState());
   } catch (error) {
     next(error);
   }
@@ -2147,7 +2882,9 @@ app.post("/api/tenders/sync", async (req, res, next) => {
     const apply = req.query.apply === "true" || req.body?.apply === true;
     const prune = req.query.prune === "true" || req.body?.prune === true;
     const scope = req.query.scope || req.body?.scope || "all";
-    const summary = await runTenderSourceSync({ apply, prune, scope });
+    const excludedAutoLinks = Array.isArray(req.body?.excludedAutoLinks) ? req.body.excludedAutoLinks : [];
+    const selectedTenderLinks = Array.isArray(req.body?.selectedTenderLinks) ? req.body.selectedTenderLinks : [];
+    const summary = await runTenderSourceSync({ apply, prune, scope, selectedTenderLinks, excludedAutoLinks });
 
     if (!apply) return res.json(summary);
 
@@ -2236,10 +2973,20 @@ app.get("/api/sources/:id/indexed-files", async (req, res, next) => {
     const manifest = await readManifest();
 
     const scopeSourceIds = searchScopeSourceIds(source, sources);
-    const sourceById = new Map(sources.map((item) => [item.id, item]));
-    const files = Object.values(manifest.files || {})
-      .filter((entry) => scopeSourceIds.includes(entry?.sourceId))
-      .map((entry) => publicIndexedFile(sourceById.get(entry?.sourceId) || source, entry))
+    const scopeSources = sources.filter((item) => scopeSourceIds.includes(item.id));
+    const currentSourceIds = new Set(sources.map((item) => item?.id).filter(Boolean));
+    const scopeEntries = [];
+    const seenFileIds = new Set();
+    for (const scopeSource of scopeSources) {
+      for (const entry of indexedEntriesForSource(scopeSource, manifest, { currentSourceIds })) {
+        const key = entry?.fileId || `${entry?.sourceId || ""}:${entry?.path || ""}`;
+        if (seenFileIds.has(key)) continue;
+        seenFileIds.add(key);
+        scopeEntries.push(entry);
+      }
+    }
+    const files = scopeEntries
+      .map((entry) => publicIndexedFile(sourceForIndexEntry(scopeSources, entry, source), entry))
       .sort((a, b) => a.relativePath.localeCompare(b.relativePath, "ru", { sensitivity: "base", numeric: true }));
 
     res.json({
@@ -2285,6 +3032,7 @@ app.post("/api/sources", async (req, res, next) => {
   try {
     const folderPath = String(req.body.path || "").trim();
     if (!folderPath) return res.status(400).json({ error: "path is required" });
+    const sourceType = normalizeSourceType({ sourceType: req.body.sourceType });
 
     const stat = await fs.stat(folderPath);
     if (!stat.isDirectory()) return res.status(400).json({ error: "path must be a directory" });
@@ -2310,6 +3058,7 @@ app.post("/api/sources", async (req, res, next) => {
       id,
       title,
       path: folderPath,
+      sourceType,
       include: ["**/*.pdf", "**/*.txt", "**/*.md", "**/*.csv", "**/*.docx", "**/*.xlsx", "**/*.xlsm", "**/*.xls"],
       exclude: ["~$", "thumbs.db", ".ds_store"],
       createdAt: now,
@@ -2413,8 +3162,10 @@ app.post("/api/sources/:id/index", async (req, res, next) => {
 
     const force = Boolean(req.body?.force);
     const existing = Array.from(jobs.values()).find((job) => job.sourceId === source.id && job.status === "running");
-    if (existing) return res.json(existing);
+    if (existing) return res.json(publicJobStatus(existing));
 
+    const controller = new AbortController();
+    const now = new Date().toISOString();
     const job = {
       id: crypto.randomUUID(),
       sourceId: source.id,
@@ -2425,18 +3176,20 @@ app.post("/api/sources/:id/index", async (req, res, next) => {
       message: force ? "Принудительная переиндексация в очереди" : "В очереди",
       processed: 0,
       total: 0,
-      startedAt: new Date().toISOString()
+      startedAt: now,
+      updatedAt: now
     };
 
     jobs.set(job.id, job);
+    jobControllers.set(job.id, controller);
     await persistJob(job);
-    res.status(202).json(job);
+    res.status(202).json(publicJobStatus(job));
 
     indexSource(source, (progress) => {
       Object.assign(job, progress, { updatedAt: new Date().toISOString() });
       jobs.set(job.id, job);
       persistJob(job).catch(() => {});
-    }, { force })
+    }, { force, signal: controller.signal })
       .then((result) => {
         Object.assign(job, result, {
           status: "completed",
@@ -2449,15 +3202,63 @@ app.post("/api/sources/:id/index", async (req, res, next) => {
       })
       .catch((error) => {
         const failedPhase = job.phase && job.phase !== "queued" ? job.phase : "error";
-        Object.assign(job, {
-          status: "failed",
-          phase: failedPhase,
-          message: error.message,
-          updatedAt: new Date().toISOString()
-        });
+        if (isAbortError(error) || controller.signal.aborted) {
+          Object.assign(job, {
+            status: "cancelled",
+            phase: failedPhase,
+            message: "Индексация остановлена",
+            finishedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+        } else {
+          Object.assign(job, {
+            status: "failed",
+            phase: failedPhase,
+            message: error.message,
+            updatedAt: new Date().toISOString()
+          });
+        }
         jobs.set(job.id, job);
         return persistJob(job);
+      })
+      .finally(() => {
+        jobControllers.delete(job.id);
       });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/index/stop", async (_req, res, next) => {
+  try {
+    let requested = 0;
+    const now = new Date().toISOString();
+
+    for (const [jobId, controller] of jobControllers.entries()) {
+      const job = jobs.get(jobId);
+      if (!job || job.status !== "running") continue;
+      requested += 1;
+      Object.assign(job, {
+        status: "running",
+        phase: job.phase || "stopping",
+        message: "Останавливаю индексацию...",
+        stopRequestedAt: now,
+        updatedAt: now
+      });
+      jobs.set(jobId, job);
+      persistJob(job).catch(() => {});
+      controller.abort(new Error("Индексация остановлена"));
+    }
+
+    if (agentRunController && !agentRunController.signal.aborted) {
+      requested += 1;
+      agentRunController.abort(new Error("Индексация остановлена"));
+    }
+
+    res.status(202).json({
+      status: requested ? "stopping" : "idle",
+      stopRequested: requested
+    });
   } catch (error) {
     next(error);
   }
@@ -2476,11 +3277,11 @@ app.get("/api/sources/:id/skipped", async (req, res, next) => {
 
 app.get("/api/jobs/:id", async (req, res, next) => {
   try {
-    if (jobs.has(req.params.id)) return res.json(jobs.get(req.params.id));
+    if (jobs.has(req.params.id)) return res.json(publicJobStatus(jobs.get(req.params.id)));
     const persisted = await readJobs();
     const job = persisted[req.params.id];
     if (!job) return res.status(404).json({ error: "job not found" });
-    res.json(normalizePublicJob(job));
+    res.json(publicJobStatus(job));
   } catch (error) {
     next(error);
   }
@@ -2488,10 +3289,17 @@ app.get("/api/jobs/:id", async (req, res, next) => {
 
 app.get("/api/agent/runs", async (_req, res, next) => {
   try {
-    const runs = await readDailyAgentRuns();
+    const [runs, lockStatus] = await Promise.all([
+      readDailyAgentRuns(),
+      dailyAgentLockStatus()
+    ]);
     res.json(Object.values(runs)
       .sort((left, right) => String(right.startedAt || "").localeCompare(String(left.startedAt || "")))
-      .slice(0, 20));
+      .slice(0, 20)
+      .map((run) => publicDailyAgentRun(run, {
+        active: agentRunInProcess,
+        lockStatus
+      })));
   } catch (error) {
     next(error);
   }
@@ -2507,17 +3315,21 @@ app.post("/api/agent/run", async (req, res, next) => {
     }
 
     const force = Boolean(req.body?.force);
+    const controller = new AbortController();
     agentRunInProcess = true;
+    agentRunController = controller;
     runDailyIndexAgent({
       trigger: "ui",
       force,
+      signal: controller.signal,
       onProgress: () => {}
     })
       .catch((error) => {
-        console.error("Daily agent failed:", error);
+        if (!isAbortError(error)) console.error("Daily agent failed:", error);
       })
       .finally(() => {
         agentRunInProcess = false;
+        if (agentRunController === controller) agentRunController = null;
       });
 
     res.status(202).json({
@@ -2530,12 +3342,215 @@ app.post("/api/agent/run", async (req, res, next) => {
   }
 });
 
+function difyAdapterDiagnosticHtml() {
+  const adapterTokenConfigured = Boolean(String(process.env.LOCALAI_DIFY_ADAPTER_TOKEN || "").trim());
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LOCAL_RAG Dify adapter</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: Canvas; color: CanvasText; }
+    main { width: min(840px, calc(100vw - 32px)); border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 8px; padding: 24px; }
+    h1 { margin: 0 0 16px; font-size: 24px; letter-spacing: 0; }
+    .status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0 0 20px; }
+    .status-card { border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 8px; padding: 16px; background: color-mix(in srgb, CanvasText 4%, Canvas); }
+    .status-label { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; color: color-mix(in srgb, CanvasText 68%, transparent); font-size: 13px; }
+    .status-value { margin: 0; font-size: 24px; font-weight: 750; letter-spacing: 0; }
+    .status-detail { margin: 8px 0 0; color: color-mix(in srgb, CanvasText 62%, transparent); font-size: 13px; overflow-wrap: anywhere; }
+    .dot { width: 11px; height: 11px; border-radius: 999px; background: #b45309; box-shadow: 0 0 0 0 color-mix(in srgb, #b45309 38%, transparent); }
+    .dot.ok { background: #16a34a; animation: pulse-ok 1.6s ease-out infinite; }
+    .dot.warn { background: #b45309; }
+    .dot.err { background: #dc2626; }
+    @keyframes pulse-ok { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, #16a34a 45%, transparent); } 70% { box-shadow: 0 0 0 9px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+    dl { display: grid; grid-template-columns: minmax(140px, 0.36fr) 1fr; gap: 10px 16px; margin: 0; }
+    dt { color: color-mix(in srgb, CanvasText 62%, transparent); }
+    dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.95em; }
+    .ok { color: #15803d; }
+    .warn { color: #b45309; }
+    .err { color: #dc2626; }
+    @media (max-width: 680px) { .status-grid { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>LOCAL_RAG Dify adapter</h1>
+    <section class="status-grid" aria-label="Dify status">
+      <article class="status-card">
+        <p class="status-label"><span class="dot ${adapterTokenConfigured ? "ok" : "warn"}"></span>LOCAL_RAG adapter</p>
+        <p class="status-value ${adapterTokenConfigured ? "ok" : "warn"}">${adapterTokenConfigured ? "Ready" : "Token missing"}</p>
+        <p class="status-detail">${adapterTokenConfigured ? "Adapter token is configured. Token value is hidden." : "Set LOCALAI_DIFY_ADAPTER_TOKEN and restart backend."}</p>
+      </article>
+      <article class="status-card">
+        <p class="status-label"><span id="dify-dot" class="dot warn"></span>Dify self-host</p>
+        <p id="dify-state" class="status-value warn">Checking...</p>
+        <p id="dify-detail" class="status-detail">Status is checked through LOCALAI_DIFY_URL without exposing the URL value.</p>
+      </article>
+    </section>
+    <dl>
+      <dt>External Knowledge base</dt><dd><code>http://127.0.0.1:8787/api/dify</code></dd>
+      <dt>Endpoint</dt><dd><code>POST /api/dify/retrieval</code></dd>
+      <dt>Browser GET</dt><dd class="ok">diagnostic page is installed for <code>/api/dify</code> and <code>/api/dify/retrieval</code></dd>
+      <dt>Adapter token</dt><dd class="${adapterTokenConfigured ? "ok" : "warn"}">${adapterTokenConfigured ? "configured" : "missing: set LOCALAI_DIFY_ADAPTER_TOKEN and restart backend"}</dd>
+      <dt>HTTP tool URL</dt><dd><code>http://127.0.0.1:8787/api/dify/retrieval</code></dd>
+      <dt>Expected success</dt><dd><code>200</code> with <code>records</code>, <code>privacy</code>, <code>warnings</code></dd>
+      <dt>Auth failures</dt><dd><code>401</code> wrong/missing adapter token, <code>503</code> token missing in backend env</dd>
+    </dl>
+  </main>
+  <script>
+    const stateEl = document.getElementById("dify-state");
+    const detailEl = document.getElementById("dify-detail");
+    const dotEl = document.getElementById("dify-dot");
+    function setDifyState(kind, label, detail) {
+      dotEl.className = "dot " + kind;
+      stateEl.className = "status-value " + kind;
+      stateEl.textContent = label;
+      detailEl.textContent = detail;
+    }
+    async function refreshDifyState() {
+      try {
+        const response = await fetch("/api/dify/status", { cache: "no-store" });
+        if (!response.ok) throw new Error("status " + response.status);
+        const status = await response.json();
+        if (!status.configured) {
+          setDifyState("warn", "Not configured", "Set LOCALAI_DIFY_URL to show live Dify reachability.");
+        } else if (status.reachable) {
+          setDifyState("ok", "Running", "Dify responded from " + status.urlLabel + ".");
+        } else {
+          setDifyState("err", "Not reachable", status.error || "Configured Dify endpoint did not respond.");
+        }
+      } catch {
+        setDifyState("warn", "Unknown", "Could not read LOCAL_RAG Dify status endpoint.");
+      }
+    }
+    refreshDifyState();
+    setInterval(refreshDifyState, 10000);
+  </script>
+</body>
+</html>`;
+}
+
+function isLoopbackHostName(hostname = "") {
+  const value = String(hostname || "").toLowerCase();
+  return value === "localhost" || value === "::1" || value.startsWith("127.");
+}
+
+function publicDifyUrlLabel(url = "") {
+  try {
+    const parsed = new URL(url);
+    if (isLoopbackHostName(parsed.hostname)) return parsed.origin;
+    return "configured non-loopback URL";
+  } catch {
+    return "configured URL";
+  }
+}
+
+async function fetchDifyReachability(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2500);
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal
+    });
+    return {
+      reachable: true,
+      statusCode: response.status
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function difyRuntimeStatus() {
+  const url = String(process.env.LOCALAI_DIFY_URL || "").trim();
+  const adapterTokenConfigured = Boolean(String(process.env.LOCALAI_DIFY_ADAPTER_TOKEN || "").trim());
+  if (!url) {
+    return {
+      configured: false,
+      reachable: false,
+      adapterTokenConfigured,
+      urlLabel: "",
+      checkedAt: new Date().toISOString()
+    };
+  }
+
+  try {
+    const reachability = await fetchDifyReachability(url);
+    return {
+      configured: true,
+      reachable: reachability.reachable,
+      statusCode: reachability.statusCode,
+      adapterTokenConfigured,
+      urlLabel: publicDifyUrlLabel(url),
+      checkedAt: new Date().toISOString()
+    };
+  } catch {
+    return {
+      configured: true,
+      reachable: false,
+      adapterTokenConfigured,
+      urlLabel: publicDifyUrlLabel(url),
+      error: "Configured Dify endpoint is not reachable.",
+      checkedAt: new Date().toISOString()
+    };
+  }
+}
+
+app.get("/api/dify", (_req, res) => {
+  res.type("html").send(difyAdapterDiagnosticHtml());
+});
+
+app.get("/api/dify/retrieval", (_req, res) => {
+  res.type("html").send(difyAdapterDiagnosticHtml());
+});
+
+app.get("/api/dify/status", async (_req, res, next) => {
+  try {
+    res.json(await difyRuntimeStatus());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/dify/retrieval", async (req, res, next) => {
+  try {
+    const auth = authorizeDifyAdapterRequest(req.headers.authorization);
+    if (!auth.ok) {
+      if (auth.authenticate) res.set("WWW-Authenticate", "Bearer");
+      return res.status(auth.status).json({ error: auth.error });
+    }
+
+    const [sources, settings, manifest] = await Promise.all([readSources(), readSettings(), readManifest()]);
+    const result = await runDifyRetrieval({
+      body: req.body,
+      sources,
+      settings,
+      manifest,
+      searchChunks: searchChunksWithMetadata
+    });
+    return res.status(result.status).json(result.payload);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/search", async (req, res, next) => {
   try {
     const query = String(req.query.q || "").trim();
     const sourceId = String(req.query.sourceId || "").trim();
     const limit = Math.min(Number(req.query.limit || 10), 30);
-    const { results, metadata } = await searchChunksWithMetadata({ query, sourceId, limit });
+    let sourceIds = null;
+    if (sourceId) {
+      const [sources, manifest] = await Promise.all([readSources(), readManifest()]);
+      const source = sources.find((item) => item.id === sourceId);
+      if (source) sourceIds = indexSourceIdsForSources([source], manifest);
+    }
+    const { results, metadata } = await searchChunksWithMetadata({ query, sourceId, sourceIds, limit });
     res.json({ query, results, metadata });
   } catch (error) {
     next(error);
@@ -2717,6 +3732,36 @@ app.get("/api/files/preview", async (req, res, next) => {
   }
 });
 
+app.post("/api/chat/title", async (req, res, next) => {
+  const requestController = new AbortController();
+  let clientAborted = false;
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      clientAborted = true;
+      requestController.abort();
+    }
+  });
+
+  try {
+    const settings = await readSettings();
+    const sourceTitle = String(req.body.sourceTitle || "").trim();
+    const title = await generateChatTitle({
+      settings,
+      question: String(req.body.question || ""),
+      answer: String(req.body.answer || ""),
+      sourceTitle,
+      signal: requestController.signal
+    });
+    res.json(title);
+  } catch (error) {
+    if (clientAborted || (error.name === "AbortError" && requestController.signal.aborted)) {
+      if (!res.headersSent) res.status(499).json({ error: "request cancelled" });
+      return;
+    }
+    next(error);
+  }
+});
+
 app.post("/api/chat", async (req, res, next) => {
   let clientAborted = false;
   const requestController = new AbortController();
@@ -2731,10 +3776,13 @@ app.post("/api/chat", async (req, res, next) => {
     const totalStartedAt = Date.now();
     const question = String(req.body.question || "").trim();
     const requestedSourceId = String(req.body.sourceId || "").trim();
+    const contextSourceId = String(req.body.contextSourceId || "").trim();
     const sources = await readSources();
     const settings = await readSettings();
-    const chatScope = resolveChatSourceScope({ question, requestedSourceId, sources });
+    const chatScope = resolveChatSourceScope({ question, requestedSourceId, contextSourceId, sources });
     const { source, sourceId, searchSourceIds, autoMatch, searchAllSources } = chatScope;
+    const broadAnswer = hasBroadAnswerIntent(question);
+    const retrievalQuery = expandedChatRetrievalQuery(question);
 
     if (chatScope.requestedSourceMissing) {
       const candidates = autoMatch?.candidates || [];
@@ -2756,14 +3804,20 @@ app.post("/api/chat", async (req, res, next) => {
     }
 
     const matchedSource = source ? publicMatchedSource(source, {
-      autoSelected: !requestedSourceId,
+      autoSelected: !requestedSourceId || chatScope.contextSourceUsed,
       score: autoMatch?.score || 0
     }) : null;
-    const searchLimit = searchAllSources ? 24 : 12;
+    const searchLimit = chatSearchLimit({ searchAllSources, broadAnswer });
+    let effectiveSearchSourceIds = searchAllSources ? null : searchSourceIds;
+    if (!searchAllSources && searchSourceIds.length) {
+      const manifest = await readManifest();
+      const scopedSources = sources.filter((item) => searchSourceIds.includes(item.id));
+      effectiveSearchSourceIds = indexSourceIdsForSources(scopedSources, manifest);
+    }
     const searchResult = await searchChunksWithMetadata({
-      query: question,
+      query: retrievalQuery,
       sourceId,
-      sourceIds: searchAllSources ? null : searchSourceIds,
+      sourceIds: effectiveSearchSourceIds,
       limit: searchLimit
     });
     const results = searchResult.results;
@@ -2793,7 +3847,8 @@ app.post("/api/chat", async (req, res, next) => {
       }
 
       const [manifest, persistedJobs] = await Promise.all([readManifest(), readJobs()]);
-      const indexedChunks = indexedSnapshotForSource(sourceId, manifest).chunks;
+      const currentSourceIds = new Set(sources.map((item) => item?.id).filter(Boolean));
+      const indexedChunks = indexedSnapshotForSource(source, manifest, { currentSourceIds }).chunks;
       const latestJob = latestJobForSource(sourceId, persistedJobs);
       if (!indexedChunks) {
         const status = publicJobStatus(latestJob);
@@ -2839,6 +3894,7 @@ app.post("/api/chat", async (req, res, next) => {
       results,
       question,
       sourceId,
+      broadAnswer,
       signal: requestController.signal
     });
 
@@ -2933,12 +3989,15 @@ app.post("/api/chat/stream", async (req, res) => {
     const totalStartedAt = Date.now();
     const question = String(req.body.question || "").trim();
     const requestedSourceId = String(req.body.sourceId || "").trim();
+    const contextSourceId = String(req.body.contextSourceId || "").trim();
     writeSseEvent(res, "status", { status: "retrieval_started" });
 
     const sources = await readSources();
     const settings = await readSettings();
-    const chatScope = resolveChatSourceScope({ question, requestedSourceId, sources });
+    const chatScope = resolveChatSourceScope({ question, requestedSourceId, contextSourceId, sources });
     const { source, sourceId, searchSourceIds, autoMatch, searchAllSources } = chatScope;
+    const broadAnswer = hasBroadAnswerIntent(question);
+    const retrievalQuery = expandedChatRetrievalQuery(question);
 
     if (chatScope.requestedSourceMissing) {
       const candidates = autoMatch?.candidates || [];
@@ -2961,14 +4020,20 @@ app.post("/api/chat/stream", async (req, res) => {
     }
 
     const matchedSource = source ? publicMatchedSource(source, {
-      autoSelected: !requestedSourceId,
+      autoSelected: !requestedSourceId || chatScope.contextSourceUsed,
       score: autoMatch?.score || 0
     }) : null;
-    const searchLimit = searchAllSources ? 24 : 12;
+    const searchLimit = chatSearchLimit({ searchAllSources, broadAnswer });
+    let effectiveSearchSourceIds = searchAllSources ? null : searchSourceIds;
+    if (!searchAllSources && searchSourceIds.length) {
+      const manifest = await readManifest();
+      const scopedSources = sources.filter((item) => searchSourceIds.includes(item.id));
+      effectiveSearchSourceIds = indexSourceIdsForSources(scopedSources, manifest);
+    }
     const searchResult = await searchChunksWithMetadata({
-      query: question,
+      query: retrievalQuery,
       sourceId,
-      sourceIds: searchAllSources ? null : searchSourceIds,
+      sourceIds: effectiveSearchSourceIds,
       limit: searchLimit
     });
     const results = searchResult.results;
@@ -3007,7 +4072,8 @@ app.post("/api/chat/stream", async (req, res) => {
       }
 
       const [manifest, persistedJobs] = await Promise.all([readManifest(), readJobs()]);
-      const indexedChunks = indexedSnapshotForSource(sourceId, manifest).chunks;
+      const currentSourceIds = new Set(sources.map((item) => item?.id).filter(Boolean));
+      const indexedChunks = indexedSnapshotForSource(source, manifest, { currentSourceIds }).chunks;
       const latestJob = latestJobForSource(sourceId, persistedJobs);
       if (!indexedChunks) {
         const status = publicJobStatus(latestJob);
@@ -3061,6 +4127,7 @@ app.post("/api/chat/stream", async (req, res) => {
       results,
       question,
       sourceId,
+      broadAnswer,
       signal: requestController.signal,
       stream: true,
       onToken: (token) => {
@@ -3129,13 +4196,17 @@ app.post("/api/chat/stream", async (req, res) => {
   }
 });
 
-app.get(/^\/(?:chat|settings(?:\/(?:sources|llm|indexes))?)\/?$/, (_req, res) => {
+app.get(/^\/(?:chat|settings(?:\/(?:general|sources|llm|indexes|audit))?)\/?$/, (_req, res) => {
   res.sendFile(path.join(projectRoot, "apps", "rag-ui", "index.html"));
 });
 
 app.use((error, _req, res, _next) => {
   console.error(error);
-  res.status(500).json({ error: error.message || "Internal error" });
+  const status = Number(error?.statusCode || error?.status || 500);
+  const safeStatus = status >= 400 && status < 600 ? status : 500;
+  const payload = { error: error.message || "Internal error" };
+  if (error?.tenderSync) payload.tenderSync = error.tenderSync;
+  res.status(safeStatus).json(payload);
 });
 
 await ensureStorage();

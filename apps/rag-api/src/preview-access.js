@@ -1,4 +1,5 @@
 import path from "node:path";
+import { sourceIndexEntryMatches } from "./index-status.js";
 
 export function normalizePreviewPath(value) {
   return path.normalize(String(value || "").trim());
@@ -19,8 +20,18 @@ export function findKnownSource(sources = [], sourceId = "") {
   return sources.find((source) => source?.id === id) || null;
 }
 
-export function findPreviewManifestEntry({ manifest = {}, sourceId = "", filePath = "", fileId = "", chunk = null } = {}) {
-  const entries = Object.values(manifest.files || {}).filter((entry) => entry?.sourceId === sourceId);
+export function findPreviewManifestEntry({
+  manifest = {},
+  sourceId = "",
+  source = null,
+  currentSourceIds = null,
+  filePath = "",
+  fileId = "",
+  chunk = null
+} = {}) {
+  const scopeSource = source || { id: sourceId };
+  const entries = Object.values(manifest.files || {})
+    .filter((entry) => sourceIndexEntryMatches(scopeSource, entry, { currentSourceIds }));
   const chunkPath = String(chunk?.path || "").trim();
   const requestedFileId = String(fileId || "").trim();
   const requestedPath = chunkPath || String(filePath || "").trim();
@@ -70,6 +81,7 @@ export async function resolvePreviewTarget({
   const entry = findPreviewManifestEntry({
     manifest,
     sourceId: source.id,
+    source,
     filePath,
     fileId,
     chunk

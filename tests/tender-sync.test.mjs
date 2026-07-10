@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
   normalizeTenderLinkMappings,
-  planTenderSourceSync
+  planTenderSourceSync,
+  scanTenderFolders
 } from "../apps/rag-api/src/tender-sync.js";
 
 test("normalizeTenderLinkMappings accepts folder and linkedContractId aliases", () => {
@@ -20,6 +23,15 @@ test("normalizeTenderLinkMappings accepts folder and linkedContractId aliases", 
     tenderId: "",
     contractId: "contract-a"
   }]);
+});
+
+test("scanTenderFolders reports missing Google Drive root", async () => {
+  const missingRoot = path.join(os.tmpdir(), `localai-missing-tenders-${Date.now()}`);
+  const result = await scanTenderFolders(missingRoot, ["Work"]);
+
+  assert.deepEqual(result.folders, []);
+  assert.equal(result.diagnostics.rootExists, false);
+  assert.equal(result.diagnostics.categories[0].status, "not_checked");
 });
 
 test("planTenderSourceSync applies manual mappings before automatic matching", () => {
@@ -79,6 +91,89 @@ test("planTenderSourceSync reports unlinked tender outside auto-link categories"
   assert.equal(result.summary.totals.created, 1);
   assert.equal(result.summary.totals.unlinked, 1);
   assert.equal(result.summary.planned[0].linkSource, "none");
+});
+
+test("planTenderSourceSync marks the selected automatic link separately from candidates", () => {
+  const tenderPath = "G:\\tenders\\Done\\261. Alpha Plaza";
+  const result = planTenderSourceSync({
+    sources: [
+      { id: "contract-alpha-plaza", title: "Alpha Plaza", path: "\\\\share\\Alpha Plaza", sourceType: "contract" },
+      { id: "contract-alpha-service", title: "Alpha Service", path: "\\\\share\\Alpha Service", sourceType: "contract" }
+    ],
+    folders: [{
+      category: "Done",
+      name: "261. Alpha Plaza",
+      path: tenderPath
+    }],
+    tenderRoot: "G:\\tenders",
+    categories: ["Done"],
+    autoLinkCategories: ["Done"],
+    manualMappings: []
+  });
+
+  const planned = result.summary.planned[0];
+  assert.equal(planned.autoLinked, true);
+  assert.equal(planned.linkedContractId, "contract-alpha-plaza");
+  assert.equal(planned.selectedMatchCandidateId, "contract-alpha-plaza");
+  assert.deepEqual(planned.matchCandidates.map((candidate) => candidate.id), ["contract-alpha-plaza", "contract-alpha-service"]);
+});
+
+test("planTenderSourceSync can apply a selected candidate link", () => {
+  const tenderPath = "G:\\tenders\\Done\\261. Alpha Plaza";
+  const result = planTenderSourceSync({
+    sources: [
+      { id: "contract-alpha-plaza", title: "Alpha Plaza", path: "\\\\share\\Alpha Plaza", sourceType: "contract" },
+      { id: "contract-alpha-service", title: "Alpha Service", path: "\\\\share\\Alpha Service", sourceType: "contract" }
+    ],
+    folders: [{
+      category: "Done",
+      name: "261. Alpha Plaza",
+      path: tenderPath
+    }],
+    tenderRoot: "G:\\tenders",
+    categories: ["Done"],
+    autoLinkCategories: ["Done"],
+    manualMappings: [],
+    selectedTenderLinks: [{ path: tenderPath, linkedContractId: "contract-alpha-service" }]
+  });
+
+  const planned = result.summary.planned[0];
+  assert.equal(result.summary.totals.selectedLinked, 1);
+  assert.equal(planned.linkedContractId, "contract-alpha-service");
+  assert.equal(planned.linkSource, "selected");
+  assert.equal(planned.selectedLinked, true);
+  assert.equal(result.nextSources.find((source) => source.path === tenderPath).linkedContractId, "contract-alpha-service");
+});
+
+test("planTenderSourceSync can exclude selected automatic links", () => {
+  const tenderPath = "G:\\tenders\\Done\\101. Alpha Plaza";
+  const result = planTenderSourceSync({
+    sources: [
+      { id: "contract-alpha", title: "Alpha Plaza", path: "\\\\share\\Alpha Plaza", sourceType: "contract" },
+      { id: "contract-beta", title: "Beta Tower", path: "\\\\share\\Beta Tower", sourceType: "contract" }
+    ],
+    folders: [{
+      category: "Done",
+      name: "101. Alpha Plaza",
+      path: tenderPath
+    }],
+    tenderRoot: "G:\\tenders",
+    categories: ["Done"],
+    autoLinkCategories: ["Done"],
+    manualMappings: [],
+    excludedAutoLinks: [{ path: tenderPath, linkedContractId: "contract-alpha" }]
+  });
+
+  const planned = result.summary.planned[0];
+  assert.equal(result.summary.totals.autoLinked, 0);
+  assert.equal(result.summary.totals.autoLinkExcluded, 1);
+  assert.equal(result.summary.totals.unlinked, 1);
+  assert.equal(result.summary.totals.review, 1);
+  assert.equal(planned.linkedContractId, "");
+  assert.equal(planned.linkSource, "excluded-auto");
+  assert.equal(planned.autoLinkExcluded, true);
+  assert.equal(planned.matchCandidates[0].id, "contract-alpha");
+  assert.equal(result.nextSources.find((source) => source.path === tenderPath).linkedContractId, "");
 });
 
 test("planTenderSourceSync can apply only unlinked tenders", () => {

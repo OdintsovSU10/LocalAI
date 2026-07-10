@@ -10,6 +10,7 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
 const keepTemp = process.argv.includes("--keep-temp");
 const smokeToken = "smoke-test-token";
+const difySmokeToken = "smoke-dify-token";
 const question = "Какая сумма договора?";
 const paymentQuestion = "Какой график оплаты?";
 
@@ -82,6 +83,7 @@ function runtimeEnv({ tempProjectRoot, port, requireAuth = false }) {
     RAG_METADATA_PROVIDER: "json",
     RAG_REQUIRE_AUTH: requireAuth ? "true" : "false",
     RAG_AUTH_TOKEN: requireAuth ? smokeToken : "",
+    LOCALAI_DIFY_ADAPTER_TOKEN: difySmokeToken,
     RAG_ALLOW_REMOTE_CONTEXT: "false",
     RAG_REMOTE_LLM_ENABLED: "false",
     RAG_LLM_PROVIDER: "local",
@@ -97,6 +99,10 @@ function runtimeEnv({ tempProjectRoot, port, requireAuth = false }) {
 
 function authHeader(enabled) {
   return enabled ? { Authorization: `Bearer ${smokeToken}` } : {};
+}
+
+function difyAuthHeader() {
+  return { Authorization: `Bearer ${difySmokeToken}` };
 }
 
 async function startServer({ name, requireAuth = false, tempRoot }) {
@@ -335,10 +341,92 @@ async function assertExactCitationPreview(server, {
   recordPass(`${label}: exact evidence preview`);
 }
 
+async function assertDifyRetrieval(server, sourceId, options = {}) {
+  const label = options.label || "Dify";
+  const missingToken = await requestJson(server.baseUrl, "/api/dify/retrieval", {
+    method: "POST",
+    body: { query: question, sourceId }
+  });
+  assertSmoke(missingToken.response.status === 401, `${label}: Dify adapter accepted missing token`);
+
+  if (options.expectRagTokenRejected) {
+    const ragTokenOnly = await requestJson(server.baseUrl, "/api/dify/retrieval", {
+      method: "POST",
+      headers: server.headers,
+      body: { query: question, sourceId }
+    });
+    assertSmoke(ragTokenOnly.response.status === 401, `${label}: Dify adapter accepted RAG auth token`);
+  }
+
+  const retrieval = await requestJson(server.baseUrl, "/api/dify/retrieval", {
+    method: "POST",
+    headers: difyAuthHeader(),
+    body: {
+      query: question,
+      sourceId,
+      top_k: 3,
+      score_threshold: 0,
+      privacy: { allowRemoteContext: true }
+    }
+  });
+
+  assertSmoke(retrieval.response.status === 200, `${label}: Dify retrieval failed`);
+  assertSmoke(Array.isArray(retrieval.payload.records), `${label}: Dify records missing`);
+  assertSmoke(retrieval.payload.records.length > 0, `${label}: Dify retrieval returned no records`);
+  assertSmoke(retrieval.payload.privacy?.remoteContextAllowed === false, `${label}: Dify privacy allowed remote context`);
+  assertSmoke(retrieval.payload.records[0]?.metadata?.citationLabel === "[1]", `${label}: Dify citation label missing`);
+  const serialized = JSON.stringify(retrieval.payload);
+  assertSmoke(!serialized.includes(difySmokeToken), `${label}: Dify token leaked in response`);
+  assertSmoke(!serialized.includes(server.tempProjectRoot), `${label}: temp root leaked in Dify response`);
+
+  const externalKnowledge = await requestJson(server.baseUrl, "/api/dify/retrieval", {
+    method: "POST",
+    headers: difyAuthHeader(),
+    body: {
+      query: paymentQuestion,
+      knowledge_id: sourceId,
+      retrieval_setting: {
+        top_k: 2,
+        score_threshold: 0
+      },
+      metadata_condition: {
+        logical_operator: "and",
+        conditions: []
+      }
+    }
+  });
+  assertSmoke(externalKnowledge.response.status === 200, `${label}: Dify External Knowledge shape failed`);
+  assertSmoke(Array.isArray(externalKnowledge.payload.records), `${label}: External Knowledge records missing`);
+  assertSmoke(externalKnowledge.payload.records.length > 0, `${label}: External Knowledge returned no records`);
+  assertSmoke(
+    externalKnowledge.payload.warnings?.some((warning) => String(warning).includes("metadata_condition was received")),
+    `${label}: External Knowledge metadata_condition warning missing`
+  );
+  recordPass(`${label}: Dify retrieval adapter`);
+}
+
 async function runNoAuthScenario(server) {
   const health = await requestJson(server.baseUrl, "/api/health");
   assertSmoke(health.response.status === 200 && health.payload.ok === true, "no-auth health failed");
   recordPass("no-auth health");
+
+  const difyBaseStatus = await requestJson(server.baseUrl, "/api/dify");
+  assertSmoke(difyBaseStatus.response.status === 200, "no-auth Dify base status page failed");
+  assertSmoke(difyBaseStatus.text.includes("External Knowledge base"), "no-auth Dify base status missing marker");
+  assertSmoke(difyBaseStatus.text.includes("Dify self-host"), "no-auth Dify visual widget missing");
+  assertSmoke(!difyBaseStatus.text.includes(difySmokeToken), "no-auth Dify base status leaked token");
+
+  const difyRuntime = await requestJson(server.baseUrl, "/api/dify/status");
+  assertSmoke(difyRuntime.response.status === 200, "no-auth Dify runtime status failed");
+  assertSmoke(difyRuntime.payload.configured === false, "no-auth Dify runtime should be unconfigured in smoke");
+  assertSmoke(difyRuntime.payload.adapterTokenConfigured === true, "no-auth Dify runtime did not see adapter token");
+  assertSmoke(!JSON.stringify(difyRuntime.payload).includes(difySmokeToken), "no-auth Dify runtime leaked token");
+
+  const difyStatus = await requestJson(server.baseUrl, "/api/dify/retrieval");
+  assertSmoke(difyStatus.response.status === 200, "no-auth Dify status page failed");
+  assertSmoke(difyStatus.text.includes("diagnostic page is installed"), "no-auth Dify status page missing marker");
+  assertSmoke(!difyStatus.text.includes(difySmokeToken), "no-auth Dify status page leaked token");
+  recordPass("no-auth Dify visual status");
 
   const initialSources = await requestJson(server.baseUrl, "/api/sources");
   assertSmoke(initialSources.response.status === 200 && Array.isArray(initialSources.payload), "no-auth sources list failed");
@@ -346,6 +434,7 @@ async function runNoAuthScenario(server) {
 
   const source = await setupDemoSource(server);
   recordPass("source add/index via API");
+  await assertDifyRetrieval(server, source.id, { label: "no-auth" });
 
   const sourcesAfterIndex = await requestJson(server.baseUrl, "/api/sources");
   assertSmoke(sourcesAfterIndex.response.status === 200, "sources after index failed");
@@ -464,7 +553,29 @@ async function runAuthScenario(server) {
   const authorizedSources = await requestJson(server.baseUrl, "/api/sources", { headers: server.headers });
   assertSmoke(authorizedSources.response.status === 200, "auth /api/sources with token failed");
 
+  const difyBaseStatus = await requestJson(server.baseUrl, "/api/dify", { headers: server.headers });
+  assertSmoke(difyBaseStatus.response.status === 200, "auth Dify base status page with RAG token failed");
+  assertSmoke(difyBaseStatus.text.includes("External Knowledge base"), "auth Dify base status missing marker");
+  assertSmoke(difyBaseStatus.text.includes("Dify self-host"), "auth Dify visual widget missing");
+  assertSmoke(!difyBaseStatus.text.includes(difySmokeToken), "auth Dify base status leaked token");
+
+  const difyRuntime = await requestJson(server.baseUrl, "/api/dify/status", { headers: server.headers });
+  assertSmoke(difyRuntime.response.status === 200, "auth Dify runtime status failed");
+  assertSmoke(difyRuntime.payload.configured === false, "auth Dify runtime should be unconfigured in smoke");
+  assertSmoke(difyRuntime.payload.adapterTokenConfigured === true, "auth Dify runtime did not see adapter token");
+  assertSmoke(!JSON.stringify(difyRuntime.payload).includes(difySmokeToken), "auth Dify runtime leaked token");
+
+  const difyStatus = await requestJson(server.baseUrl, "/api/dify/retrieval", { headers: server.headers });
+  assertSmoke(difyStatus.response.status === 200, "auth Dify status page with RAG token failed");
+  assertSmoke(difyStatus.text.includes("diagnostic page is installed"), "auth Dify status page missing marker");
+  assertSmoke(!difyStatus.text.includes(difySmokeToken), "auth Dify status page leaked token");
+
   const source = await setupDemoSource(server);
+  await assertDifyRetrieval(server, source.id, {
+    label: "auth",
+    expectRagTokenRejected: true
+  });
+
   const chatNoToken = await requestJson(server.baseUrl, "/api/chat", {
     method: "POST",
     body: { question, sourceId: source.id }

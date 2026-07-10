@@ -791,79 +791,6 @@ function selectedSettingsSource() {
   return sourceById(state.settingsSourceId);
 }
 
-function contextLinksFor(source) {
-  return Array.isArray(source?.contextLinks) ? source.contextLinks : [];
-}
-
-function contextKindLabel(kind) {
-  return {
-    doc: "Документ",
-    sheet: "Таблица",
-    kp: "КП",
-    link: "Ссылка"
-  }[kind] || "Ссылка";
-}
-
-function inferContextKind(link = {}) {
-  const kind = String(link.kind || "").toLowerCase();
-  if (kind && kind !== "auto") return kind;
-
-  const haystack = `${link.url || ""} ${link.title || ""}`.toLowerCase();
-  if (haystack.includes("spreadsheets")) return "sheet";
-  if (haystack.includes("document")) return "doc";
-  if (/(^|[\s_-])kp([\s_.-]|$)|кп/i.test(`${link.title || ""} ${link.url || ""}`)) return "kp";
-  return "link";
-}
-
-function contextLinkIndexStatus(link = {}) {
-  const status = link.indexStatus || {};
-  const value = String(status.status || "not_indexed");
-  const label = status.label || {
-    indexed: "в индексе",
-    warning: "проверить",
-    failed: "ошибка",
-    indexing: "индексируется",
-    queued: "в очереди",
-    not_indexed: "не индексировалось"
-  }[value] || "не индексировалось";
-  return {
-    status: value,
-    label,
-    title: status.message || label
-  };
-}
-
-function googlePreviewUrl(rawUrl) {
-  let url;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    return "";
-  }
-
-  const host = url.hostname.toLowerCase();
-  const docsMatch = url.pathname.match(/^\/(document|spreadsheets|presentation)\/d\/([^/]+)/);
-  if (host === "docs.google.com" && docsMatch) {
-    const [, app, id] = docsMatch;
-    if (app === "presentation") {
-      return `https://docs.google.com/presentation/d/${encodeURIComponent(id)}/embed?start=false&loop=false&delayms=3000`;
-    }
-
-    const preview = new URL(`https://docs.google.com/${app}/d/${encodeURIComponent(id)}/preview`);
-    const gid = url.searchParams.get("gid");
-    if (gid && app === "spreadsheets") preview.searchParams.set("gid", gid);
-    return preview.toString();
-  }
-
-  const driveFileMatch = url.pathname.match(/^\/file\/d\/([^/]+)/);
-  if (host === "drive.google.com" && driveFileMatch) {
-    return `https://drive.google.com/file/d/${encodeURIComponent(driveFileMatch[1])}/preview`;
-  }
-
-  const driveId = host === "drive.google.com" ? url.searchParams.get("id") : "";
-  return driveId ? `https://drive.google.com/file/d/${encodeURIComponent(driveId)}/preview` : "";
-}
-
 function skippedModalSource() {
   return sourceById(state.skippedSourceId || state.selectedSourceId);
 }
@@ -1042,7 +969,7 @@ function renderChatHistory() {
         <span class="chat-history-meta"></span>
       </button>
       <div class="chat-history-actions">
-        <button type="button" class="chat-history-menu-button" title="Действия" aria-label="Действия чата">...</button>
+        <button type="button" class="chat-history-menu-button" title="Действия" aria-label="Действия чата">⋯</button>
         <div class="chat-history-menu" role="menu">
           ${showingArchived
             ? '<button type="button" class="chat-history-restore" role="menuitem">Вернуть</button>'
@@ -2524,16 +2451,6 @@ function auditPipelineDetail(status = {}, file = null) {
   return [...new Set(parts.filter(Boolean))].join(" · ");
 }
 
-function auditMovementMeta(source = null, status = {}, file = null, prefix = "") {
-  const sourceTitle = source?.title || status.sourceTitle || prefix || "";
-  const sourcePart = sourceTitle
-    ? [source ? sourceTypeLabel(source) : "", sourceTitle].filter(Boolean).join(": ")
-    : "";
-  const pathPart = file?.relativePath && file.relativePath !== file.title ? file.relativePath : "";
-  const updatedPart = status.updatedAt ? `обновлено ${shortDateTime(status.updatedAt)}` : "";
-  return [sourcePart, pathPart, updatedPart].filter(Boolean).join(" · ");
-}
-
 function auditStatusMeta(status = {}) {
   const parts = [
     auditPhaseLabel(status.phase),
@@ -2544,7 +2461,7 @@ function auditStatusMeta(status = {}) {
   return parts.join(" · ");
 }
 
-function auditItemElement({ label, value, detail = "", tone = "idle", meta = "", pipelineStatus = null } = {}) {
+function auditItemElement({ label, value, detail = "", tone = "idle", meta = "", currentFile = "", pipelineStatus = null } = {}) {
   const item = document.createElement("article");
   item.className = `audit-list-item is-${tone}`;
   if (pipelineStatus) item.classList.add("has-pipeline");
@@ -2555,12 +2472,16 @@ function auditItemElement({ label, value, detail = "", tone = "idle", meta = "",
         <span class="audit-list-label"></span>
         <strong class="audit-list-value"></strong>
       </span>
+      <span class="audit-list-file"></span>
       <span class="audit-list-meta"></span>
       <span class="audit-list-detail"></span>
     </span>
   `;
   item.querySelector(".audit-list-label").textContent = label || "";
   item.querySelector(".audit-list-value").textContent = value || "";
+  const fileNode = item.querySelector(".audit-list-file");
+  fileNode.textContent = currentFile ? `Файл: ${currentFile}` : "";
+  fileNode.hidden = !fileNode.textContent;
   const metaNode = item.querySelector(".audit-list-meta");
   const detailNode = item.querySelector(".audit-list-detail");
   metaNode.textContent = meta || "";
@@ -2585,9 +2506,13 @@ function auditActiveMovements() {
     seenSourceIds.add(source.id);
     const file = auditCurrentFile(status);
     rows.push({
-      label: file?.title || source.title || source.id,
+      label: source.title || source.id,
       value: auditPhaseLabel(status.phase),
-      meta: auditMovementMeta(source, status, file),
+      currentFile: file ? (file.title || file.relativePath) : "",
+      meta: [
+        file?.relativePath && file.relativePath !== file.title ? file.relativePath : "",
+        status.updatedAt ? `обновлено ${shortDateTime(status.updatedAt)}` : ""
+      ].filter(Boolean).join(" · "),
       detail: auditPipelineDetail(status, file),
       tone: indexHealthStatus(status) === "stale" ? "warning" : "running",
       pipelineStatus: status
@@ -2600,9 +2525,13 @@ function auditActiveMovements() {
     const source = sourceById(current.sourceId);
     const file = auditCurrentFile(current);
     rows.push({
-      label: file?.title || current.sourceTitle || current.sourceId || "Агент индексации",
+      label: source?.title || current.sourceTitle || current.sourceId || "Агент индексации",
       value: auditPhaseLabel(current.phase),
-      meta: [agentSourcePosition(run, current), auditMovementMeta(source, current, file, current.sourceTitle)].filter(Boolean).join(" · "),
+      currentFile: file ? (file.title || file.relativePath) : "",
+      meta: [
+        agentSourcePosition(run, current),
+        current.updatedAt ? `обновлено ${shortDateTime(current.updatedAt)}` : ""
+      ].filter(Boolean).join(" · "),
       detail: auditPipelineDetail(current, file) || current.message || formatAgentRunStatus(run),
       tone: "running",
       pipelineStatus: {
@@ -3571,60 +3500,6 @@ function renderSelectedSourceSettings() {
   container.append(...blocks);
 }
 
-function renderContextLinks() {
-  const list = $("#context-link-list");
-  const form = $("#context-link-form");
-  if (!list || !form) return;
-
-  const source = selectedSettingsSource();
-  list.innerHTML = "";
-  form.querySelectorAll("input, select, button").forEach((element) => {
-    element.disabled = !source;
-  });
-
-  if (!source) {
-    list.innerHTML = '<div class="empty">Выберите папку, чтобы добавить Google документы, таблицы или КП.</div>';
-    setText("#context-link-status", "");
-    return;
-  }
-
-  const links = contextLinksFor(source);
-  if (!links.length) {
-    list.innerHTML = '<div class="empty">Добавьте ссылку на Google Doc, Google Sheet или КП для быстрого просмотра рядом с контекстом.</div>';
-    return;
-  }
-
-  for (const link of links) {
-    const item = document.createElement("article");
-    item.className = "context-link-item";
-    item.innerHTML = `
-      <button type="button" class="context-link-main">
-        <span class="context-link-head">
-          <span class="context-link-title"></span>
-          <span class="context-link-kind-chip"></span>
-        </span>
-        <span class="context-link-index-status"></span>
-        <span class="context-link-url"></span>
-      </button>
-      <button type="button" class="secondary context-link-remove" title="Удалить" aria-label="Удалить">×</button>
-    `;
-
-    const kind = inferContextKind(link);
-    const indexStatus = contextLinkIndexStatus(link);
-    item.querySelector(".context-link-title").textContent = link.title || contextKindLabel(kind);
-    item.querySelector(".context-link-kind-chip").textContent = contextKindLabel(kind);
-    const indexStatusChip = item.querySelector(".context-link-index-status");
-    indexStatusChip.classList.add(`is-${indexStatus.status}`);
-    indexStatusChip.textContent = indexStatus.label;
-    indexStatusChip.title = indexStatus.title;
-    indexStatusChip.setAttribute("aria-label", indexStatus.title);
-    item.querySelector(".context-link-url").textContent = link.url;
-    item.querySelector(".context-link-main").addEventListener("click", () => openContextLinkPreview(link, source));
-    item.querySelector(".context-link-remove").addEventListener("click", () => removeContextLink(link.id));
-    list.append(item);
-  }
-}
-
 function resetIndexedFilesState(sourceId = "") {
   state.indexedFiles = {
     sourceId,
@@ -4194,12 +4069,10 @@ function renderSources() {
   $("#settings-project-detail")?.classList.toggle("source-detail-empty", sourceDetailEmpty);
   const selectedSourcePanel = $("#selected-source-panel");
   const sourcePathsPanel = $("#source-paths-panel");
-  const contextLinksPanel = $("#context-links-panel");
   const indexedFilesPanel = $("#indexed-files-panel");
   const newSourcePanel = $("#new-source-panel");
   if (selectedSourcePanel) selectedSourcePanel.hidden = addingSource || !hasSettingsSource;
   if (sourcePathsPanel) sourcePathsPanel.hidden = addingSource || !hasSettingsSource;
-  if (contextLinksPanel) contextLinksPanel.hidden = addingSource || !hasSettingsSource;
   if (indexedFilesPanel) indexedFilesPanel.hidden = addingSource || !hasSettingsSource;
   if (newSourcePanel) newSourcePanel.hidden = !addingSource;
   newSourcePanel?.classList.toggle("add-source-mode", addingSource);
@@ -4353,7 +4226,6 @@ function renderSources() {
   renderSettingsSourceActions(settingsSource);
   renderSourcePathsPanel(settingsSource);
   renderIndexedFilesPanel();
-  renderContextLinks();
   if (settingsOpen && !addingSource && settingsSource) ensureIndexedFilesLoaded(settingsSource.id);
   renderChatHistory();
   renderAuditPanel();
@@ -4788,14 +4660,6 @@ function setRerankerConnectionStatus(status, text) {
   setText("#reranker-connection-status-text", text);
 }
 
-function setGoogleAuthConnectionStatus(status, text) {
-  const box = $("#google-auth-status");
-  if (!box) return;
-  box.classList.remove("online", "offline", "checking", "disabled");
-  box.classList.add(status);
-  setText("#google-auth-status-text", text);
-}
-
 function setDiagnosticBadge(selector, status, text) {
   const element = $(selector);
   if (!element) return;
@@ -4814,42 +4678,11 @@ function diagnosticStatusLabel(status) {
   }[status] || status;
 }
 
-function renderGoogleAuthStatus(googleAuth = {}) {
-  const loginButton = $("#google-auth-login");
-  const logoutButton = $("#google-auth-logout");
-  const refreshButton = $("#google-auth-refresh");
-  if (!loginButton || !logoutButton) return;
-
-  const configured = Boolean(googleAuth.configured);
-  const authorized = Boolean(googleAuth.authorized);
-  loginButton.disabled = !configured || authorized;
-  logoutButton.disabled = !authorized;
-  if (refreshButton) refreshButton.disabled = false;
-
-  if (!configured) {
-    setGoogleAuthConnectionStatus("disabled", "Google OAuth env is not configured");
-  } else if (authorized) {
-    const account = googleAuth.email ? ` as ${googleAuth.email}` : "";
-    setGoogleAuthConnectionStatus("online", `Google login active${account}`);
-  } else {
-    setGoogleAuthConnectionStatus("offline", "Google login is not active");
-  }
-
-  const detail = [];
-  if (configured) detail.push(`Redirect: ${googleAuth.redirectUri || "default"}`);
-  else detail.push("Set RAG_GOOGLE_OAUTH_CLIENT_ID and optional RAG_GOOGLE_OAUTH_CLIENT_SECRET in env, then restart backend.");
-  if (authorized && googleAuth.source === "env") detail.push("Token source: env");
-  if (authorized && googleAuth.expiresAt) detail.push(`Access token expires: ${shortDateTime(googleAuth.expiresAt)}`);
-  setText("#google-auth-detail", detail.join(" · "));
-}
-
 function renderIntegrationsStatus(payload = state.integrationsStatus) {
   if (!$("#qdrant-diag-state")) return;
   const vectorStore = payload?.vectorStore || {};
   const reranker = payload?.reranker || {};
   const pdf = payload?.pdf || {};
-  const googleAuth = payload?.googleAuth || {};
-  renderGoogleAuthStatus(googleAuth);
 
   const qdrantState = vectorStore.qdrantEnabled
     ? (vectorStore.qdrantAvailable ? "online" : "offline")
@@ -4932,44 +4765,6 @@ async function refreshIntegrationsStatus() {
     setText("#integrations-status-detail", error.message);
     syncIndexFormLocks();
     renderAuditPanel();
-  }
-}
-
-async function startGoogleAuth() {
-  const button = $("#google-auth-login");
-  const previousText = button?.textContent || "";
-  if (button) {
-    button.disabled = true;
-    button.textContent = "Opening...";
-  }
-  try {
-    const payload = await api("/api/google/auth/start", { method: "POST" });
-    if (payload.authUrl) window.open(payload.authUrl, "_blank", "noopener,noreferrer");
-    setText("#google-auth-detail", "Complete Google login in the opened tab, then refresh status.");
-    setTimeout(refreshIntegrationsStatus, 2500);
-  } catch (error) {
-    setText("#google-auth-detail", apiErrorMessage(error, "Google login failed"));
-  } finally {
-    if (button) button.textContent = previousText || "Login with Google";
-    await refreshIntegrationsStatus();
-  }
-}
-
-async function logoutGoogleAuth() {
-  const button = $("#google-auth-logout");
-  const previousText = button?.textContent || "";
-  if (button) {
-    button.disabled = true;
-    button.textContent = "Forgetting...";
-  }
-  try {
-    const status = await api("/api/google/auth/logout", { method: "POST" });
-    renderGoogleAuthStatus(status);
-  } catch (error) {
-    setText("#google-auth-detail", apiErrorMessage(error, "Google logout failed"));
-  } finally {
-    if (button) button.textContent = previousText || "Forget login";
-    await refreshIntegrationsStatus();
   }
 }
 
@@ -6557,53 +6352,6 @@ async function saveTenderLink(sourceId, linkedContractId, statusNode) {
   }
 }
 
-async function addContextLink(event) {
-  event.preventDefault();
-  const source = selectedSettingsSource();
-  if (!source) return;
-
-  const url = $("#context-link-url").value.trim();
-  const title = $("#context-link-title").value.trim();
-  const kind = $("#context-link-kind").value;
-  if (!url) {
-    setText("#context-link-status", "Вставьте ссылку на Google документ, таблицу или КП.");
-    return;
-  }
-
-  setText("#context-link-status", "Сохраняю ссылку...");
-  try {
-    const nextSource = await api(`/api/sources/${encodeURIComponent(source.id)}/context-links`, {
-      method: "POST",
-      body: JSON.stringify({ url, title, kind })
-    });
-    replaceSource(nextSource);
-    $("#context-link-url").value = "";
-    $("#context-link-title").value = "";
-    $("#context-link-kind").value = "auto";
-    renderSources();
-    setText("#context-link-status", "Ссылка добавлена.");
-  } catch (error) {
-    setText("#context-link-status", error.message);
-  }
-}
-
-async function removeContextLink(linkId) {
-  const source = selectedSettingsSource();
-  if (!source || !linkId) return;
-
-  setText("#context-link-status", "Удаляю ссылку...");
-  try {
-    const nextSource = await api(`/api/sources/${encodeURIComponent(source.id)}/context-links/${encodeURIComponent(linkId)}`, {
-      method: "DELETE"
-    });
-    replaceSource(nextSource);
-    renderSources();
-    setText("#context-link-status", "Ссылка удалена.");
-  } catch (error) {
-    setText("#context-link-status", error.message);
-  }
-}
-
 function latestAgentRun(runs = []) {
   return Array.isArray(runs) ? runs[0] || null : null;
 }
@@ -7692,45 +7440,6 @@ function renderMessageSources(message, sources = [], answerText = "", options = 
   scrollChatToBottom();
 }
 
-function openContextLinkPreview(link, source = selectedSettingsSource()) {
-  state.previewRequestId += 1;
-  const kind = inferContextKind(link);
-  const previewSource = {
-    title: link.title || contextKindLabel(kind),
-    sourceTitle: source?.title || "Google контекст",
-    path: link.url
-  };
-  const preview = renderPreviewShell(previewSource);
-
-  const actions = document.createElement("div");
-  actions.className = "preview-actions";
-
-  const openLink = document.createElement("a");
-  openLink.className = "preview-action-link";
-  openLink.href = link.url;
-  openLink.target = "_blank";
-  openLink.rel = "noreferrer";
-  openLink.textContent = "Открыть в Google";
-  actions.append(openLink);
-  preview.append(actions);
-
-  const embedUrl = googlePreviewUrl(link.url);
-  if (!embedUrl) {
-    appendPreviewNote(preview, "Для этой ссылки нет встроенного предпросмотра. Откройте ее в Google.");
-    return;
-  }
-
-  const frame = document.createElement("iframe");
-  frame.className = "google-preview-frame";
-  frame.src = embedUrl;
-  frame.title = previewSource.title;
-  frame.loading = "lazy";
-  frame.referrerPolicy = "no-referrer-when-downgrade";
-  preview.append(frame);
-
-  appendPreviewNote(preview, "Если документ приватный или Google заблокирует iframe, откройте его кнопкой выше.");
-}
-
 function previewMetaChip(label, variant = "") {
   const chip = document.createElement("span");
   chip.className = `preview-chip${variant ? ` preview-chip--${variant}` : ""}`;
@@ -8108,7 +7817,6 @@ document.addEventListener("keydown", (event) => {
 });
 window.addEventListener("resize", hideIndexedFileMenu);
 window.addEventListener("scroll", hideIndexedFileMenu, true);
-$("#context-link-form")?.addEventListener("submit", addContextLink);
 $("#source-path").addEventListener("input", syncSourcePathInput);
 $("#choose-source-folder").addEventListener("click", pickSourceFolder);
 $("#settings-form").addEventListener("submit", saveSettings);
@@ -8125,9 +7833,6 @@ $("#edit-reranker-settings")?.addEventListener("click", () => setRerankerEditing
 $("#refresh-remote-diagnostics").addEventListener("click", refreshRemoteDiagnostics);
 $("#refresh-integrations-status").addEventListener("click", refreshIntegrationsStatus);
 $("#audit-refresh")?.addEventListener("click", () => refreshAuditStatus());
-$("#google-auth-login")?.addEventListener("click", startGoogleAuth);
-$("#google-auth-logout")?.addEventListener("click", logoutGoogleAuth);
-$("#google-auth-refresh")?.addEventListener("click", refreshIntegrationsStatus);
 $("#qdrant-url").addEventListener("input", () => {
   updateQdrantApiKeyHint();
   syncIndexFormLocks();
@@ -8210,14 +7915,6 @@ $("#portal-stop-modal")?.addEventListener("click", (event) => {
 $("#portal-stop-modal")?.addEventListener("keydown", trapModalTab);
 ["folder-modal", "tender-sync-modal", "skipped-modal"].forEach(setupModalA11y);
 $("#settings-back").addEventListener("click", closeSettings);
-$("#settings-status-toggle")?.addEventListener("click", () => {
-  const actions = $(".settings-header-actions");
-  const toggle = $("#settings-status-toggle");
-  if (!actions || !toggle) return;
-  const collapsed = actions.classList.toggle("statuses-collapsed");
-  toggle.textContent = collapsed ? "Показать статусы" : "Свернуть статусы";
-  toggle.setAttribute("aria-expanded", String(!collapsed));
-});
 document.querySelectorAll(".service-control-button").forEach((button) => {
   button.addEventListener("click", (event) => {
     event.stopPropagation();

@@ -119,7 +119,7 @@
 
       <section id="settings-page" class="settings-page" hidden>
         <header class="settings-page-header">
-          <button id="settings-back" type="button" class="secondary settings-back-button">← К чату</button>
+          <button id="settings-back" type="button" class="secondary settings-back-button">К чату</button>
           <div>
             <div id="settings-page-title" class="settings-page-title">Настройки</div>
             <div class="folder-current">Источники, хранилище и подключение LM Studio</div>
@@ -162,7 +162,6 @@
               <span class="backend-status-label">Qdrant</span>
             </button>
             </div>
-            <button id="settings-status-toggle" type="button" class="secondary settings-status-toggle" aria-expanded="true" aria-controls="settings-status-group" title="Свернуть строку статусов">Свернуть статусы</button>
             <div id="service-action-menu" class="service-action-menu" role="menu" hidden>
               <button type="button" class="secondary" data-service-action="start" role="menuitem">Запустить</button>
               <button type="button" class="secondary" data-service-action="restart" role="menuitem">Рестарт</button>
@@ -213,43 +212,6 @@
                   </section>
 
                   <section id="source-paths-panel" class="panel source-paths-panel" hidden></section>
-
-                  <section id="context-links-panel" class="panel context-links-panel" hidden>
-                    <div class="panel-title-row">
-                      <div>
-                        <div class="panel-title">Google context links</div>
-                        <div class="hint">Документы и таблицы, связанные с выбранным проектом</div>
-                      </div>
-                    </div>
-                    <div class="google-auth-block">
-                      <div id="google-auth-status" class="lm-status checking" role="status">
-                        <span class="lm-status-dot" aria-hidden="true"></span>
-                        <span id="google-auth-status-text">Google: проверка...</span>
-                      </div>
-                      <div class="google-auth-actions">
-                        <button id="google-auth-login" type="button" class="secondary">Войти через Google</button>
-                        <button id="google-auth-logout" type="button" class="secondary">Забыть авторизацию</button>
-                        <button id="google-auth-refresh" type="button" class="secondary">Обновить статус</button>
-                      </div>
-                      <div id="google-auth-detail" class="hint"></div>
-                    </div>
-                    <div id="context-link-list" class="context-link-list"></div>
-                    <form id="context-link-form" class="context-link-form">
-                      <input id="context-link-url" type="url" placeholder="Ссылка на Google Doc, Sheet или Drive">
-                      <input id="context-link-title" type="text" placeholder="Название (необязательно)">
-                      <div class="context-link-actions">
-                        <select id="context-link-kind" aria-label="Тип Google context link">
-                          <option value="auto">Определить автоматически</option>
-                          <option value="doc">Документ</option>
-                          <option value="sheet">Таблица</option>
-                          <option value="kp">Коммерческое предложение</option>
-                          <option value="link">Ссылка</option>
-                        </select>
-                        <button type="submit">Добавить ссылку</button>
-                      </div>
-                      <div id="context-link-status" class="hint" role="status" aria-live="polite"></div>
-                    </form>
-                  </section>
 
                   <section id="new-source-panel" class="panel" hidden>
                     <div class="panel-title">Добавить папку в текущий RAG</div>

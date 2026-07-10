@@ -437,6 +437,22 @@ body {
   border: 0;
   background: transparent;
   color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  font-size: 17px;
+  opacity: 0;
+  transition: opacity var(--motion-fast) ease, background var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+
+.chat-history-item:hover .chat-history-menu-button,
+.chat-history-actions:focus-within .chat-history-menu-button,
+.chat-history-menu-button:focus-visible {
+  opacity: 1;
+}
+
+.chat-history-menu-button:hover {
+  border-color: transparent;
+  background: var(--surface-3);
+  color: var(--text-primary);
 }
 
 .chat-history-menu {
@@ -1233,9 +1249,9 @@ button.source-citation:hover,
 /* Sources: source list | details | indexed tree */
 .settings-sources-layout {
   grid-template-columns: 290px minmax(0, 1fr);
+  align-items: start;
   gap: var(--sp-4);
   height: auto;
-  min-height: 620px;
   overflow: visible;
 }
 
@@ -1331,7 +1347,7 @@ button.source-citation:hover,
 }
 
 .settings-project-detail.source-detail-empty:not(.adding-source)::before {
-  content: "Выберите источник слева или добавьте новую папку, чтобы увидеть сводку, Google context links и файлы индекса.";
+  content: "Выберите источник слева или добавьте новую папку, чтобы увидеть сводку, качество распознавания и файлы индекса.";
   display: grid;
   place-items: center;
   align-self: start;
@@ -1405,27 +1421,31 @@ button.source-citation:hover,
 }
 
 #indexed-files-panel {
-  position: sticky;
-  top: 0;
   display: flex;
   flex-direction: column;
   grid-column: 2;
   grid-row: 1;
-  height: calc(100dvh - 230px);
-  max-height: 760px;
-  min-height: 520px;
+  align-self: start;
+  max-height: calc(100dvh - 210px);
+  min-height: 320px;
   overflow: hidden;
   padding: var(--sp-3);
 }
 
 .indexed-files-tree {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   max-height: none;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .indexed-tree-row {
+  flex: 0 0 auto;
+  height: auto;
   border-radius: var(--radius-sm);
 }
 
@@ -2192,35 +2212,62 @@ button.source-citation:hover,
    Locus redesign — доработки P1–P3 (закрытие пробелов аудита)
    ============================================================ */
 
-/* B4 · Сворачиваемая строка статусов в шапке настроек */
+/* Строка статусов сервисов в шапке настроек (LM/Dify/Backend/Reranker/Qdrant) */
 .settings-status-group {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   flex-wrap: wrap;
   min-width: 0;
-}
-
-.settings-header-actions.statuses-collapsed .settings-status-group {
-  display: none;
-}
-
-.settings-status-toggle {
   margin-left: auto;
-  border-color: transparent;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-}
-
-.settings-status-toggle:hover {
-  border-color: transparent;
-  background: var(--surface-3);
-  color: var(--text-primary);
 }
 
 .settings-mini {
   cursor: default;
+}
+
+/* Видимая кнопка «Назад» (одна стрелка даёт #settings-back::before) */
+#settings-back.settings-back-button {
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  padding: 3px 12px;
+}
+
+#settings-back.settings-back-button:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+/* Заметная кнопка «Аудит» — в тулбаре чата и в шапке настроек */
+.toolbar .audit-open-link,
+.chat-index-status-bar:not(.has-progress) .audit-open-link {
+  border: 1px solid var(--accent-dim-border);
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+  font-weight: 650;
+  font-size: var(--fs-xs);
+}
+
+.toolbar .audit-open-link:hover,
+.chat-index-status-bar:not(.has-progress) .audit-open-link:hover {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.settings-header-actions .settings-audit-shortcut {
+  border: 1px solid var(--accent-dim-border);
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+  font-weight: 650;
+}
+
+.settings-header-actions .settings-audit-shortcut:hover {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
 }
 
 .settings-header-actions .tender-sync-header-button {
@@ -2445,4 +2492,50 @@ button.danger-solid:hover:not(:disabled) {
   min-height: 26px;
   padding: 2px 10px;
   font-size: var(--fs-xs);
+}
+
+/* Обратная связь · плавное появление выпадающих меню и popover.
+   Срабатывает при переходе display:none→visible; reduced-motion
+   гасится глобальным правилом в locus-tokens.css. */
+@keyframes locus-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.index-actions-menu[open] .index-actions-popover,
+.service-action-menu:not([hidden]),
+.chat-history-menu,
+.indexed-file-context-menu {
+  animation: locus-popover-in var(--motion-fast) ease;
+  transform-origin: top center;
+}
+
+/* Аудит · явная строка текущего файла в движениях */
+.audit-list-file {
+  display: inline-flex;
+  align-items: center;
+  align-self: start;
+  gap: var(--sp-1);
+  margin-top: 2px;
+  padding: 1px 8px;
+  border: 1px solid var(--accent-dim-border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-list-file[hidden] {
+  display: none;
 }

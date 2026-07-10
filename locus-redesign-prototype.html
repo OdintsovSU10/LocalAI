@@ -1,0 +1,1137 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Locus — редизайн (интерактивный прототип)</title>
+<style>
+/* ============================================================
+   LOCUS DESIGN TOKENS  (Phase 1 layer)
+   ============================================================ */
+:root{
+  color-scheme:dark;
+  /* primitives */
+  --gray-950:#0d1117; --gray-900:#131a23; --gray-850:#1a2230;
+  --gray-800:#212b3a; --gray-700:#2c3849; --gray-600:#3d4a5e;
+  --gray-400:#8595a9; --gray-300:#aab8c8; --gray-200:#c6d1de; --gray-50:#eef4fb;
+  --blue-500:#4c8dff; --blue-400:#6ba3ff; --blue-600:#3372e0;
+  --green-500:#41bf76; --amber-500:#e0aa3e; --red-500:#f2555a;
+  --cyan-500:#3fc1d0; --violet-500:#9d7bff;
+
+  /* semantic: surfaces & text */
+  --surface-0:var(--gray-950); --surface-1:var(--gray-900);
+  --surface-2:var(--gray-850); --surface-3:var(--gray-800);
+  --surface-raise:var(--gray-700);
+  --text-primary:var(--gray-50); --text-secondary:var(--gray-200);
+  --text-muted:var(--gray-400);
+  --border-default:#28334455; --border-solid:#2c3849;
+  --border-strong:var(--gray-600);
+
+  /* accent */
+  --accent:var(--blue-500); --accent-hover:var(--blue-400);
+  --accent-down:var(--blue-600); --accent-contrast:#07111f;
+  --accent-dim:rgba(76,141,255,.13); --accent-dim-border:rgba(76,141,255,.35);
+
+  /* semantic statuses: fg / bg / border */
+  --status-ok-fg:var(--green-500);      --status-ok-bg:rgba(65,191,118,.12);   --status-ok-border:rgba(65,191,118,.35);
+  --status-warning-fg:var(--amber-500); --status-warning-bg:rgba(224,170,62,.12); --status-warning-border:rgba(224,170,62,.35);
+  --status-error-fg:var(--red-500);     --status-error-bg:rgba(242,85,90,.12);  --status-error-border:rgba(242,85,90,.35);
+  --status-info-fg:var(--cyan-500);     --status-info-bg:rgba(63,193,208,.12);  --status-info-border:rgba(63,193,208,.35);
+  --status-neutral-fg:var(--gray-400);  --status-neutral-bg:rgba(133,149,169,.12); --status-neutral-border:rgba(133,149,169,.3);
+  --status-running-fg:var(--blue-400);  --status-running-bg:rgba(76,141,255,.12);  --status-running-border:rgba(76,141,255,.35);
+  --ok:var(--status-ok-fg); /* закрытие дефекта: --ok объявлена */
+  --danger:var(--red-500);
+  --evidence-highlight:rgba(224,170,62,.20);
+  --evidence-highlight-border:var(--amber-500);
+
+  /* type scale */
+  --font-ui:"Segoe UI","Segoe UI Variable",system-ui,-apple-system,sans-serif;
+  --font-mono:"Cascadia Code","Consolas",ui-monospace,monospace;
+  --fs-xs:12px; --fs-sm:13px; --fs-md:14px; --fs-lg:15.5px; --fs-xl:18px; --fs-2xl:22px;
+
+  /* spacing / radius / elevation / focus / motion */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px; --sp-7:48px;
+  --radius-sm:6px; --radius-md:8px; --radius-lg:12px; --radius-full:999px;
+  --elevation-1:0 4px 16px rgba(0,0,0,.35);
+  --elevation-2:0 12px 40px rgba(0,0,0,.5);
+  --overlay-bg:rgba(7,10,15,.6);
+  --focus-ring:0 0 0 2px var(--surface-0),0 0 0 4px var(--accent);
+  --motion-fast:120ms; --motion-base:200ms;
+}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:.01ms!important;animation-iteration-count:1!important;
+    scroll-behavior:auto!important;transition-duration:.01ms!important;
+  }
+}
+
+/* ============================================================
+   BASE
+   ============================================================ */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:var(--font-ui);font-size:var(--fs-md);line-height:1.5;
+  color:var(--text-secondary);background:var(--surface-0);
+  -webkit-font-smoothing:antialiased;overflow:hidden;
+}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input,select,textarea{font:inherit;color:var(--text-primary)}
+:focus-visible{outline:none;box-shadow:var(--focus-ring);border-radius:var(--radius-sm)}
+h1,h2,h3{color:var(--text-primary);font-weight:600}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--gray-700);border-radius:5px;border:2px solid var(--surface-0)}
+::-webkit-scrollbar-track{background:transparent}
+
+/* eyebrow — структурный ярлык панелей */
+.eyebrow{
+  font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--text-muted);
+}
+
+/* ============================================================
+   SHARED COMPONENTS
+   ============================================================ */
+/* --- StatusPill: токен + иконка + текст --- */
+.pill{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:2px 10px;border-radius:var(--radius-full);
+  font-size:var(--fs-xs);font-weight:600;white-space:nowrap;
+  border:1px solid var(--status-neutral-border);
+  background:var(--status-neutral-bg);color:var(--status-neutral-fg);
+}
+.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.pill--ok{background:var(--status-ok-bg);border-color:var(--status-ok-border);color:var(--status-ok-fg)}
+.pill--warning{background:var(--status-warning-bg);border-color:var(--status-warning-border);color:var(--status-warning-fg)}
+.pill--error{background:var(--status-error-bg);border-color:var(--status-error-border);color:var(--status-error-fg)}
+.pill--info{background:var(--status-info-bg);border-color:var(--status-info-border);color:var(--status-info-fg)}
+.pill--running{background:var(--status-running-bg);border-color:var(--status-running-border);color:var(--status-running-fg)}
+.pill--running::before{animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* --- Buttons --- */
+.btn{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:7px 14px;border-radius:var(--radius-md);
+  font-size:var(--fs-sm);font-weight:600;
+  border:1px solid var(--border-solid);background:var(--surface-3);
+  color:var(--text-primary);transition:background var(--motion-fast),border-color var(--motion-fast);
+}
+.btn:hover{background:var(--surface-raise);border-color:var(--border-strong)}
+.btn--primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn--primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.btn--ghost{background:transparent;border-color:transparent;color:var(--text-secondary)}
+.btn--ghost:hover{background:var(--surface-3);border-color:transparent}
+.btn--danger{background:transparent;border-color:var(--status-error-border);color:var(--danger)}
+.btn--danger:hover{background:var(--status-error-bg)}
+.btn--danger-solid{background:var(--danger);border-color:var(--danger);color:#fff}
+.btn--danger-solid:disabled{opacity:.45;cursor:not-allowed}
+.btn--sm{padding:4px 10px;font-size:var(--fs-xs)}
+.btn--icon{padding:7px;border-radius:var(--radius-md)}
+
+/* --- Badge (endpoint / type / quality) --- */
+.badge{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:1px 8px;border-radius:var(--radius-sm);
+  font-size:11px;font-weight:600;letter-spacing:.02em;
+  border:1px solid var(--border-solid);background:var(--surface-3);color:var(--text-muted);
+}
+.badge--contract{color:var(--blue-400);border-color:var(--accent-dim-border);background:var(--accent-dim)}
+.badge--tender{color:var(--violet-500);border-color:rgba(157,123,255,.35);background:rgba(157,123,255,.12)}
+.badge--local{color:var(--status-ok-fg);border-color:var(--status-ok-border);background:var(--status-ok-bg)}
+.badge--external{color:var(--status-warning-fg);border-color:var(--status-warning-border);background:var(--status-warning-bg)}
+.badge--exact{color:var(--status-ok-fg);border-color:var(--status-ok-border);background:var(--status-ok-bg)}
+
+/* --- Card --- */
+.card{
+  background:var(--surface-1);border:1px solid var(--border-solid);
+  border-radius:var(--radius-lg);
+}
+.card__head{
+  display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);
+  padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--border-default);
+}
+.card__body{padding:var(--sp-4)}
+
+/* --- Toast --- */
+.toast{
+  position:fixed;bottom:24px;left:50%;transform:translate(-50%,12px);
+  background:var(--surface-3);border:1px solid var(--border-strong);
+  border-radius:var(--radius-md);padding:10px 18px;font-size:var(--fs-sm);
+  color:var(--text-primary);box-shadow:var(--elevation-2);
+  opacity:0;pointer-events:none;transition:all var(--motion-base);z-index:200;
+}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+</style>
+<style>
+/* ============================================================
+   APP SHELL / CHAT LAYOUT
+   ============================================================ */
+.app{height:100vh;display:flex;flex-direction:column}
+.view{flex:1;min-height:0;display:none}
+.view.active{display:flex}
+
+/* --- Chat view: sidebar | workspace | evidence --- */
+.view-chat{display:none}
+.view-chat.active{display:grid;grid-template-columns:300px 1fr;position:relative}
+.view-chat.evidence-open{grid-template-columns:300px 1fr 400px}
+
+/* Sidebar */
+.sidebar{
+  background:var(--surface-1);border-right:1px solid var(--border-solid);
+  display:flex;flex-direction:column;min-height:0;
+}
+.sidebar__brand{
+  padding:var(--sp-4);display:flex;align-items:center;gap:10px;
+}
+.logo{
+  width:32px;height:32px;border-radius:var(--radius-md);flex:none;
+  background:linear-gradient(135deg,var(--accent),var(--violet-500));
+  display:grid;place-items:center;font-weight:700;color:#fff;font-size:15px;
+}
+.sidebar__brand b{color:var(--text-primary);font-size:var(--fs-lg);display:block;line-height:1.2}
+.sidebar__brand span{font-size:var(--fs-xs);color:var(--text-muted)}
+.sidebar__services{display:flex;gap:6px;padding:0 var(--sp-4) var(--sp-3)}
+.sidebar__new{padding:0 var(--sp-4) var(--sp-3)}
+.sidebar__new .btn{width:100%;justify-content:center}
+.seg{
+  margin:0 var(--sp-4) var(--sp-3);display:flex;background:var(--surface-2);
+  border:1px solid var(--border-solid);border-radius:var(--radius-md);padding:2px;
+}
+.seg button{
+  flex:1;padding:4px 8px;font-size:var(--fs-xs);font-weight:600;
+  border-radius:var(--radius-sm);color:var(--text-muted);
+}
+.seg button[aria-selected="true"]{background:var(--surface-raise);color:var(--text-primary)}
+.history{flex:1;overflow-y:auto;padding:0 var(--sp-2) var(--sp-3)}
+.history .eyebrow{padding:var(--sp-3) var(--sp-2) var(--sp-1)}
+.chat-item{
+  display:flex;align-items:center;gap:8px;width:100%;
+  padding:7px 10px;border-radius:var(--radius-md);text-align:left;
+  font-size:var(--fs-sm);color:var(--text-secondary);
+}
+.chat-item:hover{background:var(--surface-2)}
+.chat-item[aria-current="true"]{background:var(--accent-dim);color:var(--text-primary)}
+.chat-item span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-item .chat-actions{display:none;gap:2px}
+.chat-item:hover .chat-actions{display:flex}
+.chat-actions button{padding:2px 5px;border-radius:4px;color:var(--text-muted);font-size:12px}
+.chat-actions button:hover{background:var(--surface-raise);color:var(--text-primary)}
+.sidebar__foot{padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--border-default)}
+.sidebar__foot .btn{width:100%;justify-content:flex-start}
+
+/* Workspace */
+.chat-ws{display:flex;flex-direction:column;min-width:0;min-height:0}
+.chat-toolbar{
+  display:flex;align-items:center;gap:var(--sp-3);
+  padding:var(--sp-3) var(--sp-5);border-bottom:1px solid var(--border-default);
+  background:var(--surface-0);
+}
+.project-picker{
+  display:flex;align-items:center;gap:10px;
+  background:var(--surface-2);border:1px solid var(--border-solid);
+  border-radius:var(--radius-md);padding:6px 12px;min-width:0;
+}
+.project-picker select{
+  background:transparent;border:none;font-size:var(--fs-sm);font-weight:600;
+  color:var(--text-primary);max-width:280px;
+}
+.project-picker select:focus-visible{box-shadow:none;outline:1px solid var(--accent)}
+
+/* IndexStatusChip + popover */
+.chip-wrap{position:relative}
+.index-chip{
+  display:inline-flex;align-items:center;gap:8px;
+  background:var(--surface-2);border:1px solid var(--border-solid);
+  border-radius:var(--radius-full);padding:5px 6px 5px 12px;font-size:var(--fs-xs);
+  font-weight:600;color:var(--text-secondary);
+}
+.index-chip:hover{border-color:var(--border-strong)}
+.index-chip .caret{color:var(--text-muted);font-size:10px;padding:0 4px}
+.popover{
+  position:absolute;top:calc(100% + 8px);left:0;z-index:60;width:300px;
+  background:var(--surface-2);border:1px solid var(--border-strong);
+  border-radius:var(--radius-lg);box-shadow:var(--elevation-2);padding:var(--sp-2);
+  display:none;
+}
+.popover.open{display:block}
+.popover__meta{padding:var(--sp-2) var(--sp-3);font-size:var(--fs-xs);color:var(--text-muted);border-bottom:1px solid var(--border-default);margin-bottom:var(--sp-1)}
+.popover__meta b{color:var(--text-primary);display:block;font-size:var(--fs-sm)}
+.pop-act{
+  display:flex;align-items:center;gap:10px;width:100%;
+  padding:8px 12px;border-radius:var(--radius-md);font-size:var(--fs-sm);
+  color:var(--text-secondary);text-align:left;
+}
+.pop-act:hover{background:var(--surface-3);color:var(--text-primary)}
+.pop-act small{margin-left:auto;color:var(--text-muted);font-size:11px}
+.pop-act--danger{color:var(--danger)}
+.pop-act--danger:hover{background:var(--status-error-bg)}
+
+/* Message stream */
+.stream{flex:1;overflow-y:auto;padding:var(--sp-5)}
+.stream__inner{max-width:920px;margin:0 auto;display:flex;flex-direction:column;gap:var(--sp-5)}
+.banner{
+  display:flex;gap:10px;align-items:center;font-size:var(--fs-sm);
+  padding:10px 14px;border-radius:var(--radius-md);
+  background:var(--status-info-bg);border:1px solid var(--status-info-border);color:var(--text-secondary);
+}
+.msg-user{
+  align-self:flex-end;max-width:70%;
+  background:var(--accent-dim);border:1px solid var(--accent-dim-border);
+  border-radius:var(--radius-lg);border-bottom-right-radius:var(--radius-sm);
+  padding:var(--sp-3) var(--sp-4);color:var(--text-primary);font-size:var(--fs-lg);
+}
+.msg-ai{max-width:100%}
+.msg-ai__body{font-size:var(--fs-lg);line-height:1.65;color:var(--text-secondary)}
+.msg-ai__body p+p{margin-top:var(--sp-3)}
+.msg-ai__body strong{color:var(--text-primary)}
+
+/* Signature element: citation chips */
+.source-citation{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:20px;height:20px;padding:0 5px;margin:0 2px;
+  vertical-align:2px;border-radius:var(--radius-sm);
+  background:var(--accent-dim);border:1px solid var(--accent-dim-border);
+  color:var(--accent-hover);font-size:11.5px;font-weight:700;font-family:var(--font-mono);
+  transition:all var(--motion-fast);
+}
+.source-citation:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.source-citation.active{
+  background:var(--accent);color:#fff;border-color:var(--accent-hover);
+  box-shadow:0 0 0 3px var(--accent-dim);
+}
+
+.msg-meta{
+  display:flex;align-items:center;flex-wrap:wrap;gap:8px;
+  margin-top:var(--sp-3);font-size:var(--fs-xs);color:var(--text-muted);
+}
+.msg-meta .dot{opacity:.5}
+.file-cards{display:flex;flex-wrap:wrap;gap:8px;margin-top:var(--sp-3)}
+.file-card{
+  display:flex;align-items:center;gap:8px;
+  background:var(--surface-1);border:1px solid var(--border-solid);
+  border-radius:var(--radius-md);padding:7px 12px;font-size:var(--fs-xs);
+  color:var(--text-secondary);
+}
+.file-card:hover{border-color:var(--accent-dim-border);background:var(--surface-2)}
+.file-card .n{
+  font-family:var(--font-mono);font-weight:700;color:var(--accent-hover);
+  background:var(--accent-dim);border-radius:4px;padding:0 5px;font-size:11px;
+}
+details.diag{margin-top:var(--sp-3);border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--surface-1)}
+details.diag summary{
+  cursor:pointer;padding:8px 14px;font-size:var(--fs-xs);font-weight:600;color:var(--text-muted);
+  list-style:none;display:flex;align-items:center;gap:8px;
+}
+details.diag summary::before{content:"▸";transition:transform var(--motion-fast)}
+details.diag[open] summary::before{transform:rotate(90deg)}
+details.diag .diag-grid{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--sp-3);
+  padding:var(--sp-3) var(--sp-4) var(--sp-4);font-size:var(--fs-xs);
+}
+.diag-grid dt{color:var(--text-muted)}
+.diag-grid dd{color:var(--text-primary);font-family:var(--font-mono);font-size:12px;margin-top:2px}
+
+/* Composer */
+.composer{padding:var(--sp-3) var(--sp-5) var(--sp-4)}
+.composer__box{
+  max-width:920px;margin:0 auto;display:flex;align-items:flex-end;gap:var(--sp-2);
+  background:var(--surface-2);border:1px solid var(--border-solid);
+  border-radius:var(--radius-lg);padding:var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+}
+.composer__box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+.composer textarea{
+  flex:1;background:transparent;border:none;resize:none;height:44px;
+  padding:10px 0;font-size:var(--fs-lg);color:var(--text-primary);
+}
+.composer textarea:focus-visible{box-shadow:none}
+.composer__hint{max-width:920px;margin:6px auto 0;font-size:11px;color:var(--text-muted);text-align:center}
+
+/* ============================================================
+   EVIDENCE VIEWER
+   ============================================================ */
+.evidence{
+  background:var(--surface-1);border-left:1px solid var(--border-solid);
+  display:none;flex-direction:column;min-height:0;
+}
+.view-chat.evidence-open .evidence{display:flex}
+.evidence__head{padding:var(--sp-4);border-bottom:1px solid var(--border-default)}
+.evidence__title{display:flex;align-items:flex-start;gap:10px}
+.evidence__title .n{
+  font-family:var(--font-mono);font-weight:700;color:#fff;background:var(--accent);
+  border-radius:var(--radius-sm);padding:1px 7px;font-size:12px;flex:none;margin-top:2px;
+}
+.evidence__title b{color:var(--text-primary);font-size:var(--fs-md);line-height:1.35;word-break:break-word}
+.evidence__close{margin-left:auto;flex:none;color:var(--text-muted);padding:4px 8px;border-radius:var(--radius-sm)}
+.evidence__close:hover{background:var(--surface-3);color:var(--text-primary)}
+.evidence__meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.evidence__body{flex:1;overflow-y:auto;padding:var(--sp-4);font-size:var(--fs-sm);line-height:1.7}
+.hidden-text{
+  text-align:center;font-size:11px;color:var(--text-muted);
+  border-top:1px dashed var(--border-strong);margin:var(--sp-3) 0;padding-top:6px;
+}
+.hidden-text--top{border-top:none;border-bottom:1px dashed var(--border-strong);padding:0 0 6px;margin-top:0}
+.ev-hl{
+  display:block;background:var(--evidence-highlight);
+  border-left:3px solid var(--evidence-highlight-border);
+  border-radius:0 var(--radius-sm) var(--radius-sm) 0;
+  padding:var(--sp-2) var(--sp-3);margin:var(--sp-2) 0;color:var(--text-primary);
+}
+.evidence__foot{padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--border-default);display:flex;gap:8px}
+</style>
+<style>
+/* ============================================================
+   SETTINGS SHELL
+   ============================================================ */
+.view-settings{flex-direction:column;background:var(--surface-0)}
+.set-head{border-bottom:1px solid var(--border-solid);background:var(--surface-1)}
+.set-head__nav{
+  display:flex;align-items:center;gap:var(--sp-2);
+  padding:var(--sp-3) var(--sp-5) 0;
+}
+.set-tabs{display:flex;gap:2px;margin-left:var(--sp-3);overflow-x:auto}
+.set-tab{
+  padding:10px 16px;font-size:var(--fs-sm);font-weight:600;color:var(--text-muted);
+  border-bottom:2px solid transparent;white-space:nowrap;
+}
+.set-tab:hover{color:var(--text-secondary)}
+.set-tab[aria-selected="true"]{color:var(--text-primary);border-bottom-color:var(--accent)}
+/* SystemStatusStrip */
+.status-strip{
+  display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;
+  padding:var(--sp-2) var(--sp-5);border-top:1px solid var(--border-default);
+  background:var(--surface-0);font-size:var(--fs-xs);
+}
+.status-strip .summary{color:var(--text-muted);margin-right:var(--sp-2)}
+.status-strip .summary b{color:var(--text-primary)}
+.strip-toggle{margin-left:auto;color:var(--text-muted);font-size:var(--fs-xs);padding:2px 8px;border-radius:var(--radius-sm)}
+.strip-toggle:hover{background:var(--surface-3)}
+.status-strip.collapsed .pill{display:none}
+
+.set-body{flex:1;overflow-y:auto;min-height:0}
+.set-page{display:none;padding:var(--sp-5);max-width:1500px;margin:0 auto;width:100%}
+.set-page.active{display:block}
+.set-page h1{font-size:var(--fs-2xl);margin-bottom:var(--sp-1)}
+.set-page .sub{color:var(--text-muted);font-size:var(--fs-sm);margin-bottom:var(--sp-5)}
+
+/* ============================================================
+   SOURCES — три зоны
+   ============================================================ */
+.sources-grid{display:grid;grid-template-columns:290px minmax(0,1fr) 420px;gap:var(--sp-4);align-items:start}
+.src-list{display:flex;flex-direction:column;gap:2px;padding:var(--sp-2)}
+.src-item{
+  display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  padding:9px 12px;border-radius:var(--radius-md);font-size:var(--fs-sm);
+  color:var(--text-secondary);
+}
+.src-item:hover{background:var(--surface-2)}
+.src-item[aria-current="true"]{background:var(--accent-dim);color:var(--text-primary)}
+.src-item .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.src-item .count{font-size:11px;color:var(--text-muted);font-family:var(--font-mono)}
+.src-item .q{width:8px;height:8px;border-radius:50%;flex:none}
+.q--ok{background:var(--status-ok-fg)}.q--warning{background:var(--status-warning-fg)}.q--error{background:var(--status-error-fg)}
+
+/* PipelineStepper */
+.pipeline{display:flex;align-items:flex-start;margin:var(--sp-2) 0 var(--sp-4)}
+.pipe-step{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;position:relative;font-size:11px;color:var(--text-muted);text-align:center}
+.pipe-step::before{
+  content:"";position:absolute;top:11px;left:calc(50% + 14px);right:calc(-50% + 14px);
+  height:2px;background:var(--border-strong);
+}
+.pipe-step:last-child::before{display:none}
+.pipe-step .node{
+  width:22px;height:22px;border-radius:50%;display:grid;place-items:center;
+  background:var(--surface-3);border:2px solid var(--border-strong);
+  font-size:10px;font-weight:700;color:var(--text-muted);z-index:1;
+}
+.pipe-step--done .node{background:var(--status-ok-bg);border-color:var(--status-ok-fg);color:var(--status-ok-fg)}
+.pipe-step--done::before{background:var(--status-ok-fg)}
+.pipe-step--active .node{background:var(--accent);border-color:var(--accent-hover);color:#fff;animation:pulse 1.4s infinite}
+.pipe-step--active{color:var(--text-primary);font-weight:600}
+
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-2) var(--sp-4);font-size:var(--fs-sm)}
+.kv dt{color:var(--text-muted);font-size:var(--fs-xs)}
+.kv dd{color:var(--text-primary)}
+.path-mono{font-family:var(--font-mono);font-size:12px;color:var(--text-secondary);word-break:break-all}
+
+.quality-bar{height:6px;border-radius:3px;background:var(--surface-3);overflow:hidden;margin-top:6px}
+.quality-bar i{display:block;height:100%;border-radius:3px;background:var(--status-warning-fg)}
+
+.ctx-link{
+  display:flex;align-items:center;gap:10px;padding:8px 10px;
+  border:1px solid var(--border-default);border-radius:var(--radius-md);
+  font-size:var(--fs-xs);margin-bottom:6px;background:var(--surface-2);
+}
+.ctx-link .g{width:18px;height:18px;border-radius:4px;background:var(--surface-raise);display:grid;place-items:center;font-size:10px;font-weight:700;color:var(--cyan-500);flex:none}
+.ctx-link span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary)}
+
+/* Indexed files tree */
+.tree{font-size:var(--fs-sm);padding:var(--sp-2)}
+.tree-row{
+  display:flex;align-items:center;gap:8px;padding:5px 10px;border-radius:var(--radius-sm);
+  color:var(--text-secondary);
+}
+.tree-row:hover{background:var(--surface-2)}
+.tree-row .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-row .meta{font-size:11px;color:var(--text-muted);font-family:var(--font-mono);flex:none}
+.tree-row.folder .name{font-weight:600;color:var(--text-primary)}
+.tree-row.muted .name{color:var(--text-muted)}
+.indent-1{padding-left:26px}.indent-2{padding-left:44px}
+.qbadge{font-size:10px;padding:0 6px;border-radius:4px;font-weight:700;flex:none}
+.qbadge--ok{background:var(--status-ok-bg);color:var(--status-ok-fg)}
+.qbadge--warning{background:var(--status-warning-bg);color:var(--status-warning-fg)}
+.qbadge--error{background:var(--status-error-bg);color:var(--status-error-fg)}
+.qbadge--off{background:var(--status-neutral-bg);color:var(--status-neutral-fg)}
+
+/* ============================================================
+   LLM / FORMS
+   ============================================================ */
+.route-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--sp-3);margin-bottom:var(--sp-4)}
+.route-card{
+  text-align:left;border:1px solid var(--border-solid);border-radius:var(--radius-lg);
+  background:var(--surface-1);padding:var(--sp-4);cursor:pointer;position:relative;
+}
+.route-card:hover{border-color:var(--border-strong)}
+.route-card[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-dim)}
+.route-card b{display:flex;align-items:center;gap:8px;color:var(--text-primary);font-size:var(--fs-md);margin-bottom:6px}
+.route-card p{font-size:var(--fs-xs);color:var(--text-muted);line-height:1.5}
+.route-card .radio{
+  position:absolute;top:14px;right:14px;width:16px;height:16px;border-radius:50%;
+  border:2px solid var(--border-strong);
+}
+.route-card[aria-pressed="true"] .radio{border-color:var(--accent);background:radial-gradient(circle,var(--accent) 45%,transparent 50%)}
+
+.field{margin-bottom:var(--sp-4)}
+.field label{display:block;font-size:var(--fs-xs);font-weight:600;color:var(--text-muted);margin-bottom:6px}
+.field input[type=text],.field input[type=password],.field select{
+  width:100%;background:var(--surface-2);border:1px solid var(--border-solid);
+  border-radius:var(--radius-md);padding:8px 12px;font-size:var(--fs-sm);
+}
+.field input:focus-visible{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+.field input:disabled{opacity:.55}
+.check{display:flex;gap:10px;align-items:flex-start;padding:var(--sp-3);border:1px solid var(--border-default);border-radius:var(--radius-md);margin-bottom:var(--sp-2);background:var(--surface-1)}
+.check input{margin-top:3px;accent-color:var(--accent)}
+.check b{display:block;color:var(--text-primary);font-size:var(--fs-sm)}
+.check p{font-size:var(--fs-xs);color:var(--text-muted);margin-top:2px}
+.warn-note{
+  display:flex;gap:10px;padding:10px 14px;border-radius:var(--radius-md);
+  background:var(--status-warning-bg);border:1px solid var(--status-warning-border);
+  font-size:var(--fs-xs);color:var(--text-secondary);margin:var(--sp-2) 0 var(--sp-3);
+}
+.warn-note::before{content:"⚠";color:var(--status-warning-fg)}
+.masked{display:flex;gap:8px}
+.masked input{flex:1;font-family:var(--font-mono);letter-spacing:2px}
+
+/* ============================================================
+   AUDIT / SERVICES / DANGER
+   ============================================================ */
+.audit-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:var(--sp-3);margin-bottom:var(--sp-5)}
+.stat-card{background:var(--surface-1);border:1px solid var(--border-solid);border-radius:var(--radius-lg);padding:var(--sp-3) var(--sp-4)}
+.stat-card .eyebrow{margin-bottom:8px;display:block}
+.stat-card .val{font-size:var(--fs-xl);color:var(--text-primary);font-weight:600;font-family:var(--font-mono)}
+.svc-row{
+  display:flex;align-items:center;gap:var(--sp-3);
+  padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--border-default);
+}
+.svc-row:last-child{border-bottom:none}
+.svc-row .info{flex:1;min-width:0}
+.svc-row .info b{color:var(--text-primary);font-size:var(--fs-sm);display:block}
+.svc-row .info small{color:var(--text-muted);font-size:11px;font-family:var(--font-mono)}
+.danger-zone{border:1px solid var(--status-error-border);border-radius:var(--radius-lg);background:var(--surface-1);margin-top:var(--sp-5)}
+.danger-zone .card__head{border-bottom-color:var(--status-error-border)}
+.danger-zone h3{color:var(--danger);font-size:var(--fs-md)}
+.danger-row{display:flex;align-items:center;gap:var(--sp-4);padding:var(--sp-4)}
+.danger-row p{flex:1;font-size:var(--fs-sm);color:var(--text-muted)}
+.danger-row p b{color:var(--text-secondary)}
+
+/* ============================================================
+   DIALOG
+   ============================================================ */
+.overlay{
+  position:fixed;inset:0;background:var(--overlay-bg);z-index:100;
+  display:none;align-items:center;justify-content:center;padding:var(--sp-4);
+}
+.overlay.open{display:flex}
+.dialog{
+  width:min(460px,100%);background:var(--surface-2);border:1px solid var(--border-strong);
+  border-radius:var(--radius-lg);box-shadow:var(--elevation-2);
+}
+.dialog__head{padding:var(--sp-4) var(--sp-4) 0}
+.dialog__head h2{font-size:var(--fs-lg)}
+.dialog__body{padding:var(--sp-3) var(--sp-4);font-size:var(--fs-sm);color:var(--text-secondary)}
+.dialog__body ul{margin:var(--sp-2) 0 0 var(--sp-4);color:var(--text-muted);font-size:var(--fs-xs);line-height:1.7}
+.dialog__body .field{margin-top:var(--sp-3);margin-bottom:0}
+.dialog__foot{display:flex;justify-content:flex-end;gap:var(--sp-2);padding:var(--sp-3) var(--sp-4) var(--sp-4)}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width:1399px){
+  .sources-grid{grid-template-columns:270px minmax(0,1fr)}
+  #zone-tree{display:none}
+  .tree-toggle-btn{display:inline-flex!important}
+}
+@media (max-width:1199px){
+  .view-chat.active,.view-chat.evidence-open{grid-template-columns:260px 1fr}
+  .evidence{position:fixed;top:0;right:0;bottom:0;width:min(420px,92vw);z-index:80;box-shadow:var(--elevation-2)}
+}
+@media (max-width:919px){
+  .view-chat.active,.view-chat.evidence-open{grid-template-columns:1fr}
+  .sidebar{display:none}
+  .sources-grid{grid-template-columns:1fr}
+  .route-cards{grid-template-columns:1fr}
+}
+@media (max-width:699px){
+  .evidence{top:auto;left:0;width:100%;height:72vh;border-radius:var(--radius-lg) var(--radius-lg) 0 0;border-left:none;border-top:1px solid var(--border-strong)}
+  .evidence::before{content:"";display:block;width:40px;height:4px;border-radius:2px;background:var(--border-strong);margin:8px auto 0}
+  .chat-toolbar{padding:var(--sp-2) var(--sp-3);flex-wrap:wrap}
+  .stream,.composer{padding-left:var(--sp-3);padding-right:var(--sp-3)}
+}
+.tree-toggle-btn{display:none}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ==================== CHAT VIEW ==================== -->
+<div class="view view-chat active evidence-open" id="view-chat">
+
+  <aside class="sidebar" aria-label="История чатов">
+    <div class="sidebar__brand">
+      <div class="logo">L</div>
+      <div><b>Locus</b><span>Локальная память проектов</span></div>
+    </div>
+    <div class="sidebar__services">
+      <span class="pill pill--ok" title="LM Studio: подключена, qwen2.5-14b">LM Studio</span>
+      <span class="pill" title="Dify: выключен">Dify</span>
+    </div>
+    <div class="sidebar__new"><button class="btn btn--primary">＋ Новый чат</button></div>
+    <div class="seg" role="tablist" aria-label="Фильтр истории">
+      <button role="tab" aria-selected="true" id="f-active">Активные</button>
+      <button role="tab" aria-selected="false" id="f-arch">Архив · 4</button>
+    </div>
+    <nav class="history">
+      <span class="eyebrow">Июль 2026</span>
+      <button class="chat-item" aria-current="true"><span>Сроки поставки по договору №214-СМР</span>
+        <span class="chat-actions"><button title="Архивировать">⬇</button><button title="Удалить">✕</button></span></button>
+      <button class="chat-item"><span>Гарантийные обязательства — витражи</span>
+        <span class="chat-actions"><button title="Архивировать">⬇</button><button title="Удалить">✕</button></span></button>
+      <button class="chat-item"><span>Штрафы за просрочку в тендере ТЗ-118</span>
+        <span class="chat-actions"><button title="Архивировать">⬇</button><button title="Удалить">✕</button></span></button>
+      <span class="eyebrow">Июнь 2026</span>
+      <button class="chat-item"><span>Сравнение смет: кладка vs монолит</span>
+        <span class="chat-actions"><button title="Архивировать">⬇</button><button title="Удалить">✕</button></span></button>
+      <button class="chat-item"><span>Акт скрытых работ — требования</span>
+        <span class="chat-actions"><button title="Архивировать">⬇</button><button title="Удалить">✕</button></span></button>
+    </nav>
+    <div class="sidebar__foot">
+      <button class="btn btn--ghost" data-go="settings">⚙ Настройки</button>
+    </div>
+  </aside>
+
+  <main class="chat-ws">
+    <div class="chat-toolbar">
+      <div class="project-picker">
+        <span class="eyebrow">Проект</span>
+        <select aria-label="Выбор проекта">
+          <option>Договор №214-СМР — БЦ «Меркурий»</option>
+          <option selected>Авто: определить по вопросу</option>
+          <option>Договор №198 — реконструкция цеха</option>
+        </select>
+      </div>
+      <div class="chip-wrap">
+        <button class="index-chip" id="idx-chip" aria-haspopup="true" aria-expanded="false">
+          <span class="pill pill--ok" style="border:none;background:none;padding:0">Индекс готов</span>
+          <span style="color:var(--text-muted)">1 240 файлов · обновлён 14:02</span>
+          <span class="caret">▾</span>
+        </button>
+        <div class="popover" id="idx-pop" role="menu">
+          <div class="popover__meta"><b>Договор №214-СМР</b>1 240 файлов · 18 431 фрагмент · Qdrant</div>
+          <button class="pop-act" role="menuitem">↻ Обновить индекс <small>только изменения</small></button>
+          <button class="pop-act" role="menuitem" data-confirm="reindex">⟳ Полная переиндексация</button>
+          <button class="pop-act" role="menuitem" disabled style="opacity:.4">■ Остановить индексацию</button>
+          <button class="pop-act" role="menuitem" data-go="settings" data-tab="audit">📊 Открыть аудит</button>
+        </div>
+      </div>
+      <span style="flex:1"></span>
+    </div>
+
+    <div class="stream">
+      <div class="stream__inner">
+        <div class="banner">
+          <span class="pill pill--info" style="flex:none">Авто по вопросу</span>
+          Проект определится из вопроса. Определён: <b style="color:var(--text-primary)">Договор №214-СМР</b> — <button style="color:var(--accent-hover);text-decoration:underline">закрепить</button>
+        </div>
+
+        <div class="msg-user">Какие сроки поставки витражных конструкций и что грозит подрядчику за просрочку?</div>
+
+        <div class="msg-ai">
+          <div class="msg-ai__body">
+            <p>По договору №214-СМР поставка витражных конструкций выполняется <strong>в течение 45 календарных дней</strong> с момента внесения аванса<button class="source-citation" data-ev="1">1</button>. Монтаж начинается не позднее 10 рабочих дней после приёмки конструкций на объекте<button class="source-citation" data-ev="1">2</button>.</p>
+            <p>За просрочку поставки предусмотрена неустойка <strong>0,1% от стоимости непоставленной партии за каждый день</strong>, но не более 10% от цены договора<button class="source-citation" data-ev="1">3</button>. При просрочке свыше 30 дней заказчик вправе расторгнуть договор в одностороннем порядке с удержанием обеспечения<button class="source-citation" data-ev="1">4</button>.</p>
+          </div>
+          <div class="msg-meta">
+            <span class="pill pill--ok" style="padding:1px 8px">Локально</span>
+            <span>qwen2.5-14b-instruct</span><span class="dot">·</span>
+            <span>Договор №214-СМР + 2 связанных тендера</span>
+          </div>
+          <div class="file-cards">
+            <button class="file-card"><span class="n">1–3</span> Договор_214-СМР_подписан.pdf <span style="color:var(--text-muted)">стр. 12–14</span></button>
+            <button class="file-card"><span class="n">4</span> Доп.соглашение_2.docx <span style="color:var(--text-muted)">§3</span></button>
+          </div>
+          <details class="diag">
+            <summary>Диагностика RAG</summary>
+            <dl class="diag-grid">
+              <div><dt>Режим</dt><dd>hybrid + rerank</dd></div>
+              <div><dt>Кандидаты</dt><dd>200 vec / 200 bm25</dd></div>
+              <div><dt>После merge</dt><dd>60 → rerank 30</dd></div>
+              <div><dt>Retrieval</dt><dd>412 мс</dd></div>
+              <div><dt>LLM</dt><dd>6.8 с</dd></div>
+              <div><dt>Top source</dt><dd>Договор_214-СМР.pdf</dd></div>
+            </dl>
+          </details>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="composer__box">
+        <textarea placeholder="Вопрос по документам проекта…" aria-label="Вопрос"></textarea>
+        <button class="btn btn--primary" style="border-radius:var(--radius-md)">Отправить</button>
+      </div>
+      <div class="composer__hint">Ответы формируются локально. Enter — отправить, Shift+Enter — новая строка</div>
+    </div>
+  </main>
+
+  <aside class="evidence" id="evidence" role="dialog" aria-modal="false" aria-labelledby="ev-title">
+    <div class="evidence__head">
+      <div class="evidence__title">
+        <span class="n">3</span>
+        <b id="ev-title">Договор_214-СМР_подписан.pdf</b>
+        <button class="evidence__close" id="ev-close" aria-label="Закрыть просмотр доказательства">✕</button>
+      </div>
+      <div class="evidence__meta">
+        <span class="badge badge--contract">Договор №214-СМР</span>
+        <span class="badge">стр. 13 · §7.2</span>
+        <span class="badge badge--exact">Точное совпадение</span>
+      </div>
+    </div>
+    <div class="evidence__body">
+      <div class="hidden-text hidden-text--top">выше скрыто 11 страниц</div>
+      <p><strong style="color:var(--text-primary)">7. Ответственность сторон</strong></p>
+      <p>7.1. За неисполнение или ненадлежащее исполнение обязательств Стороны несут ответственность в соответствии с законодательством Республики Казахстан и условиями настоящего Договора.</p>
+      <span class="ev-hl">7.2. В случае нарушения Поставщиком сроков поставки витражных конструкций, установленных п. 4.3 настоящего Договора, Заказчик вправе требовать уплаты неустойки в размере 0,1% (ноль целых одна десятая процента) от стоимости непоставленной в срок партии за каждый календарный день просрочки, но не более 10% от общей цены Договора.</span>
+      <p>7.3. Уплата неустойки не освобождает Поставщика от исполнения обязательств в натуре.</p>
+      <div class="hidden-text">ниже скрыто 6 страниц</div>
+    </div>
+    <div class="evidence__foot">
+      <button class="btn btn--sm">Открыть файл</button>
+      <button class="btn btn--sm btn--ghost">Показать в Explorer</button>
+    </div>
+  </aside>
+</div>
+<!-- ==================== SETTINGS VIEW ==================== -->
+<div class="view view-settings" id="view-settings">
+  <header class="set-head">
+    <div class="set-head__nav">
+      <button class="btn btn--ghost" data-go="chat">← К чату</button>
+      <nav class="set-tabs" role="tablist" aria-label="Разделы настроек">
+        <button class="set-tab" role="tab" aria-selected="true" data-tab="sources">Источники</button>
+        <button class="set-tab" role="tab" aria-selected="false" data-tab="llm">LLM</button>
+        <button class="set-tab" role="tab" aria-selected="false" data-tab="indexes">Индексы</button>
+        <button class="set-tab" role="tab" aria-selected="false" data-tab="general">Общие</button>
+        <button class="set-tab" role="tab" aria-selected="false" data-tab="audit">Аудит и система</button>
+      </nav>
+    </div>
+    <div class="status-strip" id="strip">
+      <span class="summary"><b>4 источника</b> · 2 137 файлов · 31 502 фрагмента</span>
+      <span class="pill pill--ok">Backend</span>
+      <span class="pill pill--ok">Qdrant</span>
+      <span class="pill pill--warning">Reranker: настроен, недоступен</span>
+      <span class="pill pill--ok">LM Studio</span>
+      <span class="pill">Dify: выключен</span>
+      <button class="strip-toggle" id="strip-toggle" aria-expanded="true">Свернуть статусы ▴</button>
+    </div>
+  </header>
+
+  <div class="set-body">
+
+    <!-- ===== SOURCES ===== -->
+    <section class="set-page active" data-page="sources" role="tabpanel">
+      <h1>Источники</h1>
+      <p class="sub">Папки договоров и тендеров, индексация и файлы индекса</p>
+      <div class="sources-grid">
+
+        <div class="card">
+          <div class="card__head">
+            <span class="eyebrow">RAG-папки</span>
+            <button class="btn btn--sm btn--primary" id="source-add-shortcut-demo">＋</button>
+          </div>
+          <div class="src-list">
+            <button class="src-item" aria-current="true"><i class="q q--ok"></i><span class="t">Договор №214-СМР</span><span class="badge badge--contract">договор</span><span class="count">1 240</span></button>
+            <button class="src-item"><i class="q q--ok"></i><span class="t">Договор №198 — цех</span><span class="badge badge--contract">договор</span><span class="count">486</span></button>
+            <button class="src-item"><i class="q q--warning"></i><span class="t">Тендер ТЗ-118</span><span class="badge badge--tender">тендер</span><span class="count">309</span></button>
+            <button class="src-item"><i class="q q--error"></i><span class="t">Тендер ТЗ-131</span><span class="badge badge--tender">тендер</span><span class="count">102</span></button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div><h2 style="font-size:var(--fs-lg)">Договор №214-СМР — БЦ «Меркурий»</h2>
+              <small style="color:var(--text-muted);font-size:var(--fs-xs)">создан 12.03.2026 · обновлён сегодня 14:02</small></div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn--sm tree-toggle-btn">Файлы индекса</button>
+              <button class="btn btn--sm">↻ Обновить</button>
+              <button class="btn btn--sm btn--danger" data-confirm="del-source">Удалить</button>
+            </div>
+          </div>
+          <div class="card__body">
+            <span class="eyebrow">Обработка</span>
+            <div class="pipeline">
+              <div class="pipe-step pipe-step--done"><span class="node">✓</span>Сканирование</div>
+              <div class="pipe-step pipe-step--done"><span class="node">✓</span>Файлы / OCR</div>
+              <div class="pipe-step pipe-step--done"><span class="node">✓</span>Фрагменты</div>
+              <div class="pipe-step pipe-step--active"><span class="node">4</span>Векторы<br><small>archive/ · 61%</small></div>
+              <div class="pipe-step"><span class="node">5</span>Qdrant</div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4)">
+              <div>
+                <span class="eyebrow">Сводка</span>
+                <dl class="kv" style="margin-top:8px">
+                  <div><dt>Файлы / фрагменты</dt><dd>1 240 / 18 431</dd></div>
+                  <div><dt>Векторное хранилище</dt><dd>Qdrant · contracts_214</dd></div>
+                  <div><dt>Пропущено</dt><dd><button style="color:var(--accent-hover);text-decoration:underline">7 файлов — причины</button></dd></div>
+                  <div><dt>Связанные тендеры</dt><dd>ТЗ-118, ТЗ-131</dd></div>
+                </dl>
+              </div>
+              <div>
+                <span class="eyebrow">Качество распознавания</span>
+                <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+                  <span class="pill pill--warning">Warning · 83/100</span>
+                  <small style="color:var(--text-muted);font-size:var(--fs-xs)">OCR: 214 файлов · 12 с низким качеством</small>
+                </div>
+                <div class="quality-bar"><i style="width:83%"></i></div>
+              </div>
+            </div>
+
+            <div style="margin-top:var(--sp-4)">
+              <span class="eyebrow">Пути</span>
+              <p class="path-mono" style="margin-top:6px">D:\Проекты\214-СМР\Договорная документация</p>
+              <p class="path-mono">\\fs01\shared\214-smr\Тендерные материалы <span class="badge" style="margin-left:6px">доп. путь</span></p>
+            </div>
+
+            <div style="margin-top:var(--sp-4)">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <span class="eyebrow">Google context links</span>
+                <span class="pill pill--ok" style="font-size:10px">Google: авторизован</span>
+              </div>
+              <div style="margin-top:8px">
+                <div class="ctx-link"><span class="g">G</span><span>Реестр изменений по фасаду — Google Sheets</span><button class="btn btn--sm btn--ghost">✕</button></div>
+                <div class="ctx-link"><span class="g">G</span><span>Протоколы совещаний — Google Docs</span><button class="btn btn--sm btn--ghost">✕</button></div>
+                <button class="btn btn--sm">＋ Добавить ссылку</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="zone-tree">
+          <div class="card__head"><span class="eyebrow">Файлы индекса</span><span class="pill pill--running">Векторизация</span></div>
+          <div class="tree">
+            <div class="tree-row folder"><span>▾ 📁</span><span class="name">Договорная документация</span><span class="meta">312 файлов</span></div>
+            <div class="tree-row indent-1"><span>📄</span><span class="name">Договор_214-СМР_подписан.pdf</span><span class="qbadge qbadge--ok">OK</span><span class="meta">96 фр · 4.2 МБ</span></div>
+            <div class="tree-row indent-1"><span>📄</span><span class="name">Доп.соглашение_2.docx</span><span class="qbadge qbadge--ok">OK</span><span class="meta">14 фр</span></div>
+            <div class="tree-row indent-1"><span>📄</span><span class="name">Скан_акта_приемки.pdf</span><span class="qbadge qbadge--warning">OCR 64</span><span class="meta">8 фр</span></div>
+            <div class="tree-row folder"><span>▾ 📁</span><span class="name">Сметы</span><span class="meta">88 файлов</span></div>
+            <div class="tree-row indent-1"><span>📊</span><span class="name">кладка витраж.xls</span><span class="qbadge qbadge--ok">OK</span><span class="meta">212 фр · лист 3</span></div>
+            <div class="tree-row indent-1 muted"><span>📄</span><span class="name">~смета_черновик.tmp</span><span class="qbadge qbadge--off">не в поиске</span><span class="meta">временный</span></div>
+            <div class="tree-row indent-1 muted"><span>📄</span><span class="name">чертеж_фасада.dwg</span><span class="qbadge qbadge--off">не поддерж.</span><span class="meta">—</span></div>
+            <div class="tree-row indent-1"><span>📄</span><span class="name">повреждённый_скан.pdf</span><span class="qbadge qbadge--error">Ошибка</span><span class="meta">0 фр</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== LLM ===== -->
+    <section class="set-page" data-page="llm" role="tabpanel">
+      <h1>LLM и приватность</h1>
+      <p class="sub">Маршрутизация запросов и контроль передачи фрагментов документов</p>
+
+      <span class="eyebrow" style="display:block;margin-bottom:10px">Маршрут</span>
+      <div class="route-cards">
+        <button class="route-card" aria-pressed="false"><span class="radio"></span><b>🔒 Только локально</b><p>Ответы формирует локальная LM Studio. Текст документов не покидает эту машину.</p></button>
+        <button class="route-card" aria-pressed="true"><span class="radio"></span><b>⚙ Авто, local-first</b><p>Сначала локальная модель; remote — только при явных разрешениях ниже.</p></button>
+        <button class="route-card" aria-pressed="false"><span class="radio"></span><b>🌐 Remote</b><p>Внешний endpoint. Требует отдельного согласия на передачу контекста.</p></button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4)">
+        <div class="card"><div class="card__head"><b style="font-size:var(--fs-sm)">Локальная LM Studio</b><span class="badge badge--local">loopback</span></div>
+          <div class="card__body">
+            <div class="field"><label>Endpoint</label><input type="text" value="http://127.0.0.1:1234/v1" disabled></div>
+            <div class="field"><label>Модель</label><select><option>qwen2.5-14b-instruct</option><option>llama-3.1-8b</option></select></div>
+            <div class="field" style="margin-bottom:0"><label>Embedding model</label><select><option>bge-m3 (локально)</option></select></div>
+          </div>
+        </div>
+        <div class="card"><div class="card__head"><b style="font-size:var(--fs-sm)">Remote endpoint</b><span class="badge badge--external">внешний</span></div>
+          <div class="card__body">
+            <div class="field"><label>URL</label><input type="text" placeholder="https://…" value="https://llm.corp.example/v1" disabled></div>
+            <div class="field"><label>API-токен</label>
+              <div class="masked"><input type="password" value="••••••••••••" disabled aria-label="Токен задан, значение скрыто"><button class="btn btn--sm">Заменить</button></div>
+              <small style="color:var(--text-muted);font-size:11px">Ключ задан. Значение хранится только в environment и никогда не отображается.</small>
+            </div>
+            <label class="check"><input type="checkbox" id="remote-ctx"><span><b>Разрешить remote context</b><p>Фрагменты документов будут передаваться на внешний endpoint вместе с вопросом.</p></span></label>
+            <label class="check" style="margin-bottom:0"><input type="checkbox" checked><span><b>Fallback remote → local</b><p>При ошибке remote ответ формирует локальная модель.</p></span></label>
+          </div>
+        </div>
+      </div>
+      <div class="warn-note" id="remote-warn" hidden>Remote context разрешён — фрагменты документов уходят на внешний endpoint <b>llm.corp.example</b>. Это разрешение действует до отключения.</div>
+      <div style="display:flex;gap:8px;margin-top:var(--sp-4)">
+        <button class="btn btn--primary">Сохранить</button>
+        <button class="btn">Редактировать</button>
+        <span class="pill pill--running" style="margin-left:auto">Перезагрузка модели для контекста 16384…</span>
+      </div>
+      <details class="diag" style="margin-top:var(--sp-4)"><summary>Диагностика: соединение · модели · активность · последний ответ</summary>
+        <dl class="diag-grid"><div><dt>Connectivity</dt><dd>OK · 41 мс</dd></div><div><dt>Моделей доступно</dt><dd>6</dd></div><div><dt>Последний запрос</dt><dd>14:02:11 · 200</dd></div><div><dt>Контекст</dt><dd>16384</dd></div></dl>
+      </details>
+    </section>
+
+    <!-- ===== INDEXES ===== -->
+    <section class="set-page" data-page="indexes" role="tabpanel">
+      <h1>Индексы</h1>
+      <p class="sub">Векторное хранилище и reranker</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4)">
+        <div class="card"><div class="card__head"><b style="font-size:var(--fs-sm)">Vector store</b><span class="pill pill--ok">Qdrant активен</span></div>
+          <div class="card__body">
+            <div class="field"><label>Провайдер</label><select><option>auto — Qdrant, затем JSON fallback с предупреждением</option><option>qdrant</option><option>json</option></select></div>
+            <div class="field"><label>Qdrant URL</label><div style="display:flex;gap:8px"><input type="text" value="http://127.0.0.1:6333" style="flex:1"><span class="badge badge--local" style="align-self:center">loopback</span></div></div>
+            <div class="kv"><div><dt>Коллекция</dt><dd>locus_main</dd></div><div><dt>Distance / batch</dt><dd>cosine / 128</dd></div></div>
+          </div>
+        </div>
+        <div class="card"><div class="card__head"><b style="font-size:var(--fs-sm)">Reranker</b><span class="pill pill--warning">Настроен, недоступен</span></div>
+          <div class="card__body">
+            <div class="field"><label>Endpoint</label><div style="display:flex;gap:8px"><input type="text" value="http://127.0.0.1:8091" style="flex:1"><span class="badge badge--local" style="align-self:center">loopback</span></div></div>
+            <div class="kv"><div><dt>Модель</dt><dd>bge-reranker-v2</dd></div><div><dt>Кандидаты / max chars</dt><dd>30 / 4000</dd></div></div>
+            <div class="warn-note" style="margin-bottom:0">Сервис не отвечает 12 минут. Поиск работает без rerank (RRF-результаты).</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== GENERAL ===== -->
+    <section class="set-page" data-page="general" role="tabpanel">
+      <h1>Общие</h1>
+      <p class="sub">Хранилище данных</p>
+      <div class="card" style="max-width:640px"><div class="card__body">
+        <div class="field" style="margin-bottom:6px"><label>Путь хранилища</label><input type="text" value="D:\LOCAL_RAG\data" disabled></div>
+        <small style="color:var(--text-muted);font-size:var(--fs-xs)">🔒 Задано переменной окружения <code style="font-family:var(--font-mono)">RAG_DATA_DIR</code> — изменение доступно только через environment.</small>
+      </div></div>
+    </section>
+
+    <!-- ===== AUDIT ===== -->
+    <section class="set-page" data-page="audit" role="tabpanel">
+      <h1>Аудит и система</h1>
+      <p class="sub">Состояние обработки, сервисы и системные операции</p>
+      <div class="audit-grid">
+        <div class="stat-card"><span class="eyebrow">Индексация</span><span class="val">31 502</span><div style="margin-top:6px"><span class="pill pill--running">archive/ · векторы</span></div></div>
+        <div class="stat-card"><span class="eyebrow">Agent</span><span class="val">02:00</span><div style="margin-top:6px"><span class="pill pill--ok">Последний запуск OK</span></div></div>
+        <div class="stat-card"><span class="eyebrow">Векторы</span><span class="val">98.4%</span><div style="margin-top:6px"><span class="pill pill--running">Backfill</span></div></div>
+        <div class="stat-card"><span class="eyebrow">LLM route</span><span class="val">local</span><div style="margin-top:6px"><span class="pill pill--ok">Только локально</span></div></div>
+      </div>
+
+      <div class="card" style="margin-bottom:var(--sp-4)">
+        <div class="card__head"><b style="font-size:var(--fs-sm)">Тендеры</b><span class="pill pill--info">Последний sync: вчера 18:40</span></div>
+        <div class="card__body" style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn">Google Drive sync — dry-run</button>
+          <button class="btn" disabled title="Доступно после dry-run">Применить изменения</button>
+          <button class="btn btn--ghost">Глобальный аудит цен</button>
+          <button class="btn btn--ghost">История запусков</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card__head"><b style="font-size:var(--fs-sm)">Локальные сервисы</b></div>
+        <div class="svc-row"><div class="info"><b>Backend</b><small>127.0.0.1:8787 · uptime 6 ч 12 мин</small></div><span class="pill pill--ok">Работает</span><button class="btn btn--sm" data-confirm="svc">Перезапустить</button></div>
+        <div class="svc-row"><div class="info"><b>Qdrant</b><small>127.0.0.1:6333 · locus_main</small></div><span class="pill pill--ok">Работает</span><button class="btn btn--sm" data-confirm="svc">Остановить</button></div>
+        <div class="svc-row"><div class="info"><b>Reranker</b><small>127.0.0.1:8091</small></div><span class="pill pill--warning">Настроен, недоступен</span><button class="btn btn--sm" data-confirm="svc">Запустить</button></div>
+      </div>
+
+      <div class="danger-zone">
+        <div class="card__head"><h3>Опасная зона</h3></div>
+        <div class="danger-row">
+          <p><b>Остановить портал.</b> Будут остановлены backend, Qdrant и reranker. Активная индексация (archive/, 61%) будет прервана и продолжится после запуска.</p>
+          <button class="btn btn--danger" data-confirm="portal">Остановить портал…</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+</div>
+
+<!-- ==================== CONFIRMATION DIALOG ==================== -->
+<div class="overlay" id="overlay">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-title">
+    <div class="dialog__head"><h2 id="dlg-title">Остановить портал?</h2></div>
+    <div class="dialog__body" id="dlg-body"></div>
+    <div class="dialog__foot">
+      <button class="btn" id="dlg-cancel">Отмена</button>
+      <button class="btn btn--danger-solid" id="dlg-ok" disabled>Остановить</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+/* ---------- Прототипный JS: только демонстрация взаимодействий ---------- */
+const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
+let lastFocus=null;
+
+/* Навигация chat ↔ settings + tabs */
+function go(view,tab){
+  $$('.view').forEach(v=>v.classList.remove('active'));
+  $('#view-'+view).classList.add('active');
+  if(tab) openTab(tab);
+}
+function openTab(name){
+  $$('.set-tab').forEach(t=>t.setAttribute('aria-selected',t.dataset.tab===name));
+  $$('.set-page').forEach(p=>p.classList.toggle('active',p.dataset.page===name));
+}
+$$('[data-go]').forEach(b=>b.addEventListener('click',()=>go(b.dataset.go,b.dataset.tab)));
+$$('.set-tab').forEach(t=>t.addEventListener('click',()=>openTab(t.dataset.tab)));
+/* Tabs: arrow-key navigation (§11.3) */
+$('.set-tabs').addEventListener('keydown',e=>{
+  const tabs=[...$$('.set-tab')],i=tabs.indexOf(document.activeElement);
+  if(i<0)return;
+  if(e.key==='ArrowRight'){tabs[(i+1)%tabs.length].focus();e.preventDefault()}
+  if(e.key==='ArrowLeft'){tabs[(i-1+tabs.length)%tabs.length].focus();e.preventDefault()}
+  if(e.key==='Home'){tabs[0].focus();e.preventDefault()}
+  if(e.key==='End'){tabs[tabs.length-1].focus();e.preventDefault()}
+});
+
+/* IndexStatusChip popover */
+const chip=$('#idx-chip'),pop=$('#idx-pop');
+chip.addEventListener('click',e=>{
+  e.stopPropagation();
+  const open=pop.classList.toggle('open');
+  chip.setAttribute('aria-expanded',open);
+});
+document.addEventListener('click',e=>{
+  if(!pop.contains(e.target)){pop.classList.remove('open');chip.setAttribute('aria-expanded','false')}
+});
+
+/* Evidence viewer: открытие по citation, возврат фокуса (§11.1) */
+const chatView=$('#view-chat'),ev=$('#evidence');
+$$('.source-citation, .file-card').forEach(c=>c.addEventListener('click',()=>{
+  lastFocus=c;
+  $$('.source-citation').forEach(x=>x.classList.remove('active'));
+  if(c.classList.contains('source-citation')){
+    c.classList.add('active');
+    ev.querySelector('.n').textContent=c.dataset.ev==='1'?c.textContent:c.textContent;
+  }
+  chatView.classList.add('evidence-open');
+  $('#ev-close').focus();
+}));
+$('#ev-close').addEventListener('click',closeEvidence);
+function closeEvidence(){
+  chatView.classList.remove('evidence-open');
+  $$('.source-citation').forEach(x=>x.classList.remove('active'));
+  if(lastFocus)lastFocus.focus();
+}
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    if($('#overlay').classList.contains('open'))closeDialog();
+    else if(pop.classList.contains('open')){pop.classList.remove('open');chip.focus()}
+    else if(chatView.classList.contains('evidence-open')&&chatView.classList.contains('active'))closeEvidence();
+  }
+});
+
+/* SystemStatusStrip collapse */
+$('#strip-toggle').addEventListener('click',()=>{
+  const s=$('#strip'),c=s.classList.toggle('collapsed');
+  $('#strip-toggle').textContent=c?'Показать статусы ▾':'Свернуть статусы ▴';
+  $('#strip-toggle').setAttribute('aria-expanded',!c);
+});
+
+/* История: фильтр Активные/Архив */
+[['#f-active','#f-arch']].forEach(()=>{});
+$('#f-active').addEventListener('click',()=>segSel(true));
+$('#f-arch').addEventListener('click',()=>segSel(false));
+function segSel(active){
+  $('#f-active').setAttribute('aria-selected',active);
+  $('#f-arch').setAttribute('aria-selected',!active);
+  toast(active?'Показаны активные чаты':'Показан архив — доступно «Восстановить»');
+}
+
+/* ---------- ConfirmationDialog: уровни A/B/C (§12) ---------- */
+const CONFIRMS={
+  portal:{level:'C',title:'Остановить портал?',word:'СТОП',
+    body:'Это действие остановит все компоненты портала:',
+    items:['backend (127.0.0.1:8787) — интерфейс станет недоступен','Qdrant — поиск по векторам остановится','reranker','активная индексация «archive/» (61%) будет прервана'],
+    ok:'Остановить портал'},
+  'del-source':{level:'B',title:'Удалить источник «Договор №214-СМР»?',
+    body:'Из индекса будут удалены 1 240 файлов и 18 431 фрагмент. Исходные документы на диске не затрагиваются.',
+    items:['связанные тендеры ТЗ-118 и ТЗ-131 останутся, связь будет снята','история чатов сохранится, но citations перестанут открываться'],
+    ok:'Удалить источник'},
+  reindex:{level:'B',title:'Полная переиндексация?',
+    body:'Текущий индекс источника будет перестроен заново (1 240 файлов). Поиск во время переиндексации работает по старым данным до завершения.',
+    items:[],ok:'Переиндексировать'},
+  svc:{level:'A',title:'Перезапустить сервис?',
+    body:'Кратковременно (5–15 с) операции сервиса будут недоступны. Активные запросы завершатся с ошибкой и потребуют повтора.',
+    items:[],ok:'Перезапустить'},
+  remote:{level:'B',title:'Разрешить remote context?',
+    body:'Фрагменты ваших документов будут передаваться на внешний endpoint llm.corp.example вместе с вопросами. Разрешение действует до отключения.',
+    items:['передаётся текст релевантных фрагментов, не файлы целиком','токен доступа остаётся только в environment'],
+    ok:'Разрешить передачу'}
+};
+let current=null;
+function openDialog(key){
+  current=CONFIRMS[key];lastFocus=document.activeElement;
+  $('#dlg-title').textContent=current.title;
+  let html='<p>'+current.body+'</p>';
+  if(current.items.length)html+='<ul>'+current.items.map(i=>'<li>'+i+'</li>').join('')+'</ul>';
+  if(current.level==='C')html+='<div class="field"><label>Для подтверждения введите слово «'+current.word+'»</label><input type="text" id="dlg-word" autocomplete="off"></div>';
+  $('#dlg-body').innerHTML=html;
+  const ok=$('#dlg-ok');ok.textContent=current.ok;
+  ok.className='btn '+(current.level==='A'?'btn--primary':'btn--danger-solid');
+  ok.disabled=current.level==='C';
+  $('#overlay').classList.add('open');
+  const w=$('#dlg-word');
+  if(w){w.addEventListener('input',()=>ok.disabled=w.value.trim().toUpperCase()!==current.word);w.focus()}
+  else $('#dlg-cancel').focus(); /* danger никогда не в автофокусе */
+}
+function closeDialog(confirmed){
+  $('#overlay').classList.remove('open');
+  if(confirmed)toast(current.ok+' — выполнено (демо)');
+  if(lastFocus)lastFocus.focus();
+  current=null;
+}
+$$('[data-confirm]').forEach(b=>b.addEventListener('click',()=>openDialog(b.dataset.confirm)));
+$('#dlg-cancel').addEventListener('click',()=>closeDialog(false));
+$('#dlg-ok').addEventListener('click',()=>closeDialog(true));
+$('#overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeDialog(false)});
+/* focus trap в диалоге (§11.1) */
+$('#overlay').addEventListener('keydown',e=>{
+  if(e.key!=='Tab')return;
+  const f=[...$('#overlay').querySelectorAll('button:not(:disabled),input')];
+  const first=f[0],last=f[f.length-1];
+  if(e.shiftKey&&document.activeElement===first){last.focus();e.preventDefault()}
+  else if(!e.shiftKey&&document.activeElement===last){first.focus();e.preventDefault()}
+});
+
+/* Remote context: чекбокс → согласие → постоянный warning (§9.6) */
+$('#remote-ctx').addEventListener('change',function(){
+  if(this.checked){
+    this.checked=false;
+    openDialog('remote');
+    const ok=$('#dlg-ok');
+    ok.addEventListener('click',()=>{ $('#remote-ctx').checked=true; $('#remote-warn').hidden=false; },{once:true});
+  } else $('#remote-warn').hidden=true;
+});
+
+/* Toast */
+let tmr;
+function toast(msg){
+  const t=$('#toast');t.textContent=msg;t.classList.add('show');
+  clearTimeout(tmr);tmr=setTimeout(()=>t.classList.remove('show'),2600);
+}
+</script>
+</body>
+</html>

@@ -119,7 +119,7 @@
 
       <section id="settings-page" class="settings-page" hidden>
         <header class="settings-page-header">
-          <button id="settings-back" type="button" class="secondary">Назад</button>
+          <button id="settings-back" type="button" class="secondary settings-back-button">← К чату</button>
           <div>
             <div id="settings-page-title" class="settings-page-title">Настройки</div>
             <div class="folder-current">Источники, хранилище и подключение LM Studio</div>
@@ -137,7 +137,18 @@
             </div>
             <button id="index-refresh-all" type="button" class="secondary index-refresh-button" title="Быстро обновить статусы всех уже найденных индексов">Обновить</button>
             <button id="settings-audit-shortcut" type="button" class="secondary settings-audit-shortcut" title="Открыть аудит обработки">Аудит</button>
-            <button id="tender-sync-button" type="button" class="secondary tender-sync-header-button">Синхронизировать с Google Drive</button>
+            <button id="tender-sync-button" type="button" class="secondary tender-sync-header-button" title="Синхронизировать тендеры с Google Drive">Синхронизировать с Google Drive</button>
+            <div id="settings-status-group" class="settings-status-group">
+              <span id="settings-lm-mini" class="lm-mini settings-mini checking" role="status" title="LM Studio">
+                <span class="lm-mini-dot" aria-hidden="true"></span>
+                <span class="lm-mini-title">LM Studio</span>
+                <span id="settings-lm-mini-detail" class="lm-mini-detail">проверка...</span>
+              </span>
+              <span id="settings-dify-mini" class="lm-mini settings-mini checking" role="status" title="Dify: проверка...">
+                <span class="lm-mini-dot" aria-hidden="true"></span>
+                <span class="lm-mini-title">Dify</span>
+                <span id="settings-dify-mini-detail" class="lm-mini-detail">проверка...</span>
+              </span>
             <button id="settings-system-status" type="button" class="backend-status service-control-button is-online" data-service="backend" title="Бэкэнд работает" aria-label="Бэкэнд работает" aria-haspopup="menu" aria-expanded="false">
               <span class="backend-status-dot" aria-hidden="true"></span>
               <span class="backend-status-label">Бэкэнд</span>
@@ -150,6 +161,8 @@
               <span class="backend-status-dot" aria-hidden="true"></span>
               <span class="backend-status-label">Qdrant</span>
             </button>
+            </div>
+            <button id="settings-status-toggle" type="button" class="secondary settings-status-toggle" aria-expanded="true" aria-controls="settings-status-group" title="Свернуть строку статусов">Свернуть статусы</button>
             <div id="service-action-menu" class="service-action-menu" role="menu" hidden>
               <button type="button" class="secondary" data-service-action="start" role="menuitem">Запустить</button>
               <button type="button" class="secondary" data-service-action="restart" role="menuitem">Рестарт</button>
@@ -664,7 +677,7 @@
         </div>
         <div class="portal-stop-dialog-actions">
           <button id="portal-stop-cancel" type="button" class="secondary">Отмена</button>
-          <button id="portal-stop-confirm" type="button" class="danger" disabled>Остановить</button>
+          <button id="portal-stop-confirm" type="button" class="danger danger-solid" disabled>Остановить</button>
         </div>
       </section>
     </div>

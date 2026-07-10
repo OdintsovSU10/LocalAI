@@ -1488,6 +1488,57 @@ function applyPortalStopServiceStatuses(services = []) {
   }
 }
 
+const MODAL_FOCUSABLE_SELECTOR =
+  'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])';
+
+function modalFocusableElements(container) {
+  return [...container.querySelectorAll(MODAL_FOCUSABLE_SELECTOR)]
+    .filter((el) => !el.hidden && el.offsetParent !== null);
+}
+
+function trapModalTab(event) {
+  if (event.key !== "Tab") return;
+  const container = event.currentTarget;
+  const focusable = modalFocusableElements(container);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (event.shiftKey && (active === first || !container.contains(active))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+// Общий контроль доступности модалок: ловушка фокуса (Tab) + возврат фокуса на
+// элемент, открывший модалку. Портальная модалка управляет фокусом сама и здесь
+// не регистрируется — ей достаточно общей ловушки Tab (trapModalTab).
+function setupModalA11y(modalId) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  modal.addEventListener("keydown", trapModalTab);
+  let previousFocus = null;
+  const observer = new MutationObserver(() => {
+    if (!modal.hidden) {
+      if (!modal.contains(document.activeElement)) {
+        previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        requestAnimationFrame(() => {
+          if (modal.hidden || modal.contains(document.activeElement)) return;
+          const focusable = modalFocusableElements(modal);
+          if (focusable.length) focusable[0].focus();
+        });
+      }
+    } else if (previousFocus?.isConnected) {
+      previousFocus.focus();
+      previousFocus = null;
+    }
+  });
+  observer.observe(modal, { attributes: true, attributeFilter: ["hidden"] });
+}
+
 let portalStopPreviousFocus = null;
 
 function syncPortalStopConfirmation() {
@@ -4983,6 +5034,13 @@ function setLmMiniState(stateName, title, detail) {
   mini.classList.add(stateName);
   $("#lm-mini-title").textContent = title;
   $("#lm-mini-detail").textContent = detail;
+  const mirror = $("#settings-lm-mini");
+  if (mirror) {
+    mirror.classList.remove("online", "offline", "busy", "checking");
+    mirror.classList.add(stateName);
+    mirror.title = `${title}: ${detail}`;
+    setText("#settings-lm-mini-detail", detail);
+  }
 }
 
 function setDifyMiniState(stateName, detail, title = detail) {
@@ -4993,6 +5051,13 @@ function setDifyMiniState(stateName, detail, title = detail) {
   mini.classList.add(stateName);
   detailNode.textContent = detail;
   mini.title = `Dify: ${title}`;
+  const mirror = $("#settings-dify-mini");
+  if (mirror) {
+    mirror.classList.remove("online", "offline", "busy", "checking");
+    mirror.classList.add(stateName);
+    mirror.title = `Dify: ${title}`;
+    setText("#settings-dify-mini-detail", detail);
+  }
 }
 
 function renderDifyMiniStatus(status) {
@@ -6008,7 +6073,13 @@ function createTenderSyncApplyButton(label, scope = "all", disabled = false) {
   button.type = "button";
   button.textContent = label;
   button.disabled = disabled;
-  button.addEventListener("click", () => syncTenders({ apply: true, scope }));
+  button.addEventListener("click", () => {
+    const message = scope === "unlinked"
+      ? "Создать тендеры без договора? Изменения будут записаны в источники RAG."
+      : "Применить синхронизацию тендеров? Изменения будут записаны в источники RAG.";
+    if (typeof window.confirm === "function" && !window.confirm(message)) return;
+    syncTenders({ apply: true, scope });
+  });
   return button;
 }
 
@@ -6726,6 +6797,10 @@ async function refreshAgentStatus({ silent = false } = {}) {
 
 async function runAgent(options = {}) {
   const force = Boolean(options.force);
+  if (force && typeof window.confirm === "function" &&
+    !window.confirm("Запустить полную переиндексацию всех папок? Индекс будет перестроен заново, это может занять много времени.")) {
+    return;
+  }
   const button = $("#agent-run-button");
   const forceButton = $("#agent-force-run-button");
   if (button) button.disabled = true;
@@ -7137,6 +7212,12 @@ async function indexSelected(force = false, sourceIdOverride = "") {
 
 function forceReindexSelected() {
   const sourceId = state.skippedSourceId || state.selectedSourceId;
+  const source = state.sources.find((item) => item.id === sourceId);
+  const label = source ? source.title : "выбранной папки";
+  if (typeof window.confirm === "function" &&
+    !window.confirm(`Принудительно переиндексировать все файлы «${label}»? Существующий индекс будет перестроен.`)) {
+    return;
+  }
   closeSkippedModal();
   indexSelected(true, sourceId);
 }
@@ -7330,6 +7411,50 @@ function applyMatchedSource(match) {
   renderSources();
 }
 
+// Баннер авто-определения проекта в потоке чата: показывает определённый проект
+// и даёт явное действие «Закрепить» (фиксирует выбор в селекторе).
+function renderAutoProjectBanner(referenceMessage, match) {
+  const thread = $("#chat-thread");
+  if (!thread || !match?.id || !match?.title) return;
+  if (!state.sources.some((source) => source.id === match.id)) return;
+  thread.querySelectorAll(".auto-project-banner").forEach((el) => el.remove());
+
+  const banner = document.createElement("div");
+  banner.className = "auto-project-banner";
+
+  const pill = document.createElement("span");
+  pill.className = "auto-project-pill";
+  pill.textContent = "Авто по вопросу";
+
+  const text = document.createElement("span");
+  text.className = "auto-project-text";
+  text.append("Проект определён по вопросу: ");
+  const strong = document.createElement("strong");
+  strong.textContent = match.title;
+  text.append(strong);
+
+  const pin = document.createElement("button");
+  pin.type = "button";
+  pin.className = "auto-project-pin";
+  pin.textContent = "Закрепить";
+  pin.title = "Закрепить проект для последующих вопросов";
+  pin.addEventListener("click", () => {
+    applyMatchedSource(match);
+    banner.classList.add("is-pinned");
+    pin.replaceWith(Object.assign(document.createElement("span"), {
+      className: "auto-project-pinned",
+      textContent: "Закреплён"
+    }));
+  });
+
+  banner.append(pill, text, pin);
+  if (referenceMessage && referenceMessage.parentNode === thread) {
+    thread.insertBefore(banner, referenceMessage);
+  } else {
+    thread.append(banner);
+  }
+}
+
 function sourcesByCitationNumber(sources = []) {
   const byNumber = new Map();
   sources.forEach((source, index) => {
@@ -7395,6 +7520,21 @@ function renderMessageTextContent(message, text, sources = []) {
   }
 }
 
+function messageMetaPart(text) {
+  const span = document.createElement("span");
+  span.className = "message-meta-part";
+  span.textContent = text;
+  return span;
+}
+
+function messageMetaPill(label, tone, title = "") {
+  const pill = document.createElement("span");
+  pill.className = `message-meta-pill message-meta-pill--${tone}`;
+  pill.textContent = label;
+  if (title) pill.title = title;
+  return pill;
+}
+
 function syncMessageMetaElement(message, text) {
   message.querySelector(".message-meta")?.remove();
   const value = String(text || "").trim();
@@ -7402,7 +7542,20 @@ function syncMessageMetaElement(message, text) {
 
   const meta = document.createElement("div");
   meta.className = "message-meta";
-  meta.textContent = value;
+  // Мета хранится строкой (переживает reload); провайдер отображаем пилюлей.
+  for (const part of value.split(" · ")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    if (/^Provider:\s*local/i.test(trimmed)) {
+      meta.append(messageMetaPill("Локально", "ok", trimmed));
+      if (/fallback/i.test(trimmed)) meta.append(messageMetaPart("fallback"));
+    } else if (/^Provider:\s*remote/i.test(trimmed)) {
+      meta.append(messageMetaPill("Удалённо", "warning", trimmed));
+      if (/fallback/i.test(trimmed)) meta.append(messageMetaPart("fallback"));
+    } else {
+      meta.append(messageMetaPart(trimmed));
+    }
+  }
   message.append(meta);
 }
 
@@ -7578,6 +7731,36 @@ function openContextLinkPreview(link, source = selectedSettingsSource()) {
   appendPreviewNote(preview, "Если документ приватный или Google заблокирует iframe, откройте его кнопкой выше.");
 }
 
+function previewMetaChip(label, variant = "") {
+  const chip = document.createElement("span");
+  chip.className = `preview-chip${variant ? ` preview-chip--${variant}` : ""}`;
+  chip.textContent = label;
+  return chip;
+}
+
+async function openPreviewSystemFile(action, file) {
+  try {
+    await api("/api/files/system-open", {
+      method: "POST",
+      body: JSON.stringify({
+        action,
+        sourceId: file.sourceId || "",
+        fileId: file.fileId || "",
+        path: file.path || ""
+      })
+    });
+  } catch (error) {
+    const preview = $("#source-preview");
+    if (!preview) return;
+    const note = document.createElement("div");
+    note.className = "hint preview-status";
+    note.textContent = apiErrorMessage(error, action === "reveal"
+      ? "Не удалось открыть файл в проводнике"
+      : "Не удалось открыть оригинальный файл");
+    preview.append(note);
+  }
+}
+
 function renderPreviewShell(source, statusText = "") {
   setSourceViewerOpen(true);
   const displayTitle = source.fileLabel || source.pathLabel || source.title || source.citationTarget?.fileLabel || fileName(source.path);
@@ -7587,16 +7770,41 @@ function renderPreviewShell(source, statusText = "") {
 
   const meta = document.createElement("div");
   meta.className = "preview-meta";
-  meta.textContent = [
-    source.sourceTitle,
-    source.citationLabel || source.citationTarget?.label || source.pathLabel || source.fileLabel || fileName(source.path),
-    source.sectionTitle ? `раздел "${source.sectionTitle}"` : "",
-    source.pageStart ? `стр. ${source.pageEnd && source.pageEnd > source.pageStart ? `${source.pageStart}-${source.pageEnd}` : source.pageStart}` : "",
-    source.sheetName ? `лист "${source.sheetName}"` : "",
-    source.score ? `score ${source.score}` : "",
-    source.references > 1 ? `фрагментов ${source.references}` : ""
-  ].filter(Boolean).join(" · ");
+  const citationNumber = Number(source.sourceNumber);
+  if (Number.isInteger(citationNumber) && citationNumber > 0) {
+    meta.append(previewMetaChip(String(citationNumber), "num"));
+  }
+  if (source.sourceTitle) meta.append(previewMetaChip(source.sourceTitle, "source"));
+  const fileLabel = source.citationLabel || source.citationTarget?.label || source.pathLabel || source.fileLabel || fileName(source.path);
+  if (fileLabel && fileLabel !== source.sourceTitle) meta.append(previewMetaChip(fileLabel));
+  if (source.sectionTitle) meta.append(previewMetaChip(`раздел "${source.sectionTitle}"`));
+  if (source.pageStart) {
+    meta.append(previewMetaChip(`стр. ${source.pageEnd && source.pageEnd > source.pageStart ? `${source.pageStart}-${source.pageEnd}` : source.pageStart}`));
+  }
+  if (source.sheetName) meta.append(previewMetaChip(`лист "${source.sheetName}"`));
+  if (source.references > 1) meta.append(previewMetaChip(`фрагментов ${source.references}`));
   preview.append(meta);
+
+  const systemPath = source.path || source.citationTarget?.path || "";
+  const systemFileId = source.fileId || source.citationTarget?.fileId || "";
+  const systemSourceId = source.sourceId || source.citationTarget?.sourceId || state.selectedSourceId || "";
+  if (systemPath || systemFileId) {
+    const actions = document.createElement("div");
+    actions.className = "preview-actions";
+    const fileRef = { path: systemPath, fileId: systemFileId, sourceId: systemSourceId };
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "secondary preview-action-button";
+    openButton.textContent = "Открыть файл";
+    openButton.addEventListener("click", () => openPreviewSystemFile("open", fileRef));
+    const revealButton = document.createElement("button");
+    revealButton.type = "button";
+    revealButton.className = "secondary preview-action-button";
+    revealButton.textContent = "Показать в Explorer";
+    revealButton.addEventListener("click", () => openPreviewSystemFile("reveal", fileRef));
+    actions.append(openButton, revealButton);
+    preview.append(actions);
+  }
 
   if (statusText) {
     const status = document.createElement("div");
@@ -7698,6 +7906,10 @@ function renderPreviewMarkdown(source, payload) {
     && end > start
     && end <= displayMarkdown.length;
 
+  if (payload.targetMatched && hasFocus) {
+    preview.querySelector(".preview-meta")?.append(previewMetaChip("Точное совпадение", "exact"));
+  }
+
   if (payload.targetMatched) {
     appendPreviewNote(
       preview,
@@ -7771,6 +7983,7 @@ async function chat(event) {
   if (!question) return;
 
   const sourceId = $("#source-select").value;
+  const wasAutoMode = !sourceId;
   const session = ensureActiveChat();
   const sessionId = session.id;
   const contextSourceId = !sourceId && contractSourceById(session.sourceId) ? session.sourceId : "";
@@ -7852,6 +8065,7 @@ async function chat(event) {
 
     stopThinkingStatus();
     applyMatchedSource(payload.matchedSource);
+    if (wasAutoMode) renderAutoProjectBanner(pending, payload.matchedSource);
     setMessageText(pending, finalAnswer, { sources: finalSources });
     setMessageMeta(pending, formatResponseMeta(payload));
     renderMessageSources(pending, finalSources, finalAnswer);
@@ -7947,6 +8161,18 @@ $("#reranker-url").addEventListener("input", () => {
     syncLlmFormLock();
   });
 });
+$("#remote-context-enabled")?.addEventListener("change", (event) => {
+  if (!event.target.checked) return;
+  const confirmed = typeof window.confirm !== "function" || window.confirm(
+    "Включить передачу найденных фрагментов документов на удалённый LLM-эндпойнт? Содержимое ваших документов будет отправлено за пределы локальной машины."
+  );
+  if (confirmed) return;
+  event.target.checked = false;
+  syncLlmRouteCards();
+  syncRemoteContextWarning();
+  renderAutoRoute();
+  syncLlmFormLock();
+});
 document.querySelectorAll("[data-llm-route]").forEach((button) => {
   button.addEventListener("click", () => {
     const select = $("#llm-provider");
@@ -7981,21 +8207,17 @@ $("#portal-stop-confirm")?.addEventListener("click", stopPortal);
 $("#portal-stop-modal")?.addEventListener("click", (event) => {
   if (event.target.id === "portal-stop-modal") closePortalStopConfirmation();
 });
-$("#portal-stop-modal")?.addEventListener("keydown", (event) => {
-  if (event.key !== "Tab") return;
-  const focusable = [...event.currentTarget.querySelectorAll("button:not(:disabled), input:not(:disabled)")];
-  if (!focusable.length) return;
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
-});
+$("#portal-stop-modal")?.addEventListener("keydown", trapModalTab);
+["folder-modal", "tender-sync-modal", "skipped-modal"].forEach(setupModalA11y);
 $("#settings-back").addEventListener("click", closeSettings);
+$("#settings-status-toggle")?.addEventListener("click", () => {
+  const actions = $(".settings-header-actions");
+  const toggle = $("#settings-status-toggle");
+  if (!actions || !toggle) return;
+  const collapsed = actions.classList.toggle("statuses-collapsed");
+  toggle.textContent = collapsed ? "Показать статусы" : "Свернуть статусы";
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+});
 document.querySelectorAll(".service-control-button").forEach((button) => {
   button.addEventListener("click", (event) => {
     event.stopPropagation();

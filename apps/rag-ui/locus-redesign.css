@@ -2187,3 +2187,262 @@ button.source-citation:hover,
     width: auto;
   }
 }
+
+/* ============================================================
+   Locus redesign — доработки P1–P3 (закрытие пробелов аудита)
+   ============================================================ */
+
+/* B4 · Сворачиваемая строка статусов в шапке настроек */
+.settings-status-group {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.settings-header-actions.statuses-collapsed .settings-status-group {
+  display: none;
+}
+
+.settings-status-toggle {
+  margin-left: auto;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.settings-status-toggle:hover {
+  border-color: transparent;
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+
+.settings-mini {
+  cursor: default;
+}
+
+.settings-header-actions .tender-sync-header-button {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* B5 · Баннер авто-определения проекта в потоке чата */
+.auto-project-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin: var(--sp-2) 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--status-info-border);
+  border-radius: var(--radius-md);
+  background: var(--status-info-bg);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.auto-project-pill {
+  flex: none;
+  border: 1px solid var(--status-info-border);
+  border-radius: var(--radius-full);
+  padding: 1px 9px;
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  color: var(--status-info-fg);
+}
+
+.auto-project-text strong {
+  color: var(--text-primary);
+}
+
+.auto-project-pin {
+  margin-left: auto;
+  min-height: 26px;
+  padding: 2px 10px;
+  border-color: var(--accent-dim-border);
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+  font-size: var(--fs-xs);
+}
+
+.auto-project-pin:hover {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.auto-project-pinned {
+  margin-left: auto;
+  color: var(--status-ok-fg);
+  font-size: var(--fs-xs);
+  font-weight: 650;
+}
+
+/* B6 · Чипы метаданных в evidence-вьюере */
+.preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  align-items: center;
+}
+
+.preview-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-solid);
+  border-radius: var(--radius-sm);
+  padding: 1px 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+
+.preview-chip--num {
+  border-color: var(--accent-dim-border);
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+  font-weight: 650;
+  font-family: var(--font-mono);
+}
+
+.preview-chip--source {
+  border-color: var(--accent-dim-border);
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+}
+
+.preview-chip--exact {
+  border-color: var(--status-ok-border);
+  background: var(--status-ok-bg);
+  color: var(--status-ok-fg);
+  font-weight: 650;
+}
+
+/* B7 · Кнопки действий в evidence-вьюере */
+.preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0;
+}
+
+.preview-action-button {
+  min-height: 28px;
+  font-size: var(--fs-xs);
+}
+
+/* C8 · Семантический цвет бейджа тендера (договор — без чипа, по умолчанию) */
+.source-kind-chip {
+  border: 1px solid var(--status-info-border);
+  color: var(--violet-500);
+  background: rgba(157, 123, 255, 0.12);
+}
+
+/* C9 · Пульс индикаторов «в работе» + warning-вариант статус-пилюль */
+@keyframes locus-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.lm-mini.checking .lm-mini-dot,
+.lm-mini.busy .lm-mini-dot {
+  animation: locus-pulse 1.4s ease-in-out infinite;
+}
+
+.lm-mini.warning {
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+}
+
+/* C10 · Пилюля провайдера в мета-строке ответа */
+.message-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+}
+
+.message-meta-part {
+  color: var(--text-muted);
+}
+
+.message-meta-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-full);
+  padding: 1px 8px;
+  font-size: var(--fs-xs);
+  font-weight: 650;
+}
+
+.message-meta-pill--ok {
+  border: 1px solid var(--status-ok-border);
+  background: var(--status-ok-bg);
+  color: var(--status-ok-fg);
+}
+
+.message-meta-pill--warning {
+  border: 1px solid var(--status-warning-border);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+}
+
+/* C11 · Токенизация состояний степпера + пульс активного шага */
+.index-step.is-active {
+  color: var(--status-warning-fg);
+}
+
+.index-step.is-active .index-step-dot {
+  background: var(--status-running-fg);
+  border-color: var(--status-running-fg);
+  box-shadow: 0 0 0 3px var(--status-running-bg);
+  animation: locus-pulse 1.4s ease-in-out infinite;
+}
+
+.index-step.is-warning {
+  color: var(--status-warning-fg);
+}
+
+.index-step.is-warning .index-step-dot {
+  background: var(--status-warning-fg);
+  border-color: var(--status-warning-fg);
+  box-shadow: 0 0 0 3px var(--status-warning-bg);
+}
+
+.index-step.is-done .index-step-dot {
+  background: var(--status-ok-fg);
+  border-color: var(--status-ok-fg);
+}
+
+.index-step.is-error .index-step-dot {
+  background: var(--status-error-fg);
+  border-color: var(--status-error-fg);
+  box-shadow: 0 0 0 3px var(--status-error-bg);
+}
+
+/* C13 · Заливная опасная кнопка + компактная утилита */
+button.danger-solid {
+  border-color: var(--red-500);
+  background: var(--red-500);
+  color: var(--gray-50);
+}
+
+button.danger-solid:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.btn-small,
+.is-small {
+  min-height: 26px;
+  padding: 2px 10px;
+  font-size: var(--fs-xs);
+}

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import ExcelJS from "exceljs";
@@ -36,6 +37,34 @@ const OCR_MAX_CONSECUTIVE_PAGE_FAILURES = 3;
 const OCR_MAX_PAGE_ERRORS = 10;
 let ocrWorkerPromise = null;
 const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
+
+// pdf-to-img passes cMapUrl and standardFontDataUrl to PDF.js but never wasmUrl. Without it
+// PDF.js cannot load openjpeg.wasm, so JPEG2000 (JPXDecode) images — what compressed scans are
+// made of — silently fail to decode and every page renders as a blank white canvas. OCR then
+// reads nothing and the file is reported as an empty PDF.
+function pdfjsAssetDirs() {
+  try {
+    const pdfjsRoot = path.dirname(require.resolve("pdfjs-dist/package.json"));
+    // PDF.js validates these as URLs and rejects anything without a trailing forward slash,
+    // so a Windows path.sep ("\") here throws "Invalid factory url".
+    const assetDir = (name) => `${path.join(pdfjsRoot, name).replaceAll("\\", "/")}/`;
+    return {
+      wasmUrl: assetDir("wasm"),
+      cMapUrl: assetDir("cmaps"),
+      standardFontDataUrl: assetDir("standard_fonts"),
+      cMapPacked: true
+    };
+  } catch {
+    return {};
+  }
+}
+
+const PDFJS_ASSETS = pdfjsAssetDirs();
+
+export function pdfjsAssets() {
+  return { ...PDFJS_ASSETS };
+}
 
 export const supportedExtensions = new Set([
   ".pdf",
@@ -57,7 +86,10 @@ export function converterStatus() {
       enabled: OCR_ENABLED,
       langs: OCR_LANGS,
       maxPages: OCR_MAX_PAGES,
-      scale: OCR_SCALE
+      scale: OCR_SCALE,
+      // Without wasmUrl, JPEG2000 scans render as blank pages — worth seeing in status.
+      pdfjsWasmUrl: PDFJS_ASSETS.wasmUrl || "",
+      pdfjsAssetsResolved: Boolean(PDFJS_ASSETS.wasmUrl)
     },
     pdfOcrMode: PDF_OCR_MODE,
     docling: {
@@ -541,7 +573,10 @@ async function ocrPdfToMarkdown(filePath, options = {}) {
     };
   }
 
-  const document = await pdf(filePath, { scale: OCR_SCALE });
+  const document = await pdf(filePath, {
+    scale: OCR_SCALE,
+    docInitParams: PDFJS_ASSETS
+  });
   try {
     const totalPages = Number(document.length || 0);
     const pageLimit = OCR_MAX_PAGES > 0 ? Math.min(totalPages, OCR_MAX_PAGES) : totalPages;

@@ -123,6 +123,8 @@ let sourceViewerPreviousFocus = null;
 const CHAT_HISTORY_KEY = "local-rag-chat-history-v1";
 const ACTIVE_CHAT_KEY = "local-rag-active-chat-v1";
 const SIDEBAR_COLLAPSED_KEY = "locus-sidebar-collapsed-v1";
+// Сколько держать обработанный файл в ленте аудита, прежде чем убрать его.
+const AUDIT_FEED_TTL_MS = 30 * 60 * 1000;
 const REMOTE_LM_DEFAULT_BASE_URL = "https://example-lm-studio/v1";
 const REMOTE_LM_DEFAULT_MODEL = "qwen3.6-27b-mtp";
 const REMOTE_AUTO_TIMEOUT_SECONDS = 300;
@@ -2601,41 +2603,6 @@ function auditStatusMeta(status = {}) {
   return parts.join(" · ");
 }
 
-function auditItemElement({ label, value, detail = "", tone = "idle", meta = "", currentFile = "", pipelineStatus = null } = {}) {
-  const item = document.createElement("article");
-  item.className = `audit-list-item is-${tone}`;
-  if (pipelineStatus) item.classList.add("has-pipeline");
-  item.innerHTML = `
-    <span class="audit-list-dot" aria-hidden="true"></span>
-    <span class="audit-list-main">
-      <span class="audit-list-head">
-        <span class="audit-list-label"></span>
-        <strong class="audit-list-value"></strong>
-      </span>
-      <span class="audit-list-file"></span>
-      <span class="audit-list-meta"></span>
-      <span class="audit-list-detail"></span>
-    </span>
-  `;
-  item.querySelector(".audit-list-label").textContent = label || "";
-  item.querySelector(".audit-list-value").textContent = value || "";
-  const fileNode = item.querySelector(".audit-list-file");
-  fileNode.textContent = currentFile ? `Файл: ${currentFile}` : "";
-  fileNode.hidden = !fileNode.textContent;
-  const metaNode = item.querySelector(".audit-list-meta");
-  const detailNode = item.querySelector(".audit-list-detail");
-  metaNode.textContent = meta || "";
-  detailNode.textContent = detail || "";
-  metaNode.hidden = !metaNode.textContent;
-  detailNode.hidden = !detailNode.textContent;
-  if (pipelineStatus) {
-    const pipeline = renderIndexPipeline(pipelineStatus);
-    pipeline.classList.add("audit-pipeline");
-    item.querySelector(".audit-list-main").append(pipeline);
-  }
-  return item;
-}
-
 function auditActiveMovements() {
   const rows = [];
   const seenSourceIds = new Set();
@@ -2690,25 +2657,6 @@ function auditActiveMovements() {
   }
 
   return rows;
-}
-
-function auditRecentMovements(limit = 5) {
-  return state.sources
-    .map((source) => ({ source, status: source?.indexStatus || {} }))
-    .filter(({ status }) => status.status && status.status !== "not_indexed")
-    .sort((left, right) => {
-      const leftTime = new Date(left.status.updatedAt || left.status.finishedAt || left.status.startedAt || 0).getTime();
-      const rightTime = new Date(right.status.updatedAt || right.status.finishedAt || right.status.startedAt || 0).getTime();
-      return rightTime - leftTime;
-    })
-    .slice(0, limit)
-    .map(({ source, status }) => ({
-      label: source.title || source.id,
-      value: status.status === "completed" ? "готово" : auditPhaseLabel(status.phase || status.status),
-      meta: [sourceTypeLabel(source), auditStatusMeta(status)].filter(Boolean).join(" · "),
-      detail: auditMovementDetail(status),
-      tone: auditToneFromStatus(status.status)
-    }));
 }
 
 function auditStatusRows(activeMovements = auditActiveMovements()) {
@@ -2825,14 +2773,13 @@ function renderAuditPanel() {
   if (!statusList || !movementList) return;
 
   const activeMovements = auditActiveMovements();
-  const movementRows = activeMovements.length ? activeMovements : auditRecentMovements();
   renderAuditStatusBar(activeMovements);
   setText("#audit-status-summary", auditSummaryText(activeMovements));
   setText(
     "#audit-movement-summary",
     activeMovements.length
-      ? `Сейчас в работе: ${formatCount(activeMovements.length)}`
-      : (movementRows.length ? "Активных движений нет; показаны последние статусы." : "Активных движений с файлами сейчас нет.")
+      ? `Обрабатывается проектов: ${formatCount(activeMovements.length)}`
+      : "Активной обработки нет — ниже последние файлы."
   );
 
   statusList.innerHTML = "";
@@ -2846,14 +2793,10 @@ function renderAuditPanel() {
 
   movementList.innerHTML = "";
   if (!activeMovements.length) {
-    movementList.append(auditItemElement({
-      label: "Сейчас",
-      value: "нет активных движений",
-      tone: "idle",
-      detail: movementRows.length
-        ? "Индексатор, OCR, embeddings и Qdrant сейчас ничего не записывают; ниже — последние обработанные файлы."
-        : "Индексатор, OCR, embeddings и Qdrant сейчас ничего не записывают."
-    }));
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "Индексатор, OCR, embeddings и Qdrant сейчас ничего не записывают.";
+    movementList.append(empty);
     return;
   }
 
@@ -2877,14 +2820,27 @@ function auditStatusPill({ label, value, detail = "", tone = "idle" } = {}) {
   return pill;
 }
 
-function auditFileIcon(extension = "") {
-  const value = String(extension || "").toLowerCase();
-  if (value.includes("pdf")) return "📕";
-  if (value.includes("xls") || value.includes("csv")) return "📊";
-  if (value.includes("doc") || value.includes("rtf")) return "📄";
-  if (value.includes("ppt")) return "📽";
-  if (value.includes("google")) return "🌐";
-  return "📁";
+// Ярлычок типа файла: текстовое расширение с цветом по семейству формата.
+// Эмодзи-иконки на Windows рендерятся квадратами, поэтому именно текст.
+function auditFileType(extension = "") {
+  const value = String(extension || "").toLowerCase().replace(/^\./, "");
+  if (value.includes("pdf")) return { label: "PDF", kind: "pdf" };
+  if (value.includes("xls") || value.includes("csv")) return { label: value.includes("csv") ? "CSV" : "XLS", kind: "sheet" };
+  if (value.includes("doc") || value.includes("rtf")) return { label: value.includes("rtf") ? "RTF" : "DOC", kind: "doc" };
+  if (value.includes("ppt")) return { label: "PPT", kind: "slides" };
+  if (value.includes("google")) return { label: "GDoc", kind: "google" };
+  if (value.includes("txt") || value.includes("md")) return { label: value.includes("md") ? "MD" : "TXT", kind: "text" };
+  const fallback = value.slice(0, 4).toUpperCase();
+  return { label: fallback || "FILE", kind: "other" };
+}
+
+function auditFileBadge(extension = "") {
+  const type = auditFileType(extension);
+  const badge = document.createElement("span");
+  badge.className = `file-badge file-badge--${type.kind}`;
+  badge.textContent = type.label;
+  badge.title = type.label;
+  return badge;
 }
 
 // Прогресс внутри файла: OCR считает страницы, векторизация — фрагменты.
@@ -2974,7 +2930,7 @@ function auditNowCard(row) {
 
   const fileBlock = card.querySelector(".audit-now-file");
   if (row.file) {
-    card.querySelector(".audit-now-file-icon").textContent = auditFileIcon(row.file.extension);
+    card.querySelector(".audit-now-file-icon").replaceChildren(auditFileBadge(row.file.extension));
     card.querySelector(".audit-now-file-title").textContent = row.file.title || row.file.relativePath;
     const pathNode = card.querySelector(".audit-now-file-path");
     const relative = row.file.relativePath && row.file.relativePath !== row.file.title ? row.file.relativePath : "";
@@ -3016,10 +2972,16 @@ function auditNowCard(row) {
 }
 
 // Лента: запоминаем каждый новый файл, который видим в текущих движениях.
+function auditFeedKey(row) {
+  return `${row.sourceId || row.label}:${row.file.relativePath || row.file.title}`;
+}
+
 function recordAuditFeed(activeMovements) {
+  const activeKeys = new Set(activeMovements.filter((row) => row.file).map(auditFeedKey));
+
   for (const row of activeMovements) {
     if (!row.file) continue;
-    const key = `${row.sourceId || row.label}:${row.file.relativePath || row.file.title}`;
+    const key = auditFeedKey(row);
     const last = state.audit.feed[0];
     if (last && last.key === key) {
       last.phase = row.value || last.phase;
@@ -3034,18 +2996,32 @@ function recordAuditFeed(activeMovements) {
       title: row.file.title || row.file.relativePath,
       relativePath: row.file.relativePath || "",
       extension: row.file.extension || "",
-      phase: row.value || ""
+      phase: row.value || "",
+      done: false,
+      doneAt: 0
     });
   }
-  state.audit.feed = state.audit.feed.slice(0, 40);
+
+  // Файл ушёл из активных движений — работа по нему закончена; не оставляем
+  // его висеть с этапом обработки. Старые записи выпадают из ленты сами.
+  const now = Date.now();
+  for (const entry of state.audit.feed) {
+    if (entry.done || activeKeys.has(entry.key)) continue;
+    entry.done = true;
+    entry.doneAt = now;
+  }
+
+  state.audit.feed = state.audit.feed
+    .filter((entry) => !entry.done || now - entry.doneAt < AUDIT_FEED_TTL_MS)
+    .slice(0, 40);
 }
 
 function renderAuditFeed(activeMovements = []) {
   const list = $("#audit-feed-list");
   if (!list) return;
-  const activeKeys = new Set(activeMovements
-    .filter((row) => row.file)
-    .map((row) => `${row.sourceId || row.label}:${row.file.relativePath || row.file.title}`));
+  const activeKeys = new Set(activeMovements.filter((row) => row.file).map(auditFeedKey));
+  const clearButton = $("#audit-feed-clear");
+  if (clearButton) clearButton.hidden = !state.audit.feed.length;
   list.innerHTML = "";
   if (!state.audit.feed.length) {
     setText("#audit-feed-summary", "Пока ничего не обрабатывалось в этой сессии.");
@@ -3053,11 +3029,18 @@ function renderAuditFeed(activeMovements = []) {
     return;
   }
 
-  setText("#audit-feed-summary", `За сессию: ${formatCount(state.audit.feed.length)}`);
+  const inWorkCount = state.audit.feed.filter((entry) => activeKeys.has(entry.key)).length;
+  setText(
+    "#audit-feed-summary",
+    inWorkCount
+      ? `В работе: ${formatCount(inWorkCount)} · обработано за сессию: ${formatCount(state.audit.feed.length - inWorkCount)}`
+      : `Обработано за сессию: ${formatCount(state.audit.feed.length)}`
+  );
+
   for (const entry of state.audit.feed) {
     const item = document.createElement("div");
     const inWork = activeKeys.has(entry.key);
-    item.className = `audit-feed-item${inWork ? " is-active" : ""}`;
+    item.className = `audit-feed-item${inWork ? " is-active" : ""}${!inWork && entry.done ? " is-done" : ""}`;
     item.innerHTML = `
       <span class="audit-feed-time"></span>
       <span class="audit-feed-icon" aria-hidden="true"></span>
@@ -3069,13 +3052,20 @@ function renderAuditFeed(activeMovements = []) {
     `;
     item.querySelector(".audit-feed-time").textContent = new Date(entry.at)
       .toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    item.querySelector(".audit-feed-icon").textContent = auditFileIcon(entry.extension);
+    item.querySelector(".audit-feed-icon").replaceChildren(auditFileBadge(entry.extension));
     item.querySelector(".audit-feed-title").textContent = entry.title;
     item.querySelector(".audit-feed-title").title = entry.relativePath || entry.title;
     item.querySelector(".audit-feed-meta").textContent = entry.sourceTitle;
-    item.querySelector(".audit-feed-phase").textContent = inWork ? `${entry.phase} · в работе` : entry.phase;
+    item.querySelector(".audit-feed-phase").textContent = inWork
+      ? `${entry.phase} · в работе`
+      : (entry.done ? "✓ обработан" : entry.phase);
     list.append(item);
   }
+}
+
+function clearAuditFeed() {
+  state.audit.feed = [];
+  renderAuditFeed();
 }
 
 function auditRecentFileTone(file) {
@@ -3123,7 +3113,7 @@ function renderAuditRecentFiles() {
         <button type="button" class="secondary btn-small audit-recent-reveal">В папке</button>
       </span>
     `;
-    item.querySelector(".audit-recent-icon").textContent = auditFileIcon(file.extension);
+    item.querySelector(".audit-recent-icon").replaceChildren(auditFileBadge(file.extension));
     const titleNode = item.querySelector(".audit-recent-title");
     titleNode.textContent = file.title;
     titleNode.title = file.relativePath || file.title;
@@ -4373,8 +4363,8 @@ function renderIndexedFolderChildren(node, container, depth = 0) {
       </span>
       <span class="indexed-tree-quality"></span>
     `;
-    row.querySelector(".indexed-tree-file-icon").textContent = auditFileIcon(
-      file.extension || auditFileExtensionFromName(file.title || file.path)
+    row.querySelector(".indexed-tree-file-icon").replaceChildren(
+      auditFileBadge(file.extension || auditFileExtensionFromName(file.title || file.path))
     );
     const meta = [
       file.chunks ? `${file.chunks} фрагм.` : "нет фрагментов",
@@ -8494,6 +8484,7 @@ $("#edit-reranker-settings")?.addEventListener("click", () => setRerankerEditing
 $("#refresh-remote-diagnostics").addEventListener("click", refreshRemoteDiagnostics);
 $("#refresh-integrations-status").addEventListener("click", refreshIntegrationsStatus);
 $("#audit-refresh")?.addEventListener("click", () => refreshAuditStatus());
+$("#audit-feed-clear")?.addEventListener("click", clearAuditFeed);
 $("#qdrant-url").addEventListener("input", () => {
   updateQdrantApiKeyHint();
   syncIndexFormLocks();

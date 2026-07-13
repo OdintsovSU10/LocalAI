@@ -37,6 +37,27 @@ function parsePageRange(value) {
   return { from, to };
 }
 
+// The JPEG2000 failure mode renders a page as a pure white canvas: OCR then honestly reports
+// zero characters and the file looks like an empty PDF. Measuring ink tells the two apart.
+async function inkCoverage(pngBuffer) {
+  try {
+    const { loadImage, createCanvas } = await import("@napi-rs/canvas");
+    const image = await loadImage(pngBuffer);
+    const canvas = createCanvas(image.width, image.height);
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0);
+
+    const { data } = context.getImageData(0, 0, image.width, image.height);
+    let dark = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      if (data[index] < 240 || data[index + 1] < 240 || data[index + 2] < 240) dark += 1;
+    }
+    return dark / (image.width * image.height);
+  } catch {
+    return null;
+  }
+}
+
 async function binaryVersion(command) {
   try {
     const { stdout } = await execFileAsync(command, ["--version"], { timeout: 15000, windowsHide: true });
@@ -77,7 +98,11 @@ async function runScale(filePath, scale, range) {
   console.log(`\n=== OCR scale ${effectiveScale} (~${Math.round(effectiveScale * 72)} DPI) ===`);
 
   const { pdf } = await import("pdf-to-img");
-  const document = await pdf(filePath, { scale: effectiveScale });
+  // Must mirror converters.js: without the PDF.js wasm path, JPEG2000 scans render blank.
+  const document = await pdf(filePath, {
+    scale: effectiveScale,
+    docInitParams: converters.pdfjsAssets()
+  });
   const totalPages = Number(document.length || 0);
   const to = Math.min(range.to, totalPages);
   console.log(`Страниц в PDF: ${totalPages}; проверяем ${range.from}-${to}`);
@@ -90,18 +115,22 @@ async function runScale(filePath, scale, range) {
     const confidences = [];
     for (let pageNumber = range.from; pageNumber <= to; pageNumber += 1) {
       const image = await document.getPage(pageNumber);
+      const ink = await inkCoverage(image);
       const result = await worker.recognize(image);
       const text = String(result?.data?.text || "");
       const report = converters.ocrPageReport(pageNumber, text, result?.data?.confidence);
       const usable = converters.usableOcrPage(report);
       confidences.push(Number(report.confidence));
 
-      // A near-zero image size means pdf.js could not rasterize the page at all.
+      const inkLabel = ink === null ? "?" : `${(ink * 100).toFixed(1)}%`;
       console.log(
-        `  стр. ${pageNumber}: изображение ${image.length} Б; символов ${report.chars}; слов ${report.words}; `
-        + `уверенность ${report.confidence ?? "-"}%; шум ${report.noiseRatio}; `
+        `  стр. ${pageNumber}: чернил ${inkLabel}; изображение ${image.length} Б; символов ${report.chars}; `
+        + `слов ${report.words}; уверенность ${report.confidence ?? "-"}%; шум ${report.noiseRatio}; `
         + `${usable ? "ПРИНЯТА" : "ОТБРАКОВАНА"}${report.warnings.length ? ` [${report.warnings.join(", ")}]` : ""}`
       );
+      if (ink !== null && ink < 0.001) {
+        console.log("    ВНИМАНИЕ: страница практически белая — PDF.js не отрисовал содержимое (проверьте wasmUrl / JPEG2000).");
+      }
 
       if (pageNumber === range.from) {
         const preview = path.join(os.tmpdir(), `locus-diagnose-scale${effectiveScale}-p${pageNumber}.png`);

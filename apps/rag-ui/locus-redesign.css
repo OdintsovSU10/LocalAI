@@ -3260,3 +3260,83 @@ button.danger-solid:hover:not(:disabled) {
   line-height: 1;
   text-align: center;
 }
+
+/* Обработанный файл в ленте: приглушён и помечен галочкой, без «running»-пилюли. */
+.audit-feed-item.is-done .audit-feed-title,
+.audit-feed-item.is-done .audit-feed-meta {
+  color: var(--text-muted);
+}
+
+.audit-feed-item.is-done .audit-feed-phase {
+  border-color: var(--status-ok-border);
+  background: var(--status-ok-bg);
+  color: var(--status-ok-fg);
+  animation: none;
+}
+
+/* Ярлычок типа файла — текстовое расширение вместо эмодзи (эмодзи на Windows
+   рендерятся квадратами). Используется в аудите и в дереве индекса. */
+.file-badge {
+  display: inline-grid;
+  place-items: center;
+  box-sizing: border-box;
+  min-width: 34px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  padding: 1px 4px;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 14px;
+}
+
+.file-badge--pdf {
+  border-color: var(--status-error-border);
+  background: var(--status-error-bg);
+  color: var(--status-error-fg);
+}
+
+.file-badge--doc {
+  border-color: var(--accent-dim-border);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.file-badge--sheet {
+  border-color: var(--status-ok-border);
+  background: var(--status-ok-bg);
+  color: var(--status-ok-fg);
+}
+
+.file-badge--slides {
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+}
+
+.file-badge--google {
+  border-color: var(--status-info-border);
+  background: rgba(157, 123, 255, 0.12);
+  color: var(--violet-500);
+}
+
+.audit-now-file-icon,
+.audit-feed-icon,
+.audit-recent-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  font-size: inherit;
+}
+
+.indexed-tree-file {
+  grid-template-columns: 16px 38px minmax(0, 1fr) auto;
+}
+
+.indexed-tree-file-icon {
+  display: inline-flex;
+  align-items: start;
+  padding-top: 2px;
+}

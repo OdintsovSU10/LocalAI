@@ -13,6 +13,7 @@ delete process.env.RAG_OCR_MAX_PAGES;
 const {
   converterStatus,
   convertToMarkdownWithReport,
+  pdfjsAssets,
   textQualityReport,
   usableOcrPage,
   usablePdfTextLayer
@@ -44,6 +45,21 @@ test("textQualityReport accepts dense readable text", () => {
   assert.deepEqual(strong.warnings, []);
   assert.equal(strong.score, 100);
   assert.equal(strong.words >= 10, true);
+});
+
+// Without wasmUrl, PDF.js cannot load openjpeg.wasm and every JPEG2000 scan renders as a blank
+// white page, which OCR then reports as an empty PDF. PDF.js also rejects a URL that does not
+// end in a forward slash, so a Windows "\" separator here breaks rendering outright.
+test("pdfjsAssets exposes usable PDF.js resource urls", async () => {
+  const assets = pdfjsAssets();
+
+  assert.equal(typeof assets.wasmUrl, "string");
+  for (const url of [assets.wasmUrl, assets.cMapUrl, assets.standardFontDataUrl]) {
+    assert.equal(url.endsWith("/"), true, `${url} должен заканчиваться прямым слэшем`);
+    assert.equal(url.includes("\\"), false, `${url} не должен содержать обратных слэшей`);
+  }
+
+  await assert.doesNotReject(fs.access(path.join(assets.wasmUrl, "openjpeg.wasm")));
 });
 
 test("usableOcrPage rejects unreadable pages and keeps decent ones", () => {

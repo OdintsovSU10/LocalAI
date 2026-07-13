@@ -1199,30 +1199,13 @@ button.source-citation:hover,
   padding: var(--sp-5);
 }
 
+/* Страницы настроек занимают всю ширину окна: без внутреннего «конверта». */
 .settings-tab-panel,
 .settings-tab-panel.active {
   height: auto;
-  max-width: 1500px;
-  margin: 0 auto;
-  overflow: visible;
-}
-
-.settings-section-heading {
-  margin-bottom: var(--sp-5);
-}
-
-.settings-section-heading h1 {
-  margin: 0 0 var(--sp-1);
-  color: var(--text-primary);
-  font-size: var(--fs-2xl);
-  font-weight: 650;
-  line-height: 1.25;
-}
-
-.settings-section-heading p {
+  max-width: none;
   margin: 0;
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
+  overflow: visible;
 }
 
 .panel {
@@ -2155,10 +2138,6 @@ button.source-citation:hover,
     padding: var(--sp-3);
   }
 
-  .settings-section-heading {
-    margin-bottom: var(--sp-4);
-  }
-
   .settings-sources-layout,
   .settings-project-detail,
   .source-detail-stack {
@@ -2544,4 +2523,235 @@ button.danger-solid:hover:not(:disabled) {
 
 .audit-list-file[hidden] {
   display: none;
+}
+
+/* ==========================================================================
+   Пересборка левой панели: поиск по чатам, читаемая строка чата
+   (чип проекта + время), сворачивание панели, явная кнопка настроек.
+   Слой идёт последним, поэтому переопределяет ранние правила выше.
+   ========================================================================== */
+
+.brand {
+  align-items: center;
+}
+
+.brand-text {
+  min-width: 0;
+}
+
+.sidebar-collapse {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  margin-left: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.sidebar-collapse:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+/* История занимает всю оставшуюся высоту, список докручивается до подвала —
+   раньше блок «повисал» посередине. */
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 var(--sp-2);
+}
+
+.history-search {
+  position: relative;
+  margin: 0 var(--sp-1) var(--sp-2);
+}
+
+.history-search-icon {
+  position: absolute;
+  top: 50%;
+  left: 9px;
+  transform: translateY(-50%);
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.app .history-search-input {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  padding: 4px 10px 4px 28px;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+}
+
+.app .history-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.app .history-search-input:focus-visible {
+  border-color: var(--accent);
+  outline: var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.history-filter {
+  margin: 0 var(--sp-1) var(--sp-2);
+}
+
+.chat-history {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  padding: 0 var(--sp-1) var(--sp-2);
+}
+
+.chat-history .empty {
+  padding: var(--sp-4) var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.chat-history-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  overflow: hidden;
+}
+
+.chat-history-project {
+  flex: 0 1 auto;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  padding: 0 7px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-history-project--contract {
+  border-color: var(--accent-dim-border);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.chat-history-project--tender {
+  border-color: var(--status-info-border);
+  background: rgba(157, 123, 255, 0.12);
+  color: var(--violet-500);
+}
+
+.chat-history-time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Настройки — обычная видимая кнопка, а не текст, слитый с фоном. */
+.sidebar-footer {
+  border-top: 1px solid var(--border-default);
+  padding: var(--sp-3);
+}
+
+#settings-open.sidebar-settings-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+#settings-open.sidebar-settings-button::before {
+  content: "⚙";
+  margin-right: 8px;
+  color: var(--text-secondary);
+}
+
+#settings-open.sidebar-settings-button:hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+#settings-open.sidebar-settings-button.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+/* Свёрнутая панель: только иконки. */
+.app.sidebar-collapsed {
+  grid-template-columns: 68px minmax(0, 1fr);
+}
+
+.app.sidebar-collapsed.has-source-viewer {
+  grid-template-columns: 68px minmax(0, 1fr) 400px;
+}
+
+/* Скрытые статусы и история выпадают из грида, поэтому подвал прижимаем сами. */
+.app.sidebar-collapsed .sidebar {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.app.sidebar-collapsed .sidebar-footer {
+  align-self: end;
+}
+
+.app.sidebar-collapsed .brand {
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-2);
+}
+
+.app.sidebar-collapsed .brand-text,
+.app.sidebar-collapsed .sidebar-status-stack,
+.app.sidebar-collapsed .history-panel {
+  display: none;
+}
+
+.app.sidebar-collapsed .sidebar-collapse {
+  margin-left: 0;
+}
+
+.app.sidebar-collapsed .sidebar-actions,
+.app.sidebar-collapsed .sidebar-footer {
+  padding: var(--sp-2);
+}
+
+.app.sidebar-collapsed #new-chat-button,
+.app.sidebar-collapsed #settings-open.sidebar-settings-button {
+  justify-content: center;
+  padding: 0;
+  font-size: 0;
+}
+
+.app.sidebar-collapsed #new-chat-button::before,
+.app.sidebar-collapsed #settings-open.sidebar-settings-button::before {
+  margin-right: 0;
+  font-size: 15px;
 }

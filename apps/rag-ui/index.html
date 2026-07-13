@@ -18,10 +18,11 @@
       <aside class="sidebar" aria-label="История чатов">
         <header class="brand">
           <img class="brand-mark" src="/assets/locus-icon.svg" alt="" aria-hidden="true">
-          <div>
+          <div class="brand-text">
             <div class="brand-title">Locus</div>
             <div class="brand-subtitle">Локальная память проектов</div>
           </div>
+          <button id="sidebar-collapse" type="button" class="sidebar-collapse" title="Свернуть панель" aria-label="Свернуть панель" aria-expanded="true">«</button>
         </header>
 
         <div class="sidebar-status-stack">
@@ -38,11 +39,14 @@
         </div>
 
         <div class="sidebar-actions">
-          <button id="new-chat-button" type="button">Новый чат</button>
+          <button id="new-chat-button" type="button" title="Новый чат">Новый чат</button>
         </div>
 
         <section class="history-panel">
-          <div class="panel-title">История</div>
+          <div class="history-search">
+            <span class="history-search-icon" aria-hidden="true">🔎</span>
+            <input id="history-search" type="search" class="history-search-input" placeholder="Поиск по чатам" aria-label="Поиск по чатам и проектам" autocomplete="off">
+          </div>
           <div class="history-filter" role="tablist" aria-label="Фильтр истории">
             <button id="history-filter-active" type="button" role="tab" aria-selected="true">Активные</button>
             <button id="history-filter-archived" type="button" role="tab" aria-selected="false">Архив <span id="history-archive-count" class="history-filter-count"></span></button>
@@ -51,7 +55,7 @@
         </section>
 
         <div class="sidebar-footer">
-          <button id="settings-open" type="button" class="secondary">Настройки</button>
+          <button id="settings-open" type="button" class="sidebar-settings-button" title="Настройки">Настройки</button>
         </div>
       </aside>
 
@@ -122,7 +126,7 @@
           <button id="settings-back" type="button" class="secondary settings-back-button">К чату</button>
           <div>
             <div id="settings-page-title" class="settings-page-title">Настройки</div>
-            <div class="folder-current">Источники, хранилище и подключение LM Studio</div>
+            <div id="settings-page-subtitle" class="folder-current">Папки договоров и тендеров, индексация и файлы индекса</div>
           </div>
           <div class="settings-header-actions">
             <div id="settings-index-overview" class="settings-index-overview index-status-bar is-checking" role="status" aria-live="polite" title="Сводка распознавания загружается">
@@ -183,10 +187,6 @@
 
         <div class="settings-content">
           <div id="settings-panel-sources" class="settings-tab-panel active" role="tabpanel" aria-labelledby="settings-tab-sources">
-            <header class="settings-section-heading">
-              <h1>Источники</h1>
-              <p>Папки договоров и тендеров, индексация и файлы индекса</p>
-            </header>
             <div class="settings-sources-layout">
               <section class="panel sources-panel settings-project-list">
                 <div class="panel-title-row">
@@ -241,10 +241,6 @@
           </div>
 
           <div id="settings-panel-llm" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-llm" hidden>
-          <header class="settings-section-heading">
-            <h1>LLM и приватность</h1>
-            <p>Маршрутизация запросов и контроль передачи фрагментов документов</p>
-          </header>
           <section class="panel">
             <div class="panel-title">LLM</div>
             <form id="llm-form" class="stack">
@@ -388,10 +384,6 @@
           </div>
 
           <div id="settings-panel-indexes" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-indexes" hidden>
-            <header class="settings-section-heading">
-              <h1>Индексы</h1>
-              <p>Векторное хранилище, reranker и диагностика retrieval</p>
-            </header>
             <section class="panel">
               <div class="panel-title-row">
                 <div class="panel-title">Vector store</div>
@@ -495,10 +487,6 @@
           </div>
 
           <div id="settings-panel-audit" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-audit" hidden>
-            <header class="settings-section-heading">
-              <h1>Аудит и система</h1>
-              <p>Состояние обработки, локальные сервисы и системные операции</p>
-            </header>
             <section class="panel audit-statusbar-panel">
               <div class="audit-statusbar-head">
                 <div>
@@ -551,10 +539,6 @@
           </div>
 
           <div id="settings-panel-general" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-general" hidden>
-            <header class="settings-section-heading">
-              <h1>Общие</h1>
-              <p>Локальное хранилище данных портала</p>
-            </header>
             <div class="settings-general-layout">
               <section class="panel storage-settings-panel">
                 <div class="panel-title">Хранилище</div>

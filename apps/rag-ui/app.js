@@ -74,6 +74,8 @@ const state = {
   skippedLoading: false,
   chatSessions: [],
   chatHistoryMode: "active",
+  chatHistoryQuery: "",
+  sidebarCollapsed: false,
   activeChatId: "",
   chatRequest: {
     controller: null,
@@ -111,10 +113,20 @@ let indexedFileContextMenu = null;
 let sourceViewerPreviousFocus = null;
 const CHAT_HISTORY_KEY = "local-rag-chat-history-v1";
 const ACTIVE_CHAT_KEY = "local-rag-active-chat-v1";
+const SIDEBAR_COLLAPSED_KEY = "locus-sidebar-collapsed-v1";
 const REMOTE_LM_DEFAULT_BASE_URL = "https://example-lm-studio/v1";
 const REMOTE_LM_DEFAULT_MODEL = "qwen3.6-27b-mtp";
 const REMOTE_AUTO_TIMEOUT_SECONDS = 300;
 const SETTINGS_TABS = new Set(["general", "sources", "llm", "indexes", "audit"]);
+// Название раздела показывает только строка вкладок; в шапке — описание раздела,
+// чтобы заголовок не дублировался.
+const SETTINGS_TAB_SUBTITLES = {
+  sources: "Папки договоров и тендеров, индексация и файлы индекса",
+  llm: "Маршрутизация запросов и контроль передачи фрагментов документов",
+  indexes: "Векторное хранилище, reranker и диагностика retrieval",
+  general: "Локальное хранилище данных портала",
+  audit: "Состояние обработки, локальные сервисы и системные операции"
+};
 const LLM_EDITABLE_CONTROL_IDS = [
   "llm-enabled",
   "llm-provider",
@@ -861,6 +873,46 @@ function historyMonthLabel(value) {
   return label.slice(0, 1).toUpperCase() + label.slice(1);
 }
 
+// Свежие чаты группируем по дням, старые — по месяцам (как было).
+function historyDayDiff(date) {
+  const startOfDay = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  return Math.round((startOfDay(new Date()) - startOfDay(date)) / 86400000);
+}
+
+function historyGroupKey(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "unknown";
+  const days = historyDayDiff(date);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return "week";
+  return historyMonthKey(value);
+}
+
+function historyGroupLabel(value) {
+  const key = historyGroupKey(value);
+  if (key === "today") return "Сегодня";
+  if (key === "yesterday") return "Вчера";
+  if (key === "week") return "На этой неделе";
+  return historyMonthLabel(value);
+}
+
+// Короткая метка в строке чата: сегодня — время, эта неделя — день недели, дальше — дата.
+function historyStamp(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  const days = historyDayDiff(date);
+  if (days <= 0) return date.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  if (days === 1) return "вчера";
+  if (days < 7) return date.toLocaleDateString("ru-RU", { weekday: "short" });
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return date.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    ...(sameYear ? {} : { year: "2-digit" })
+  });
+}
+
 function createChatSession(sourceId = "") {
   const now = new Date().toISOString();
   return {
@@ -947,6 +999,33 @@ function loadChatHistory() {
   renderActiveChat();
 }
 
+function chatMatchesHistoryQuery(session, query) {
+  if (!query) return true;
+  const haystack = `${session.title || "Новый чат"} ${sourceTitle(session.sourceId)}`.toLocaleLowerCase("ru-RU");
+  return haystack.includes(query);
+}
+
+// Строка чата: чип проекта (договор/тендер) + время последнего обновления.
+function chatHistoryMetaNodes(session) {
+  const nodes = [];
+  const source = session.sourceId ? sourceById(session.sourceId) : null;
+  const chip = document.createElement("span");
+  chip.className = source
+    ? `chat-history-project ${isContractSource(source) ? "chat-history-project--contract" : "chat-history-project--tender"}`
+    : "chat-history-project chat-history-project--auto";
+  chip.textContent = source ? source.title : "Авто";
+  nodes.push(chip);
+
+  const stamp = historyStamp(session.updatedAt || session.createdAt);
+  if (stamp) {
+    const time = document.createElement("span");
+    time.className = "chat-history-time";
+    time.textContent = stamp;
+    nodes.push(time);
+  }
+  return nodes;
+}
+
 function renderChatHistory() {
   const list = $("#chat-history");
   if (!list) return;
@@ -954,25 +1033,31 @@ function renderChatHistory() {
 
   const archived = archivedChatSessions();
   const showingArchived = state.chatHistoryMode === "archived";
-  const sessions = showingArchived ? archived : visibleChatSessions();
+  const query = state.chatHistoryQuery.trim().toLocaleLowerCase("ru-RU");
+  const allSessions = showingArchived ? archived : visibleChatSessions();
+  const sessions = allSessions.filter((session) => chatMatchesHistoryQuery(session, query));
   const activeFilter = $("#history-filter-active");
   const archivedFilter = $("#history-filter-archived");
   if (activeFilter) activeFilter.setAttribute("aria-selected", String(!showingArchived));
   if (archivedFilter) archivedFilter.setAttribute("aria-selected", String(showingArchived));
   setText("#history-archive-count", archived.length ? `· ${archived.length}` : "");
   if (!sessions.length) {
-    list.innerHTML = `<div class="empty">${showingArchived ? "Архив пуст." : "Истории пока нет."}</div>`;
+    const emptyText = query
+      ? "Ничего не найдено."
+      : (showingArchived ? "Архив пуст." : "Истории пока нет.");
+    list.innerHTML = `<div class="empty">${emptyText}</div>`;
     return;
   }
 
-  let currentMonth = "";
+  let currentGroup = "";
   for (const session of sessions) {
-    const monthKey = historyMonthKey(session.updatedAt || session.createdAt);
-    if (monthKey !== currentMonth) {
-      currentMonth = monthKey;
+    const stampSource = session.updatedAt || session.createdAt;
+    const groupKey = historyGroupKey(stampSource);
+    if (groupKey !== currentGroup) {
+      currentGroup = groupKey;
       const month = document.createElement("div");
       month.className = "chat-history-month";
-      month.textContent = historyMonthLabel(session.updatedAt || session.createdAt);
+      month.textContent = historyGroupLabel(stampSource);
       list.append(month);
     }
 
@@ -993,10 +1078,13 @@ function renderChatHistory() {
         </div>
       </div>
     `;
+    const selectButton = item.querySelector(".chat-history-select");
+    const fullStamp = formatFullDateTime(stampSource);
+    if (fullStamp) selectButton.title = fullStamp;
     item.querySelector(".chat-history-title").textContent = session.title || "Новый чат";
-    item.querySelector(".chat-history-meta").textContent = sourceTitle(session.sourceId);
+    item.querySelector(".chat-history-meta").append(...chatHistoryMetaNodes(session));
     if (!showingArchived) {
-      item.querySelector(".chat-history-select").addEventListener("click", () => setActiveChat(session.id));
+      selectButton.addEventListener("click", () => setActiveChat(session.id));
       item.querySelector(".chat-history-archive").addEventListener("click", () => archiveChat(session.id));
     } else {
       item.querySelector(".chat-history-restore").addEventListener("click", () => restoreChat(session.id));
@@ -1004,6 +1092,33 @@ function renderChatHistory() {
     item.querySelector(".chat-history-delete").addEventListener("click", () => deleteChat(session.id));
     list.append(item);
   }
+}
+
+function setChatHistoryQuery(value) {
+  state.chatHistoryQuery = String(value || "");
+  renderChatHistory();
+}
+
+function applySidebarCollapsed() {
+  const toggle = $("#sidebar-collapse");
+  $(".app").classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+  if (toggle) {
+    toggle.textContent = state.sidebarCollapsed ? "»" : "«";
+    toggle.title = state.sidebarCollapsed ? "Развернуть панель" : "Свернуть панель";
+    toggle.setAttribute("aria-label", toggle.title);
+    toggle.setAttribute("aria-expanded", String(!state.sidebarCollapsed));
+  }
+}
+
+function setSidebarCollapsed(collapsed) {
+  state.sidebarCollapsed = Boolean(collapsed);
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, state.sidebarCollapsed ? "1" : "");
+  applySidebarCollapsed();
+}
+
+function loadSidebarCollapsed() {
+  state.sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  applySidebarCollapsed();
 }
 
 function activateNextVisibleChat() {
@@ -1223,6 +1338,7 @@ function setSettingsTab(tabName, options = {}) {
   });
   const settingsContent = $(".settings-content");
   if (settingsContent) settingsContent.scrollTop = 0;
+  setText("#settings-page-subtitle", SETTINGS_TAB_SUBTITLES[nextTabName] || "");
 
   const auditShortcut = $("#settings-audit-shortcut");
   if (auditShortcut) {
@@ -3596,6 +3712,12 @@ Object.assign(INDEXED_QUALITY_REASON_LABELS, {
   low_ocr_page_confidence: "низкая уверенность OCR на отдельных страницах",
   empty_ocr_pages: "пустые или почти пустые OCR-страницы",
   pdf_text_layer_noise: "текстовый слой PDF выглядит зашумленным",
+  ocr_text_noise: "OCR выдал зашумленный текст",
+  ocr_rejected_pages: "часть OCR-страниц отбракована по качеству",
+  no_usable_ocr_pages: "ни одна OCR-страница не прошла проверку качества",
+  ocr_failed_pages: "OCR упал на отдельных страницах",
+  chunks_skipped_for_quality: "фрагменты не сохранены из-за низкого качества",
+  conversion_error: "не удалось обработать файл",
   unsupported_google_context_link: "Google ссылка пока не поддерживается для индексации",
   unsupported_google_drive_file: "тип Google Drive файла пока не поддерживается",
   empty_google_context_export: "Google export не вернул текст",
@@ -3623,10 +3745,20 @@ function indexedQualityTooltip(file) {
   if (Number.isFinite(Number(file.quality?.chars))) stats.push(`символов: ${file.quality.chars}`);
   if (Number.isFinite(Number(file.quality?.words))) stats.push(`слов: ${file.quality.words}`);
   if (Number.isFinite(Number(file.chunks))) stats.push(`фрагментов: ${file.chunks}`);
+
+  const recognition = file.recognition || {};
+  const details = [];
+  if (recognition.errorMessage) details.push(`Ошибка: ${recognition.errorMessage}`);
+  if (recognition.externalConverterError) details.push(`Конвертер: ${recognition.externalConverterError}`);
+  for (const pageError of (recognition.ocrPageErrors || []).slice(0, 3)) {
+    details.push(`OCR стр. ${pageError.page}: ${pageError.message}`);
+  }
+
   return [
     file.relativePath || file.path,
     indexedQualityLabel(file),
     reasons.length ? `Причина: ${reasons.join("; ")}` : "",
+    ...details,
     stats.length ? stats.join(", ") : ""
   ].filter(Boolean).join("\n");
 }
@@ -3771,20 +3903,54 @@ function showIndexedFileMenu(event, file) {
   showIndexedFileMenuAt(file, event.clientX, event.clientY);
 }
 
+function hasOcrSignal(recognition = {}) {
+  return Number(recognition.ocrTotalPages) > 0
+    || Number(recognition.ocrPages) > 0
+    || Array.isArray(recognition.ocrPageStats)
+    || Number.isFinite(Number(recognition.ocrConfidence));
+}
+
+// Page counts must distinguish "recognized" from "accepted": a file where every page was OCR'd
+// but rejected by the quality gate used to render as a healthy "OCR 30/30".
+function ocrStatsLabel(recognition = {}) {
+  const total = Number(recognition.ocrTotalPages) || Number(recognition.ocrPages) || 0;
+  const raw = Number(recognition.ocrRawRecognizedPages);
+  const accepted = Number(recognition.ocrAcceptedPages ?? recognition.ocrRecognizedPages);
+  const parts = [];
+
+  if (total) parts.push(`${total} стр.`);
+  if (Number.isFinite(raw) && Number.isFinite(accepted) && raw !== accepted) {
+    parts.push(`распознано ${raw}, принято ${accepted}`);
+  } else if (Number.isFinite(accepted)) {
+    parts.push(`принято ${accepted}`);
+  }
+  if (Number.isFinite(Number(recognition.ocrConfidence))) parts.push(`сред. ${Math.round(Number(recognition.ocrConfidence))}%`);
+  if (Number.isFinite(Number(recognition.ocrConfidenceP10))) parts.push(`10% стр. до ${Math.round(Number(recognition.ocrConfidenceP10))}%`);
+
+  const failed = Array.isArray(recognition.ocrFailedPages) ? recognition.ocrFailedPages.length : 0;
+  if (failed) parts.push(`ошибок стр.: ${failed}`);
+
+  const cachedPages = Number(recognition.ocrCachedPages);
+  if (Number.isFinite(cachedPages) && cachedPages > 0) parts.push(`кэш ${cachedPages}`);
+  if (recognition.pdfOcrMode && recognition.pdfOcrMode !== "auto") parts.push(recognition.pdfOcrMode);
+  if (recognition.ocrLimited) parts.push("лимит");
+
+  return parts.join(", ");
+}
+
 function indexedRecognitionLabel(file) {
   const recognition = file.recognition || {};
   if (["ocr", "ocr-cache", "ocrmypdf"].includes(recognition.method)) {
-    const pages = recognition.ocrTotalPages
-      ? `${recognition.ocrPages || recognition.ocrRecognizedPages || 0}/${recognition.ocrTotalPages}`
-      : `${recognition.ocrPages || recognition.ocrRecognizedPages || 0}`;
-    const confidence = Number.isFinite(Number(recognition.ocrConfidence)) ? `, сред. ${Math.round(Number(recognition.ocrConfidence))}%` : "";
-    const p10 = Number.isFinite(Number(recognition.ocrConfidenceP10)) ? `, 10% стр. до ${Math.round(Number(recognition.ocrConfidenceP10))}%` : "";
-    const mode = recognition.pdfOcrMode && recognition.pdfOcrMode !== "auto" ? `, ${recognition.pdfOcrMode}` : "";
-    const cachedPages = Number(recognition.ocrCachedPages);
-    const cache = Number.isFinite(cachedPages) && cachedPages > 0 ? `, кэш ${cachedPages}` : "";
-    const limited = recognition.ocrLimited ? ", лимит" : "";
-    return `${recognition.method === "ocrmypdf" ? "OCRmyPDF" : "OCR"} ${pages}${confidence}${p10}${mode}${cache}${limited}`;
+    const engine = recognition.method === "ocrmypdf" ? "OCRmyPDF" : "OCR";
+    const stats = ocrStatsLabel(recognition);
+    return stats ? `${engine} ${stats}` : engine;
   }
+  if (recognition.method === "pdf-empty") {
+    // The OCR diagnostics still exist here — showing "PDF пустой" alone hides why it is empty.
+    const stats = hasOcrSignal(recognition) ? ocrStatsLabel(recognition) : "";
+    return stats ? `PDF без текста · OCR ${stats}` : "PDF пустой";
+  }
+  if (recognition.method === "conversion-error") return "ошибка обработки";
   if (recognition.method === "pdf-text") return "PDF текст";
   if (recognition.method === "docling") return "Docling";
   if (recognition.method === "docx") return "DOCX";
@@ -3792,7 +3958,6 @@ function indexedRecognitionLabel(file) {
   if (recognition.method === "xlsm") return "XLSM";
   if (recognition.method === "xls") return "XLS";
   if (recognition.method === "text") return "текст";
-  if (recognition.method === "pdf-empty") return "PDF пустой";
   if (recognition.method === "google-doc") return "Google Doc";
   if (recognition.method === "google-sheet") return "Google Sheet";
   if (recognition.method === "google-context-error") return "Google context";
@@ -6620,13 +6785,34 @@ function skippedStats(job) {
   return parts.join(", ");
 }
 
+function fileNameFromPath(value = "") {
+  return String(value || "").split(/[\\/]/).pop() || String(value || "");
+}
+
+// Without this the UI reports only a failure count and the actual reason stays in the job object.
+function formatJobErrors(job, limit = 2) {
+  const errors = Array.isArray(job.errors) ? job.errors : [];
+  if (!errors.length) return "";
+
+  const shown = errors.slice(0, limit)
+    .map((error) => `${fileNameFromPath(error.path)}: ${error.message}`)
+    .join("; ");
+  const total = Number(job.errorsTotal) || errors.length;
+  const rest = total - Math.min(limit, errors.length);
+  return rest > 0 ? `${shown}; и еще ${rest}` : shown;
+}
+
 function formatJobStatus(job) {
   const total = job.total || 0;
   const processed = job.processed || 0;
   const totalFiles = job.totalFiles || 0;
 
   if (job.status === "completed") {
-    return job.failed ? `Готово, есть ошибки: ${job.failed}` : "";
+    if (!job.failed) return "";
+    const details = formatJobErrors(job);
+    return details
+      ? `Готово, есть ошибки: ${job.failed}. ${details}`
+      : `Готово, есть ошибки: ${job.failed}`;
   }
 
   if (job.status === "cancelled") {
@@ -7936,6 +8122,8 @@ $("#audit-open-link")?.addEventListener("click", (event) => {
 });
 $("#history-filter-active")?.addEventListener("click", () => setChatHistoryMode("active"));
 $("#history-filter-archived")?.addEventListener("click", () => setChatHistoryMode("archived"));
+$("#history-search")?.addEventListener("input", (event) => setChatHistoryQuery(event.target.value));
+$("#sidebar-collapse")?.addEventListener("click", () => setSidebarCollapsed(!state.sidebarCollapsed));
 $("#portal-stop-button")?.addEventListener("click", openPortalStopConfirmation);
 $("#portal-stop-close")?.addEventListener("click", () => closePortalStopConfirmation());
 $("#portal-stop-cancel")?.addEventListener("click", () => closePortalStopConfirmation());
@@ -8062,6 +8250,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function init() {
+  loadSidebarCollapsed();
   await Promise.all([loadSettings(), loadSources()]);
   await refreshDifyStatus();
   await refreshAgentStatus({ silent: true });

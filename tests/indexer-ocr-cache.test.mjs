@@ -34,6 +34,25 @@ test("ocrCacheNeedsRefresh ignores complete or disabled OCR cache", () => {
 test("shouldSuppressChunksForQuality rejects recognition-noise chunks", () => {
   assert.equal(shouldSuppressChunksForQuality({ warnings: ["ocr_text_noise"] }), true);
   assert.equal(shouldSuppressChunksForQuality({ warnings: ["pdf_text_layer_noise"] }), true);
-  assert.equal(shouldSuppressChunksForQuality({ warnings: ["no_usable_ocr_pages"] }), true);
   assert.equal(shouldSuppressChunksForQuality({ warnings: ["low_ocr_confidence"] }), false);
+});
+
+test("shouldSuppressChunksForQuality keeps salvaged OCR text searchable", () => {
+  assert.equal(shouldSuppressChunksForQuality({ warnings: ["no_usable_ocr_pages"] }), false);
+});
+
+test("ocrCacheNeedsRefresh invalidates OCR cache rendered at another scale", () => {
+  const markdown = "## OCR page 1\n\nтекст";
+  const scaleThree = { builtinOcr: { enabled: true, maxPages: 0, scale: 3 } };
+
+  assert.equal(ocrCacheNeedsRefresh(markdown, scaleThree, { recognition_scale: 2 }), true);
+  assert.equal(ocrCacheNeedsRefresh(markdown, scaleThree, { recognition_scale: 3 }), false);
+  // Caches written before the scale was recorded carry no marker and must be redone.
+  assert.equal(ocrCacheNeedsRefresh(markdown, scaleThree, {}), true);
+});
+
+test("ocrCacheNeedsRefresh ignores scale for non-OCR cache", () => {
+  const scaleThree = { builtinOcr: { enabled: true, maxPages: 0, scale: 3 } };
+
+  assert.equal(ocrCacheNeedsRefresh("обычный текст из DOCX", scaleThree, {}), false);
 });

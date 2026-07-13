@@ -336,6 +336,17 @@ function optionalNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+const MAX_PUBLIC_JOB_ERRORS = 50;
+
+// The job object is polled, so the error list is capped; errorsTotal keeps the real count.
+function publicJobErrors(job) {
+  if (!Array.isArray(job?.errors)) return [];
+  return job.errors.slice(0, MAX_PUBLIC_JOB_ERRORS).map((error) => ({
+    path: String(error?.path || ""),
+    message: String(error?.message || "")
+  }));
+}
+
 function publicJobStatus(job) {
   const rawJob = job;
   job = normalizePublicJob(job);
@@ -382,6 +393,8 @@ function publicJobStatus(job) {
     qdrantError: job.qdrantError || "",
     warning: job.warning || "",
     failed: job.failed || 0,
+    errors: publicJobErrors(job),
+    errorsTotal: Array.isArray(job.errors) ? job.errors.length : 0,
     skippedTotal,
     unsupportedFiles: job.unsupportedFiles || 0,
     temporaryFiles: job.temporaryFiles || 0,

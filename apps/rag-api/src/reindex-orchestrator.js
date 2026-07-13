@@ -16,6 +16,7 @@ const RETRYABLE_WARNINGS = new Set([
   "empty_ocr_pages",
   "ocr_rejected_pages",
   "no_usable_ocr_pages",
+  "ocr_failed_pages",
   "chunks_skipped_for_quality"
 ]);
 

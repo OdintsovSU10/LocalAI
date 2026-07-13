@@ -10,7 +10,13 @@ const previousOcrMaxPages = process.env.RAG_OCR_MAX_PAGES;
 process.env.DOTENV_CONFIG_PATH = path.join(os.tmpdir(), `localai-converters-test-${process.pid}.env`);
 delete process.env.RAG_OCR_MAX_PAGES;
 
-const { converterStatus, convertToMarkdownWithReport, textQualityReport } = await import("../apps/rag-api/src/converters.js?converters-test");
+const {
+  converterStatus,
+  convertToMarkdownWithReport,
+  textQualityReport,
+  usableOcrPage,
+  usablePdfTextLayer
+} = await import("../apps/rag-api/src/converters.js?converters-test");
 
 if (previousDotenvConfigPath === undefined) delete process.env.DOTENV_CONFIG_PATH;
 else process.env.DOTENV_CONFIG_PATH = previousDotenvConfigPath;
@@ -38,6 +44,19 @@ test("textQualityReport accepts dense readable text", () => {
   assert.deepEqual(strong.warnings, []);
   assert.equal(strong.score, 100);
   assert.equal(strong.words >= 10, true);
+});
+
+test("usableOcrPage rejects unreadable pages and keeps decent ones", () => {
+  assert.equal(usableOcrPage({ chars: 10, words: 2, confidence: 90, warnings: [] }), false);
+  assert.equal(usableOcrPage({ chars: 400, words: 60, confidence: 12, warnings: [] }), false);
+  assert.equal(usableOcrPage({ chars: 400, words: 60, confidence: 80, warnings: ["ocr_text_noise"] }), false);
+  assert.equal(usableOcrPage({ chars: 400, words: 60, confidence: 80, warnings: [] }), true);
+});
+
+test("usablePdfTextLayer rejects a noisy text layer so OCR runs", () => {
+  const noisy = textQualityReport("pa60ma pa3pa6oTaHHO HaCTpoeHHO coBMeCTHO npoBepKa o6si 3aKa3a HaCTpouKa");
+
+  assert.equal(usablePdfTextLayer(noisy), false);
 });
 
 test("textQualityReport flags OCR-like confusable text", () => {

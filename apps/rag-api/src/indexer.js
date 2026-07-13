@@ -256,18 +256,25 @@ export async function scanSkippedFiles(source) {
   };
 }
 
-function frontMatter(source, filePath, stat) {
-  return [
+function frontMatter(source, filePath, stat, recognition = null) {
+  const lines = [
     "---",
     `source_id: ${JSON.stringify(source.id)}`,
     `source_title: ${JSON.stringify(source.title)}`,
     `source_path: ${JSON.stringify(filePath)}`,
     `source_mtime: ${JSON.stringify(stat.mtime.toISOString())}`,
     `source_size: ${stat.size}`,
-    `indexed_at: ${JSON.stringify(new Date().toISOString())}`,
-    "---",
-    ""
-  ].join("\n");
+    `indexed_at: ${JSON.stringify(new Date().toISOString())}`
+  ];
+
+  // Recorded so ocrCacheNeedsRefresh() can tell that a cached markdown was produced
+  // with a different OCR configuration (e.g. a lower render scale) and must be redone.
+  if (recognition?.method) lines.push(`recognition_method: ${JSON.stringify(String(recognition.method))}`);
+  if (Number.isFinite(Number(recognition?.ocrScale))) lines.push(`recognition_scale: ${Number(recognition.ocrScale)}`);
+  if (recognition?.ocrLangs) lines.push(`recognition_langs: ${JSON.stringify(String(recognition.ocrLangs))}`);
+
+  lines.push("---", "");
+  return lines.join("\n");
 }
 
 function stripFrontMatter(markdown) {
@@ -300,9 +307,20 @@ function cacheMatchesFile(metadata, filePath, stat) {
     && Number(metadata?.source_size) === stat.size;
 }
 
-export function ocrCacheNeedsRefresh(markdown, status = converterStatus()) {
-  const limitMatch = String(markdown || "").match(/Recognized\s+(\d+)\s+of\s+(\d+)\s+pages/i);
-  if (!limitMatch || !status?.builtinOcr?.enabled) return false;
+export function ocrCacheNeedsRefresh(markdown, status = converterStatus(), cacheMetadata = {}) {
+  const text = String(markdown || "");
+  if (!status?.builtinOcr?.enabled) return false;
+
+  // A cache produced at a different render scale is stale: re-OCR it at the current one.
+  // Caches written before the scale was recorded carry no marker, so they are stale too.
+  if (text.includes("## OCR page ")) {
+    const currentScale = Number(status.builtinOcr.scale);
+    const cachedScale = Number(cacheMetadata?.recognition_scale);
+    if (Number.isFinite(currentScale) && cachedScale !== currentScale) return true;
+  }
+
+  const limitMatch = text.match(/Recognized\s+(\d+)\s+of\s+(\d+)\s+pages/i);
+  if (!limitMatch) return false;
 
   const cachedPages = Number(limitMatch[1]);
   const totalPages = Number(limitMatch[2]);
@@ -375,6 +393,65 @@ function googleContextFailureQuality(reason) {
     ...quality,
     status: "error",
     warnings: [...new Set([...(quality.warnings || []), reason].filter(Boolean))]
+  };
+}
+
+function conversionFailureQuality(reason) {
+  const quality = verifyIndexedMarkdown("", [], { method: "conversion-error" });
+  return {
+    ...quality,
+    status: "error",
+    chunks: 0,
+    warnings: [...new Set([...(quality.warnings || []), reason].filter(Boolean))]
+  };
+}
+
+// A file whose conversion threw gets a manifest entry anyway. Without one the prune loop
+// keeps the previous run's entry (fileId is already in seenFileIds) while its chunks are
+// gone — the file then looks indexed but is unsearchable, and the UI shows no reason at all.
+async function conversionFailureEntry({ source, fileId, filePath, existing, error }) {
+  const message = String(error?.message || error || "Не удалось обработать файл");
+  const recognition = {
+    method: "conversion-error",
+    documentType: documentTypeForPath(filePath),
+    chars: 0,
+    errorMessage: message
+  };
+
+  let relativePath = filePath;
+  try {
+    relativePath = indexedRelativePathForFile(source, filePath);
+  } catch {
+    relativePath = existing?.relativePath || filePath;
+  }
+
+  // The stat may itself be what failed (locked or deleted file).
+  let stat = null;
+  try {
+    stat = await fs.stat(filePath);
+  } catch {
+    stat = null;
+  }
+
+  // Drop the stale markdown cache: otherwise the next run sees matching mtime/size plus old
+  // markdown, treats the file as unchanged, and silently resurrects the previous success.
+  await removeMarkdownCacheFile(path.join(markdownCacheDir(), source.id, `${fileId}.md`));
+  if (existing?.cacheFile) await removeMarkdownCacheFile(existing.cacheFile);
+
+  return {
+    fileId,
+    sourceId: source.id,
+    sourceTitle: source.title,
+    path: filePath,
+    relativePath,
+    title: path.basename(filePath),
+    extension: path.extname(filePath).toLowerCase() || "",
+    cacheFile: "",
+    mtimeMs: stat?.mtimeMs ?? existing?.mtimeMs ?? 0,
+    size: stat?.size ?? existing?.size ?? 0,
+    indexedAt: new Date().toISOString(),
+    recognition,
+    quality: conversionFailureQuality("conversion_error")
   };
 }
 
@@ -511,6 +588,10 @@ function verifyIndexedMarkdown(markdown, chunks, recognition = {}) {
   if (Number(recognition.ocrAcceptedPages) === 0 && Number(recognition.ocrRawRecognizedPages) > 0) {
     warnings.push("no_usable_ocr_pages");
   }
+  if (Array.isArray(recognition.ocrFailedPages) && recognition.ocrFailedPages.length) {
+    warnings.push("ocr_failed_pages");
+  }
+  if (recognition.method === "conversion-error") warnings.push("conversion_error");
   if (recognition.selectedPdfText === "text-layer" && recognition.textLayerQuality?.warnings?.includes("encoding_noise")) {
     warnings.push("pdf_text_layer_noise");
   }
@@ -529,6 +610,7 @@ function verifyIndexedMarkdown(markdown, chunks, recognition = {}) {
   if (uniqueWarnings.includes("empty_ocr_pages")) score -= 10;
   if (uniqueWarnings.includes("ocr_rejected_pages")) score -= 15;
   if (uniqueWarnings.includes("no_usable_ocr_pages")) score -= 35;
+  if (uniqueWarnings.includes("ocr_failed_pages")) score -= 20;
   if (uniqueWarnings.includes("pdf_text_layer_noise")) score -= 20;
   if (uniqueWarnings.includes("ocr_text_noise")) score -= 35;
   if (uniqueWarnings.includes("low_text_density")) score -= 20;
@@ -553,7 +635,9 @@ function verifyIndexedMarkdown(markdown, chunks, recognition = {}) {
 
 export function shouldSuppressChunksForQuality(quality = {}) {
   const warnings = new Set(Array.isArray(quality.warnings) ? quality.warnings : []);
-  return warnings.has("ocr_text_noise") || warnings.has("pdf_text_layer_noise") || warnings.has("no_usable_ocr_pages");
+  // no_usable_ocr_pages is deliberately absent: the OCR text is salvaged and kept searchable
+  // (see ocrPdfToMarkdown), because an unsearchable file is worse than a noisy one.
+  return warnings.has("ocr_text_noise") || warnings.has("pdf_text_layer_noise");
 }
 
 function suppressChunksForQuality(chunks, quality) {
@@ -656,7 +740,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
       const unchanged = !force
         && sourceCacheFile
         && cachedMarkdown.trim()
-        && !ocrCacheNeedsRefresh(cachedMarkdown)
+        && !ocrCacheNeedsRefresh(cachedMarkdown, converterStatus(), cacheMetadata)
         && (
           (existing && existing.mtimeMs === stat.mtimeMs && existing.size === stat.size)
           || cacheMatchesFile(cacheMetadata, filePath, stat)
@@ -683,6 +767,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
           ...scanStats
         });
         const converted = await convertToMarkdownWithReport(filePath, {
+          signal,
           onProgress: (progress) => onProgress({
             ...progress,
             processed,
@@ -698,7 +783,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
         markdown = converted.markdown;
         recognition = inferRecognition(filePath, markdown, converted.recognition);
         await fs.mkdir(path.dirname(cacheFile), { recursive: true });
-        await fs.writeFile(cacheFile, `${frontMatter(source, filePath, stat)}${markdown}\n`, "utf8");
+        await fs.writeFile(cacheFile, `${frontMatter(source, filePath, stat, recognition)}${markdown}\n`, "utf8");
 
         manifestEntry = {
           fileId,
@@ -755,6 +840,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
           });
           const converted = await convertToMarkdownWithReport(filePath, {
             refreshRecognitionCache: true,
+            signal,
             onProgress: (progress) => onProgress({
               ...progress,
               processed,
@@ -775,7 +861,7 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
           markdown = converted.markdown;
           recognition = inferRecognition(filePath, markdown, converted.recognition);
           await fs.mkdir(path.dirname(cacheFile), { recursive: true });
-          await fs.writeFile(cacheFile, `${frontMatter(source, filePath, stat)}${markdown}\n`, "utf8");
+          await fs.writeFile(cacheFile, `${frontMatter(source, filePath, stat, recognition)}${markdown}\n`, "utf8");
           manifestEntry = {
             fileId,
             sourceId: source.id,
@@ -861,6 +947,19 @@ async function indexSourceUnlocked(source, onProgress = () => {}, options = {}) 
       if (isAbortError(error, signal)) throw error;
       failed += 1;
       errors.push({ path: filePath, message: error.message });
+
+      try {
+        manifest.files[fileId] = await conversionFailureEntry({
+          source,
+          fileId,
+          filePath,
+          existing: manifest.files[fileId],
+          error
+        });
+        await persistPartialManifest();
+      } catch (entryError) {
+        errors.push({ path: filePath, message: `Не удалось записать отказ в манифест: ${entryError.message}` });
+      }
     }
 
     onProgress({

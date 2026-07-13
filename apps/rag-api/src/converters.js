@@ -18,7 +18,7 @@ const PDF_TEXT_MIN_CHARS = numberFromEnv("RAG_PDF_TEXT_MIN_CHARS", 120, { min: 0
 const TEXT_NOISE_RATIO = numberFromEnv("RAG_TEXT_NOISE_RATIO", 0.08, { min: 0, max: 1 });
 const TEXT_NOISE_MIN_TOKENS = numberFromEnv("RAG_TEXT_NOISE_MIN_TOKENS", 3, { min: 1, max: 1000 });
 const OCR_MAX_PAGES = numberFromEnv("RAG_OCR_MAX_PAGES", 0, { min: 0, max: 10000 });
-const OCR_SCALE = numberFromEnv("RAG_OCR_SCALE", 2, { min: 1, max: 4 });
+const OCR_SCALE = numberFromEnv("RAG_OCR_SCALE", 3, { min: 1, max: 6 });
 const OCR_LANGS = process.env.RAG_OCR_LANGS || "rus+eng";
 const OCR_CACHE_DIR = process.env.RAG_OCR_CACHE_DIR || path.join(dataDir(), "ocr-cache");
 const OCR_ENABLED = !["0", "false", "off", "no"].includes(String(process.env.RAG_OCR_ENABLED || "1").toLowerCase());
@@ -31,7 +31,9 @@ const DOCLING_TIMEOUT_SECONDS = numberFromEnv("RAG_DOCLING_TIMEOUT_SECONDS", 300
 const OCRMYPDF_ENABLED = PDF_CONVERTER === "ocrmypdf" || envFlag("RAG_OCRMYPDF_ENABLED", false);
 const OCRMYPDF_COMMAND = process.env.RAG_OCRMYPDF_COMMAND || "ocrmypdf";
 const OCRMYPDF_CACHE_DIR = process.env.RAG_OCRMYPDF_CACHE_DIR || path.join(dataDir(), "ocrmypdf-cache");
-const OCRMYPDF_TIMEOUT_SECONDS = numberFromEnv("RAG_OCRMYPDF_TIMEOUT_SECONDS", 300, { min: 15, max: 3600 });
+const OCRMYPDF_TIMEOUT_SECONDS = numberFromEnv("RAG_OCRMYPDF_TIMEOUT_SECONDS", 1200, { min: 15, max: 3600 });
+const OCR_MAX_CONSECUTIVE_PAGE_FAILURES = 3;
+const OCR_MAX_PAGE_ERRORS = 10;
 let ocrWorkerPromise = null;
 const execFileAsync = promisify(execFile);
 
@@ -99,6 +101,13 @@ function reportProgress(options, progress) {
   if (typeof options?.onProgress === "function") options.onProgress(progress);
 }
 
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error("Индексация остановлена");
+  error.name = "AbortError";
+  throw error;
+}
+
 function average(values) {
   const numbers = values.map(Number).filter(Number.isFinite);
   if (!numbers.length) return null;
@@ -122,7 +131,7 @@ const LATIN_RE = /\p{Script=Latin}/u;
 const CYRILLIC_RE = /\p{Script=Cyrillic}/u;
 const DIGIT_RE = /\p{N}/u;
 
-function recognitionNoiseReport(text) {
+export function recognitionNoiseReport(text) {
   const tokens = Array.from(String(text || "").matchAll(WORD_TOKEN_RE), (match) => match[0]);
   let letterTokens = 0;
   let mixedScriptTokens = 0;
@@ -193,7 +202,7 @@ export function textQualityReport(markdown, options = {}) {
   };
 }
 
-function usablePdfTextLayer(report) {
+export function usablePdfTextLayer(report) {
   return Number(report?.chars || 0) >= PDF_TEXT_MIN_CHARS
     && Number(report?.words || 0) >= 10
     && Number(report?.score || 0) >= 70
@@ -201,7 +210,7 @@ function usablePdfTextLayer(report) {
     && !report?.warnings?.includes("ocr_text_noise");
 }
 
-function ocrPageReport(pageNumber, text, confidence) {
+export function ocrPageReport(pageNumber, text, confidence) {
   const quality = textQualityReport(text, { minChars: 20, minWords: 3 });
   const roundedConfidence = Number.isFinite(Number(confidence)) ? Math.round(Number(confidence)) : null;
   const warnings = [...quality.warnings];
@@ -219,7 +228,7 @@ function ocrPageReport(pageNumber, text, confidence) {
   };
 }
 
-function usableOcrPage(page) {
+export function usableOcrPage(page) {
   const warnings = new Set(page?.warnings || []);
   const confidence = Number(page?.confidence);
   if (Number(page?.chars || 0) < 20 || Number(page?.words || 0) < 3) return false;
@@ -314,7 +323,9 @@ async function convertPdfWithDocling(filePath, options = {}) {
 async function convertPdfWithOcrmypdf(filePath, options = {}) {
   reportProgress(options, { phase: "ocr", message: `OCRmyPDF: ${path.basename(filePath)}` });
   await fs.mkdir(OCRMYPDF_CACHE_DIR, { recursive: true });
-  const cacheKey = await fileCacheKey(filePath, "ocrmypdf");
+  // The text-layer verdict is part of the key: --force-ocr and --skip-text produce different output.
+  const textMode = options.forceOcr ? "force" : "skip";
+  const cacheKey = await fileCacheKey(filePath, `ocrmypdf:${textMode}`);
   const outputPath = path.join(OCRMYPDF_CACHE_DIR, `${cacheKey}.pdf`);
 
   if (options.refreshRecognitionCache) {
@@ -324,17 +335,27 @@ async function convertPdfWithOcrmypdf(filePath, options = {}) {
   try {
     await fs.access(outputPath);
   } catch {
-    await execFileAsync(OCRMYPDF_COMMAND, [
-      "-l",
-      OCR_LANGS,
-      "--skip-text",
-      filePath,
-      outputPath
-    ], {
-      timeout: OCRMYPDF_TIMEOUT_SECONDS * 1000,
-      windowsHide: true,
-      maxBuffer: 20 * 1024 * 1024
-    });
+    // Write to a temp file and rename: a killed run must not leave a truncated PDF
+    // behind that later runs would treat as a valid cache hit.
+    const tempPath = `${outputPath}.tmp`;
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    try {
+      await execFileAsync(OCRMYPDF_COMMAND, [
+        "-l",
+        OCR_LANGS,
+        options.forceOcr ? "--force-ocr" : "--skip-text",
+        filePath,
+        tempPath
+      ], {
+        timeout: OCRMYPDF_TIMEOUT_SECONDS * 1000,
+        windowsHide: true,
+        maxBuffer: 20 * 1024 * 1024
+      });
+      await fs.rename(tempPath, outputPath);
+    } catch (error) {
+      await fs.rm(tempPath, { force: true }).catch(() => {});
+      throw error;
+    }
   }
 
   const extracted = await extractPdfText(outputPath);
@@ -343,6 +364,7 @@ async function convertPdfWithOcrmypdf(filePath, options = {}) {
     recognition: recognitionReport("ocrmypdf", extracted.text, {
       ocrmypdfEnabled: true,
       ocrmypdfCommand: OCRMYPDF_COMMAND,
+      ocrmypdfTextMode: textMode,
       ocrLangs: OCR_LANGS,
       pdfPages: extracted.pages,
       ocrmypdfOutput: outputPath
@@ -354,9 +376,25 @@ async function getOcrWorker(options = {}) {
   if (!ocrWorkerPromise) {
     reportProgress(options, { phase: "ocr", message: "OCR: loading recognition model" });
     await fs.mkdir(OCR_CACHE_DIR, { recursive: true });
-    ocrWorkerPromise = createWorker(OCR_LANGS, 1, { cachePath: OCR_CACHE_DIR });
+    // A rejected promise must not stay cached: otherwise one failed init breaks OCR
+    // for every later file until the process restarts.
+    ocrWorkerPromise = createWorker(OCR_LANGS, 1, { cachePath: OCR_CACHE_DIR }).catch((error) => {
+      ocrWorkerPromise = null;
+      throw error;
+    });
   }
   return ocrWorkerPromise;
+}
+
+async function releaseOcrWorker() {
+  const pending = ocrWorkerPromise;
+  ocrWorkerPromise = null;
+  if (!pending) return;
+  await pending.then((worker) => worker?.terminate?.()).catch(() => {});
+}
+
+export async function terminateOcrWorker() {
+  await releaseOcrWorker();
 }
 
 function columnName(index) {
@@ -513,8 +551,12 @@ async function ocrPdfToMarkdown(filePath, options = {}) {
     let worker = null;
     const parts = [];
     const pages = [];
+    const pageTexts = new Map();
+    const pageErrors = [];
+    let consecutiveFailures = 0;
 
     for (let pageNumber = 1; pageNumber <= pageLimit; pageNumber += 1) {
+      throwIfAborted(options.signal);
       const pageCachePath = path.join(pageCacheDir, `${pageNumber}.json`);
       let cachedPage = null;
       try {
@@ -538,38 +580,81 @@ async function ocrPdfToMarkdown(filePath, options = {}) {
       let cached = useCachedPage;
 
       if (!useCachedPage) {
-        worker ||= await getOcrWorker(options);
-        const image = await document.getPage(pageNumber);
-        const result = await worker.recognize(image);
-        text = normalizeText(result?.data?.text || "");
-        confidence = Number(result?.data?.confidence);
-        cached = false;
-        await fs.writeFile(pageCachePath, JSON.stringify({
-          page: pageNumber,
-          text,
-          confidence: Number.isFinite(confidence) ? Math.round(confidence) : null,
-          recognizedAt: new Date().toISOString()
-        }, null, 2), "utf8").catch(() => {});
+        try {
+          worker ||= await getOcrWorker(options);
+          const image = await document.getPage(pageNumber);
+          const result = await worker.recognize(image);
+          text = normalizeText(result?.data?.text || "");
+          confidence = Number(result?.data?.confidence);
+          cached = false;
+          consecutiveFailures = 0;
+          await fs.writeFile(pageCachePath, JSON.stringify({
+            page: pageNumber,
+            text,
+            confidence: Number.isFinite(confidence) ? Math.round(confidence) : null,
+            recognizedAt: new Date().toISOString()
+          }, null, 2), "utf8").catch(() => {});
+        } catch (error) {
+          if (error?.name === "AbortError") throw error;
+          consecutiveFailures += 1;
+          // The worker may be dead; drop it so the next page rebuilds it.
+          worker = null;
+          await releaseOcrWorker();
+
+          const message = String(error?.message || error || "OCR page failed");
+          if (pageErrors.length < OCR_MAX_PAGE_ERRORS) pageErrors.push({ page: pageNumber, message });
+          pages.push({
+            page: pageNumber,
+            chars: 0,
+            words: 0,
+            confidence: null,
+            warnings: ["ocr_page_failed"],
+            cached: false,
+            failed: true,
+            usable: false,
+            error: message
+          });
+
+          if (consecutiveFailures >= OCR_MAX_CONSECUTIVE_PAGE_FAILURES) {
+            throw new Error(`OCR failed on ${consecutiveFailures} consecutive pages (last: page ${pageNumber}): ${message}`);
+          }
+          continue;
+        }
       }
 
       const pageReport = { ...ocrPageReport(pageNumber, text, confidence), cached };
       pageReport.usable = usableOcrPage(pageReport);
       pages.push(pageReport);
+      pageTexts.set(pageNumber, text);
       if (text && pageReport.usable) parts.push(`## OCR page ${pageNumber}\n\n${text}`);
+    }
+
+    const acceptedPages = pages.filter((page) => page.usable && page.chars > 0);
+    const rejectedPages = pages.filter((page) => !page.usable && page.chars > 0);
+
+    // Every page was rejected by the quality gate, yet OCR did produce text. Keeping the
+    // low-quality text searchable beats reporting the file as an empty PDF and dropping it.
+    const salvaged = !acceptedPages.length && rejectedPages.length > 0;
+    if (salvaged) {
+      for (const page of rejectedPages) {
+        const text = pageTexts.get(page.page);
+        // The heading must stay exactly "## OCR page N": metadataForMarkdownPart anchors on it
+        // to attach page numbers to chunks, which is what makes citations point at a page.
+        if (text) parts.push(`## OCR page ${page.page}\n\n_Низкое качество распознавания._\n\n${text}`);
+      }
     }
 
     if (totalPages > pageLimit) {
       parts.push(`## OCR status\n\nRecognized ${pageLimit} of ${totalPages} pages. Set RAG_OCR_MAX_PAGES=0 to OCR all pages. Cached page OCR is reused on force reindex.`);
     }
 
-    const acceptedPages = pages.filter((page) => page.usable && page.chars > 0);
-    const rejectedPages = pages.filter((page) => !page.usable && page.chars > 0);
     const markdown = normalizeText(parts.join("\n\n"));
     return {
       markdown,
       recognition: {
         ocrEnabled: true,
         ocrLangs: OCR_LANGS,
+        ocrScale: OCR_SCALE,
         ocrPages: pageLimit,
         ocrTotalPages: totalPages,
         ocrRecognizedPages: acceptedPages.length,
@@ -589,6 +674,9 @@ async function ocrPdfToMarkdown(filePath, options = {}) {
         ocrEmptyPages: pages
           .filter((page) => page.chars < 20)
           .map((page) => page.page),
+        ocrFailedPages: pages.filter((page) => page.failed).map((page) => page.page),
+        ocrPageErrors: pageErrors,
+        ocrSalvagedPages: salvaged ? rejectedPages.map((page) => page.page) : [],
         ocrPageStats: pages
       }
     };
@@ -664,21 +752,27 @@ function choosePdfResult(textResult, ocrResult) {
   };
 }
 
-async function runPdfOcr(filePath, text, options, externalError) {
-  if (OCRMYPDF_ENABLED || PDF_CONVERTER === "auto" || PDF_CONVERTER === "ocrmypdf") {
+async function runPdfOcr(filePath, text, options, externalError, forceOcr = false) {
+  if (OCRMYPDF_ENABLED || PDF_CONVERTER === "auto") {
     try {
-      const ocrmypdf = await convertPdfWithOcrmypdf(filePath, options);
-      if (ocrmypdf.markdown.length >= Math.max(PDF_TEXT_MIN_CHARS, text.length) || PDF_CONVERTER === "ocrmypdf" || PDF_OCR_MODE !== "auto") {
-        return {
-          result: pdfOcrResult("ocrmypdf", text, ocrmypdf.markdown, ocrmypdf.recognition, externalError),
-          externalError
-        };
+      const ocrmypdf = await convertPdfWithOcrmypdf(filePath, { ...options, forceOcr });
+      const usable = ocrmypdf.markdown.length >= Math.max(PDF_TEXT_MIN_CHARS, text.length);
+      if (usable || PDF_CONVERTER === "ocrmypdf" || PDF_OCR_MODE !== "auto") {
+        // An empty OCRmyPDF result is not worth keeping — fall through to builtin OCR instead.
+        if (ocrmypdf.markdown.trim()) {
+          return {
+            result: pdfOcrResult("ocrmypdf", text, ocrmypdf.markdown, ocrmypdf.recognition, externalError),
+            externalError
+          };
+        }
+        const emptyMessage = "OCRmyPDF: returned no text; falling back to builtin OCR";
+        externalError = externalError ? `${externalError}\n${emptyMessage}` : emptyMessage;
       }
     } catch (error) {
+      // Never throw here: a failing external converter must degrade to builtin OCR,
+      // not make the file disappear from the index.
       const message = `OCRmyPDF: ${commandErrorMessage(error)}`;
-      const nextExternalError = externalError ? `${externalError}\n${message}` : message;
-      if (PDF_CONVERTER === "ocrmypdf") throw new Error(message);
-      externalError = nextExternalError;
+      externalError = externalError ? `${externalError}\n${message}` : message;
     }
   }
 
@@ -706,11 +800,15 @@ async function convertPdfToMarkdownWithReport(filePath, options = {}) {
   const pdfPages = extracted.pages;
   const textResult = pdfTextResult(text, pdfPages, externalError);
 
-  if (PDF_OCR_MODE === "auto" && usablePdfTextLayer(textResult.recognition.textLayerQuality)) {
+  const textLayerQuality = textResult.recognition.textLayerQuality;
+  if (PDF_OCR_MODE === "auto" && usablePdfTextLayer(textLayerQuality)) {
     return textResult;
   }
 
-  const ocr = await runPdfOcr(filePath, text, options, externalError);
+  // OCRmyPDF's --skip-text would keep a garbage text layer as-is, so force a re-OCR
+  // whenever the existing layer is unusable or noisy.
+  const forceOcr = !usablePdfTextLayer(textLayerQuality) || severeRecognitionNoise(textLayerQuality);
+  const ocr = await runPdfOcr(filePath, text, options, externalError, forceOcr);
   return choosePdfResult(textResult, ocr.result);
 }
 

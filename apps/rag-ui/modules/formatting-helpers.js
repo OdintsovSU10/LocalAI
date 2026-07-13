@@ -2,6 +2,15 @@ export function folderName(folderPath) {
   return String(folderPath || "").split(/[\\/]/).filter(Boolean).pop() || "Источник";
 }
 
+export function pluralRu(value, one, few, many) {
+  const number = Math.abs(Number(value || 0));
+  const mod10 = number % 10;
+  const mod100 = number % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
 export function formatHistoryTime(value) {
   const date = value ? new Date(value) : null;
   if (!date || Number.isNaN(date.getTime())) return "";
@@ -63,10 +72,15 @@ export function fallbackReasonText(reason) {
   return String(reason || "").trim();
 }
 
-export function formatResponseMeta(payload = {}) {
+export function formatResponseMeta(payload = {}, options = {}) {
   const parts = [];
   if (payload.matchedSource?.title) {
     parts.push(`Проект: ${payload.matchedSource.title}${payload.matchedSource.autoSelected ? " (авто)" : ""}`);
+  }
+  const linkedTenderCount = Number(options.linkedTenderCount || 0);
+  if (Number.isFinite(linkedTenderCount) && linkedTenderCount > 0) {
+    const noun = pluralRu(linkedTenderCount, "связанный тендер", "связанных тендера", "связанных тендеров");
+    parts.push(`+ ${linkedTenderCount} ${noun}`);
   }
   const fallbackReason = fallbackReasonText(payload.fallbackReason);
   if (payload.selectedBy === "auto") {

@@ -2308,12 +2308,9 @@ button.source-citation:hover,
 
 .auto-project-pin {
   margin-left: auto;
-  min-height: 26px;
-  padding: 2px 10px;
   border-color: var(--accent-dim-border);
   background: var(--accent-dim);
   color: var(--accent-hover);
-  font-size: var(--fs-xs);
 }
 
 .auto-project-pin:hover {
@@ -2376,16 +2373,20 @@ button.source-citation:hover,
   margin: var(--sp-2) 0;
 }
 
-.preview-action-button {
-  min-height: 28px;
-  font-size: var(--fs-xs);
-}
+/* Геометрия — из утилиты .btn-small (C13) */
 
-/* C8 · Семантический цвет бейджа тендера (договор — без чипа, по умолчанию) */
-.source-kind-chip {
+
+/* C8 · Семантические цвета бейджей: договор — акцентный синий, тендер — фиолетовый */
+.source-kind-chip--tender {
   border: 1px solid var(--status-info-border);
   color: var(--violet-500);
   background: rgba(157, 123, 255, 0.12);
+}
+
+.source-kind-chip--contract {
+  border: 1px solid var(--accent-dim-border);
+  color: var(--accent);
+  background: var(--accent-dim);
 }
 
 /* C9 · Пульс индикаторов «в работе» + warning-вариант статус-пилюль */
@@ -2408,6 +2409,11 @@ button.source-citation:hover,
   border-color: var(--status-warning-border);
   background: var(--status-warning-bg);
   color: var(--status-warning-fg);
+}
+
+.lm-mini.warning .lm-mini-dot {
+  background: var(--status-warning-fg);
+  box-shadow: none;
 }
 
 /* C10 · Пилюля провайдера в мета-строке ответа */

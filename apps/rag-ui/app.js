@@ -8,7 +8,8 @@ import {
   formatLatency,
   formatMs,
   formatResponseMeta,
-  formatRouteWait
+  formatRouteWait,
+  pluralRu
 } from "./modules/formatting-helpers.js";
 import {
   modelMatchKey,
@@ -618,6 +619,13 @@ function setSourceViewerOpen(isOpen) {
   }
   $(".app").classList.toggle("has-source-viewer", isOpen);
   viewer.hidden = !isOpen;
+  if (isOpen && !wasOpen) {
+    requestAnimationFrame(() => {
+      if (viewer.hidden || viewer.contains(document.activeElement)) return;
+      const focusable = modalFocusableElements(viewer);
+      if (focusable.length) focusable[0].focus();
+    });
+  }
   if (!isOpen && wasOpen) {
     const returnTarget = sourceViewerPreviousFocus;
     sourceViewerPreviousFocus = null;
@@ -639,6 +647,13 @@ function sourceTitle(sourceId) {
 
 function sourceById(sourceId) {
   return state.sources.find((source) => source.id === sourceId) || null;
+}
+
+// Сколько тендеров привязано к договору, по которому отвечали (для мета-строки ответа).
+function linkedTenderCountForResponse(payload = {}) {
+  const sourceId = payload.matchedSource?.id || state.selectedSourceId;
+  const source = sourceId ? sourceById(sourceId) : null;
+  return Array.isArray(source?.linkedTenders) ? source.linkedTenders.length : 0;
 }
 
 function contractSourceById(sourceId) {
@@ -2956,15 +2971,6 @@ function roundedPercent(value) {
   return number === null ? "-" : `${Math.round(number)}%`;
 }
 
-function pluralRu(value, one, few, many) {
-  const number = Math.abs(Number(value || 0));
-  const mod10 = number % 10;
-  const mod100 = number % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-  return many;
-}
-
 function formatRecognitionQualityStatusHint(quality = {}, score = 0) {
   const files = quality.files || {};
   const ocr = quality.ocr || {};
@@ -4148,12 +4154,12 @@ function renderSources() {
     dot.title = sourceIndexDotTitle(source.indexStatus);
     const titleNode = selectButton.querySelector(".source-title");
     titleNode.textContent = source.title;
-    if (!isContractSource(source)) {
-      const chip = document.createElement("span");
-      chip.className = "source-kind-chip";
-      chip.textContent = sourceTypeLabel(source);
-      titleNode.append(" ", chip);
-    }
+    const chip = document.createElement("span");
+    chip.className = isContractSource(source)
+      ? "source-kind-chip source-kind-chip--contract"
+      : "source-kind-chip source-kind-chip--tender";
+    chip.textContent = sourceTypeLabel(source);
+    titleNode.append(" ", chip);
     selectButton.querySelector(".source-path").textContent = source.path;
     selectButton.querySelector(".source-index-status").textContent = formatIndexSummary(source.indexStatus);
     const checkbox = item.querySelector(".source-checkbox");
@@ -4825,13 +4831,13 @@ function setRemoteLmStatusState(stateName, text, detail = "") {
 
 function setLmMiniState(stateName, title, detail) {
   const mini = $("#lm-mini");
-  mini.classList.remove("online", "offline", "busy", "checking");
+  mini.classList.remove("online", "offline", "busy", "checking", "warning");
   mini.classList.add(stateName);
   $("#lm-mini-title").textContent = title;
   $("#lm-mini-detail").textContent = detail;
   const mirror = $("#settings-lm-mini");
   if (mirror) {
-    mirror.classList.remove("online", "offline", "busy", "checking");
+    mirror.classList.remove("online", "offline", "busy", "checking", "warning");
     mirror.classList.add(stateName);
     mirror.title = `${title}: ${detail}`;
     setText("#settings-lm-mini-detail", detail);
@@ -4914,7 +4920,7 @@ async function refreshLmUsage() {
     } else if (processes.length) {
       setLmMiniState("online", "LM готова", formatLmUsageDetail(payload));
     } else {
-      setLmMiniState("checking", "LM Studio", `процесс не найден · ${formatLmUsageDetail(payload)}`);
+      setLmMiniState("warning", "LM Studio", `процесс не найден · ${formatLmUsageDetail(payload)}`);
     }
     renderAutoRoute();
   } catch (error) {
@@ -7183,7 +7189,7 @@ function renderAutoProjectBanner(referenceMessage, match) {
 
   const pin = document.createElement("button");
   pin.type = "button";
-  pin.className = "auto-project-pin";
+  pin.className = "auto-project-pin btn-small";
   pin.textContent = "Закрепить";
   pin.title = "Закрепить проект для последующих вопросов";
   pin.addEventListener("click", () => {
@@ -7503,12 +7509,12 @@ function renderPreviewShell(source, statusText = "") {
     const fileRef = { path: systemPath, fileId: systemFileId, sourceId: systemSourceId };
     const openButton = document.createElement("button");
     openButton.type = "button";
-    openButton.className = "secondary preview-action-button";
+    openButton.className = "secondary preview-action-button btn-small";
     openButton.textContent = "Открыть файл";
     openButton.addEventListener("click", () => openPreviewSystemFile("open", fileRef));
     const revealButton = document.createElement("button");
     revealButton.type = "button";
-    revealButton.className = "secondary preview-action-button";
+    revealButton.className = "secondary preview-action-button btn-small";
     revealButton.textContent = "Показать в Explorer";
     revealButton.addEventListener("click", () => openPreviewSystemFile("reveal", fileRef));
     actions.append(openButton, revealButton);
@@ -7570,7 +7576,14 @@ function previewLineWindow(markdown, focus, before = 520, after = 760) {
   const start = Number(focus?.start);
   const end = Number(focus?.end);
   if (!focus?.found || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-    return { text: source, focus: { found: false }, truncatedBefore: false, truncatedAfter: false };
+    return {
+      text: source,
+      focus: { found: false },
+      truncatedBefore: false,
+      truncatedAfter: false,
+      hiddenLinesBefore: 0,
+      hiddenLinesAfter: 0
+    };
   }
 
   const rawStart = Math.max(0, start - before);
@@ -7588,8 +7601,27 @@ function previewLineWindow(markdown, focus, before = 520, after = 760) {
       end: end - windowStart
     },
     truncatedBefore: windowStart > 0,
-    truncatedAfter: windowEnd < source.length
+    truncatedAfter: windowEnd < source.length,
+    hiddenLinesBefore: countLines(source.slice(0, windowStart)),
+    hiddenLinesAfter: countLines(source.slice(windowEnd))
   };
+}
+
+// Страниц в превью нет (файл режется по символам), поэтому объём скрытого
+// текста считаем в строках.
+function countLines(text) {
+  const value = String(text || "");
+  if (!value.trim()) return 0;
+  return value.split("\n").filter((line) => line.trim()).length;
+}
+
+function hiddenTextNote(direction, hiddenLines) {
+  const count = Number(hiddenLines || 0);
+  if (!Number.isFinite(count) || count <= 0) {
+    return `${direction} есть скрытый текст файла; открыт участок вокруг цитаты.`;
+  }
+  const noun = pluralRu(count, "строка", "строки", "строк");
+  return `${direction} скрыто ${count} ${noun} файла; открыт участок вокруг цитаты.`;
 }
 
 function renderPreviewMarkdown(source, payload) {
@@ -7631,7 +7663,7 @@ function renderPreviewMarkdown(source, payload) {
   }
 
   if (payload.truncatedBefore || focusedWindow?.truncatedBefore) {
-    appendPreviewNote(preview, "Выше есть скрытый текст файла; открыт участок вокруг цитаты.");
+    appendPreviewNote(preview, hiddenTextNote("Выше", focusedWindow?.hiddenLinesBefore));
   }
 
   if (hasFocus) {
@@ -7648,7 +7680,7 @@ function renderPreviewMarkdown(source, payload) {
   preview.append(body);
 
   if ((!exactText && payload.truncatedAfter) || focusedWindow?.truncatedAfter) {
-    appendPreviewNote(preview, "Ниже есть продолжение файла, оно скрыто для быстрого открытия.");
+    appendPreviewNote(preview, hiddenTextNote("Ниже", focusedWindow?.hiddenLinesAfter));
   }
 
   if (hasFocus) {
@@ -7776,7 +7808,7 @@ async function chat(event) {
     applyMatchedSource(payload.matchedSource);
     if (wasAutoMode) renderAutoProjectBanner(pending, payload.matchedSource);
     setMessageText(pending, finalAnswer, { sources: finalSources });
-    setMessageMeta(pending, formatResponseMeta(payload));
+    setMessageMeta(pending, formatResponseMeta(payload, { linkedTenderCount: linkedTenderCountForResponse(payload) }));
     renderMessageSources(pending, finalSources, finalAnswer);
     setMessageRagDebug(pending, { ...payload, answer: finalAnswer, sources: finalSources }, finalSources);
     generateChatTitleForSession(sessionId, question, finalAnswer, payload.matchedSource).catch(() => {});
@@ -7894,6 +7926,9 @@ document.querySelectorAll("[data-llm-route]").forEach((button) => {
 });
 $("#new-chat-button").addEventListener("click", startNewChat);
 $("#source-viewer-close")?.addEventListener("click", resetSourcePreview);
+// Панель превью ведёт себя как диалог: Tab не уходит за её пределы, возврат
+// фокуса на цитату делает setSourceViewerOpen.
+$("#source-viewer")?.addEventListener("keydown", trapModalTab);
 $("#settings-open").addEventListener("click", openSettings);
 $("#audit-open-link")?.addEventListener("click", (event) => {
   event.preventDefault();

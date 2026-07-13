@@ -2841,7 +2841,7 @@ function renderAuditPanel() {
   }
 
   recordAuditFeed(activeMovements);
-  renderAuditFeed();
+  renderAuditFeed(activeMovements);
   renderAuditRecentFiles();
 
   movementList.innerHTML = "";
@@ -2887,6 +2887,66 @@ function auditFileIcon(extension = "") {
   return "📁";
 }
 
+// Прогресс внутри файла: OCR считает страницы, векторизация — фрагменты.
+// Если бэкенд не даёт счётчиков, показываем неопределённый бар (percent = null).
+function auditFileProgress(status = {}) {
+  const phase = String(status.phase || "");
+  if (phase === "ocr") {
+    const page = Number(status.ocrPage || 0);
+    const pages = Number(status.ocrPages || status.ocrTotalPages || 0);
+    if (pages > 0) {
+      return {
+        percent: Math.min(100, Math.round((page / pages) * 100)),
+        label: `OCR: страница ${formatCount(page)}/${formatCount(pages)}`
+      };
+    }
+    return { percent: null, label: "OCR распознаёт страницы" };
+  }
+
+  if (phase === "embed" || phase === "vector_store") {
+    const processed = Number(status.vectorsProcessed || 0);
+    const total = Number(status.vectorsTotal || 0);
+    if (total > 0) {
+      return {
+        percent: Math.min(100, Math.round((processed / total) * 100)),
+        label: `Векторы: ${formatCount(processed)}/${formatCount(total)}`
+      };
+    }
+    return { percent: null, label: "Векторизация фрагментов" };
+  }
+
+  const label = auditPhaseLabel(phase);
+  return { percent: null, label: label ? `Обработка: ${label}` : "Обработка файла" };
+}
+
+function auditProgressBar({ percent = null, label = "", variant = "file" } = {}) {
+  const wrapper = document.createElement("div");
+  wrapper.className = `audit-progress audit-progress--${variant}`;
+  if (percent === null) wrapper.classList.add("is-indeterminate");
+  wrapper.innerHTML = `
+    <div class="audit-progress-head">
+      <span class="audit-progress-label"></span>
+      <span class="audit-progress-value"></span>
+    </div>
+    <div class="audit-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+      <div class="audit-progress-fill"></div>
+    </div>
+  `;
+  wrapper.querySelector(".audit-progress-label").textContent = label;
+  const value = wrapper.querySelector(".audit-progress-value");
+  const track = wrapper.querySelector(".audit-progress-track");
+  const fill = wrapper.querySelector(".audit-progress-fill");
+  if (percent === null) {
+    value.textContent = "";
+    track.setAttribute("aria-valuetext", label || "выполняется");
+  } else {
+    value.textContent = `${percent}%`;
+    track.setAttribute("aria-valuenow", String(percent));
+    fill.style.width = `${percent}%`;
+  }
+  return wrapper;
+}
+
 // Карточка «сейчас в работе»: крупно файл, под ним путь, этапы и прогресс.
 function auditNowCard(row) {
   const card = document.createElement("article");
@@ -2928,6 +2988,25 @@ function auditNowCard(row) {
   detailNode.textContent = row.detail || "";
   detailNode.hidden = !detailNode.textContent;
 
+  const status = row.pipelineStatus || {};
+  if (row.file) {
+    const fileProgress = auditFileProgress(status);
+    fileBlock.after(auditProgressBar({ ...fileProgress, variant: "file" }));
+  }
+
+  const processed = Number(status.processed || 0);
+  const totalFiles = Number(status.total || status.files || 0);
+  const overallPercent = jobProgressPercent(status) ?? null;
+  if (totalFiles > 0 || overallPercent !== null) {
+    card.append(auditProgressBar({
+      percent: overallPercent,
+      label: totalFiles > 0
+        ? `Файлы проекта: ${formatCount(processed)}/${formatCount(totalFiles)}`
+        : "Прогресс проекта",
+      variant: "source"
+    }));
+  }
+
   if (row.pipelineStatus) {
     const pipeline = renderIndexPipeline(row.pipelineStatus);
     pipeline.classList.add("audit-pipeline");
@@ -2961,9 +3040,12 @@ function recordAuditFeed(activeMovements) {
   state.audit.feed = state.audit.feed.slice(0, 40);
 }
 
-function renderAuditFeed() {
+function renderAuditFeed(activeMovements = []) {
   const list = $("#audit-feed-list");
   if (!list) return;
+  const activeKeys = new Set(activeMovements
+    .filter((row) => row.file)
+    .map((row) => `${row.sourceId || row.label}:${row.file.relativePath || row.file.title}`));
   list.innerHTML = "";
   if (!state.audit.feed.length) {
     setText("#audit-feed-summary", "Пока ничего не обрабатывалось в этой сессии.");
@@ -2974,7 +3056,8 @@ function renderAuditFeed() {
   setText("#audit-feed-summary", `За сессию: ${formatCount(state.audit.feed.length)}`);
   for (const entry of state.audit.feed) {
     const item = document.createElement("div");
-    item.className = "audit-feed-item";
+    const inWork = activeKeys.has(entry.key);
+    item.className = `audit-feed-item${inWork ? " is-active" : ""}`;
     item.innerHTML = `
       <span class="audit-feed-time"></span>
       <span class="audit-feed-icon" aria-hidden="true"></span>
@@ -2990,7 +3073,7 @@ function renderAuditFeed() {
     item.querySelector(".audit-feed-title").textContent = entry.title;
     item.querySelector(".audit-feed-title").title = entry.relativePath || entry.title;
     item.querySelector(".audit-feed-meta").textContent = entry.sourceTitle;
-    item.querySelector(".audit-feed-phase").textContent = entry.phase;
+    item.querySelector(".audit-feed-phase").textContent = inWork ? `${entry.phase} · в работе` : entry.phase;
     list.append(item);
   }
 }
@@ -4280,6 +4363,7 @@ function renderIndexedFolderChildren(node, container, depth = 0) {
     row.style.setProperty("--depth", depth);
     row.innerHTML = `
       <span class="indexed-tree-file-dot"></span>
+      <span class="indexed-tree-file-icon" aria-hidden="true"></span>
       <span class="indexed-tree-file-main">
         <span class="indexed-tree-name-line">
           <span class="indexed-tree-name"></span>
@@ -4289,6 +4373,9 @@ function renderIndexedFolderChildren(node, container, depth = 0) {
       </span>
       <span class="indexed-tree-quality"></span>
     `;
+    row.querySelector(".indexed-tree-file-icon").textContent = auditFileIcon(
+      file.extension || auditFileExtensionFromName(file.title || file.path)
+    );
     const meta = [
       file.chunks ? `${file.chunks} фрагм.` : "нет фрагментов",
       indexedRecognitionLabel(file),

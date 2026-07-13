@@ -3179,3 +3179,84 @@ button.danger-solid:hover:not(:disabled) {
 .ocr-quality-row--error td:nth-child(5) {
   color: var(--status-error-fg);
 }
+
+/* Прогресс-бары у файлов в работе: по файлу (OCR-страницы / векторы) и по проекту.
+   Когда бэкенд не даёт счётчиков — бегущая полоса (is-indeterminate). */
+.audit-progress {
+  display: grid;
+  gap: 4px;
+}
+
+.audit-progress-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.audit-progress-label {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+
+.audit-progress-value {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.audit-progress-track {
+  position: relative;
+  overflow: hidden;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--surface-3);
+}
+
+.audit-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--status-running-fg);
+  transition: width var(--motion-slow) ease;
+}
+
+.audit-progress--source .audit-progress-fill {
+  background: var(--accent);
+}
+
+.audit-progress.is-indeterminate .audit-progress-fill {
+  width: 35%;
+  animation: audit-progress-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes audit-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(285%);
+  }
+}
+
+/* Файл, который обрабатывается прямо сейчас, виден и в ленте. */
+.audit-feed-item.is-active {
+  background: var(--status-running-bg);
+}
+
+.audit-feed-item.is-active .audit-feed-phase {
+  animation: locus-pulse 1.4s ease-in-out infinite;
+}
+
+/* Ярлычки типов файлов в дереве индекса (вкладка «Источники»).
+   Строка файла — грид, поэтому под иконку заводим отдельную колонку. */
+.indexed-tree-file {
+  grid-template-columns: 16px 18px minmax(0, 1fr) auto;
+}
+
+.indexed-tree-file-icon {
+  padding-top: 2px;
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+}

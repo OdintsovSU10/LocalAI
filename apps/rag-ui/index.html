@@ -488,43 +488,57 @@
 
           <div id="settings-panel-audit" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-audit" hidden>
             <section class="panel audit-statusbar-panel">
-              <div class="audit-statusbar-head">
-                <div>
-                  <div class="panel-title">Статус обработки</div>
-                </div>
-                <div id="audit-index-status-bar" class="index-status-bar audit-index-status-bar is-empty" role="status" aria-live="polite">
-                  <span class="index-status-badge">Индексация</span>
-                  <span id="audit-job-status" class="hint index-status-message">Активной индексации нет.</span>
-                  <div id="audit-index-progress" class="index-progress audit-index-progress" hidden>
-                    <div class="index-progress-track">
-                      <div id="audit-index-progress-fill" class="index-progress-fill"></div>
-                    </div>
-                    <span id="audit-index-progress-label" class="index-progress-label"></span>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section class="panel audit-panel">
               <div class="panel-title-row">
                 <div>
-                  <div class="panel-title">Аудит обработки</div>
+                  <div class="panel-title">Статус обработки</div>
                   <div id="audit-status-summary" class="hint">Загрузка статусов...</div>
                 </div>
                 <button id="audit-refresh" type="button" class="secondary compact-button">Обновить</button>
               </div>
-              <div id="audit-status-list" class="audit-list"></div>
+              <div id="audit-status-list" class="audit-status-strip"></div>
+              <div id="audit-index-status-bar" class="index-status-bar audit-index-status-bar is-empty" role="status" aria-live="polite">
+                <span class="index-status-badge">Индексация</span>
+                <span id="audit-job-status" class="hint index-status-message">Активной индексации нет.</span>
+                <div id="audit-index-progress" class="index-progress audit-index-progress" hidden>
+                  <div class="index-progress-track">
+                    <div id="audit-index-progress-fill" class="index-progress-fill"></div>
+                  </div>
+                  <span id="audit-index-progress-label" class="index-progress-label"></span>
+                </div>
+              </div>
             </section>
 
             <section class="panel audit-panel audit-movement-panel">
               <div class="panel-title-row">
                 <div>
-                  <div class="panel-title">Движения с файлами</div>
+                  <div class="panel-title">Сейчас в работе</div>
                   <div id="audit-movement-summary" class="hint">Загрузка движений...</div>
                 </div>
               </div>
-              <div id="audit-movement-list" class="audit-list audit-movement-list"></div>
+              <div id="audit-movement-list" class="audit-now-list"></div>
             </section>
+
+            <div class="audit-files-layout">
+              <section class="panel audit-panel">
+                <div class="panel-title-row">
+                  <div>
+                    <div class="panel-title">Лента файлов</div>
+                    <div id="audit-feed-summary" class="hint">Файлы появляются здесь по мере обработки.</div>
+                  </div>
+                </div>
+                <div id="audit-feed-list" class="audit-feed"></div>
+              </section>
+
+              <section class="panel audit-panel">
+                <div class="panel-title-row">
+                  <div>
+                    <div class="panel-title">Недавно проиндексировано</div>
+                    <div id="audit-recent-summary" class="hint">Загрузка файлов...</div>
+                  </div>
+                </div>
+                <div id="audit-recent-list" class="audit-recent"></div>
+              </section>
+            </div>
 
             <section class="danger-zone" aria-labelledby="portal-stop-heading">
               <div class="danger-zone-copy">

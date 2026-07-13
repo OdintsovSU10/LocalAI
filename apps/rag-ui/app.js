@@ -49,7 +49,16 @@ const state = {
   audit: {
     loading: false,
     updatedAt: 0,
-    error: ""
+    error: "",
+    // Живая лента: копим файлы, которые проходят через обработку (бэкенд отдаёт
+    // только текущий файл на источник, истории у него нет).
+    feed: [],
+    recent: {
+      loading: false,
+      error: "",
+      files: [],
+      updatedAt: 0
+    }
   },
   llmUsage: null,
   localLmStatus: null,
@@ -2637,6 +2646,10 @@ function auditActiveMovements() {
     seenSourceIds.add(source.id);
     const file = auditCurrentFile(status);
     rows.push({
+      sourceId: source.id,
+      file,
+      phase: status.phase || "",
+      progress: auditProgressText(status),
       label: source.title || source.id,
       value: auditPhaseLabel(status.phase),
       currentFile: file ? (file.title || file.relativePath) : "",
@@ -2656,6 +2669,10 @@ function auditActiveMovements() {
     const source = sourceById(current.sourceId);
     const file = auditCurrentFile(current);
     rows.push({
+      sourceId: current.sourceId || "",
+      file,
+      phase: current.phase || "",
+      progress: auditProgressText(current),
       label: source?.title || current.sourceTitle || current.sourceId || "Агент индексации",
       value: auditPhaseLabel(current.phase),
       currentFile: file ? (file.title || file.relativePath) : "",
@@ -2820,23 +2837,280 @@ function renderAuditPanel() {
 
   statusList.innerHTML = "";
   for (const row of auditStatusRows(activeMovements)) {
-    statusList.append(auditItemElement(row));
+    statusList.append(auditStatusPill(row));
   }
 
+  recordAuditFeed(activeMovements);
+  renderAuditFeed();
+  renderAuditRecentFiles();
+
   movementList.innerHTML = "";
-  if (!movementRows.length) {
+  if (!activeMovements.length) {
     movementList.append(auditItemElement({
       label: "Сейчас",
       value: "нет активных движений",
       tone: "idle",
-      detail: "Индексатор, OCR, embeddings и Qdrant сейчас ничего не записывают."
+      detail: movementRows.length
+        ? "Индексатор, OCR, embeddings и Qdrant сейчас ничего не записывают; ниже — последние обработанные файлы."
+        : "Индексатор, OCR, embeddings и Qdrant сейчас ничего не записывают."
     }));
     return;
   }
 
-  for (const row of movementRows) {
-    movementList.append(auditItemElement(row));
+  for (const row of activeMovements) {
+    movementList.append(auditNowCard(row));
   }
+}
+
+// Компактная пилюля системного статуса: название + значение, расшифровка — в title.
+function auditStatusPill({ label, value, detail = "", tone = "idle" } = {}) {
+  const pill = document.createElement("span");
+  pill.className = `audit-status-pill is-${tone}`;
+  if (detail) pill.title = detail;
+  pill.innerHTML = `
+    <span class="audit-status-pill-dot" aria-hidden="true"></span>
+    <span class="audit-status-pill-label"></span>
+    <strong class="audit-status-pill-value"></strong>
+  `;
+  pill.querySelector(".audit-status-pill-label").textContent = label || "";
+  pill.querySelector(".audit-status-pill-value").textContent = value || "";
+  return pill;
+}
+
+function auditFileIcon(extension = "") {
+  const value = String(extension || "").toLowerCase();
+  if (value.includes("pdf")) return "📕";
+  if (value.includes("xls") || value.includes("csv")) return "📊";
+  if (value.includes("doc") || value.includes("rtf")) return "📄";
+  if (value.includes("ppt")) return "📽";
+  if (value.includes("google")) return "🌐";
+  return "📁";
+}
+
+// Карточка «сейчас в работе»: крупно файл, под ним путь, этапы и прогресс.
+function auditNowCard(row) {
+  const card = document.createElement("article");
+  card.className = `audit-now-card is-${row.tone || "running"}`;
+  card.innerHTML = `
+    <header class="audit-now-head">
+      <span class="audit-now-project"></span>
+      <span class="audit-now-phase"></span>
+      <span class="audit-now-progress"></span>
+    </header>
+    <div class="audit-now-file">
+      <span class="audit-now-file-icon" aria-hidden="true"></span>
+      <span class="audit-now-file-text">
+        <span class="audit-now-file-title"></span>
+        <span class="audit-now-file-path"></span>
+      </span>
+    </div>
+    <div class="audit-now-detail"></div>
+  `;
+  card.querySelector(".audit-now-project").textContent = row.label || "";
+  card.querySelector(".audit-now-phase").textContent = row.value || "";
+  const progressNode = card.querySelector(".audit-now-progress");
+  progressNode.textContent = row.progress || "";
+  progressNode.hidden = !progressNode.textContent;
+
+  const fileBlock = card.querySelector(".audit-now-file");
+  if (row.file) {
+    card.querySelector(".audit-now-file-icon").textContent = auditFileIcon(row.file.extension);
+    card.querySelector(".audit-now-file-title").textContent = row.file.title || row.file.relativePath;
+    const pathNode = card.querySelector(".audit-now-file-path");
+    const relative = row.file.relativePath && row.file.relativePath !== row.file.title ? row.file.relativePath : "";
+    pathNode.textContent = relative;
+    pathNode.hidden = !relative;
+  } else {
+    fileBlock.hidden = true;
+  }
+
+  const detailNode = card.querySelector(".audit-now-detail");
+  detailNode.textContent = row.detail || "";
+  detailNode.hidden = !detailNode.textContent;
+
+  if (row.pipelineStatus) {
+    const pipeline = renderIndexPipeline(row.pipelineStatus);
+    pipeline.classList.add("audit-pipeline");
+    card.append(pipeline);
+  }
+  return card;
+}
+
+// Лента: запоминаем каждый новый файл, который видим в текущих движениях.
+function recordAuditFeed(activeMovements) {
+  for (const row of activeMovements) {
+    if (!row.file) continue;
+    const key = `${row.sourceId || row.label}:${row.file.relativePath || row.file.title}`;
+    const last = state.audit.feed[0];
+    if (last && last.key === key) {
+      last.phase = row.value || last.phase;
+      continue;
+    }
+    if (state.audit.feed.some((entry) => entry.key === key && Date.now() - entry.at < 60000)) continue;
+    state.audit.feed.unshift({
+      key,
+      at: Date.now(),
+      sourceId: row.sourceId || "",
+      sourceTitle: row.label || "",
+      title: row.file.title || row.file.relativePath,
+      relativePath: row.file.relativePath || "",
+      extension: row.file.extension || "",
+      phase: row.value || ""
+    });
+  }
+  state.audit.feed = state.audit.feed.slice(0, 40);
+}
+
+function renderAuditFeed() {
+  const list = $("#audit-feed-list");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!state.audit.feed.length) {
+    setText("#audit-feed-summary", "Пока ничего не обрабатывалось в этой сессии.");
+    list.innerHTML = '<div class="empty">Запустите индексацию — файлы будут появляться здесь по мере обработки.</div>';
+    return;
+  }
+
+  setText("#audit-feed-summary", `За сессию: ${formatCount(state.audit.feed.length)}`);
+  for (const entry of state.audit.feed) {
+    const item = document.createElement("div");
+    item.className = "audit-feed-item";
+    item.innerHTML = `
+      <span class="audit-feed-time"></span>
+      <span class="audit-feed-icon" aria-hidden="true"></span>
+      <span class="audit-feed-main">
+        <span class="audit-feed-title"></span>
+        <span class="audit-feed-meta"></span>
+      </span>
+      <span class="audit-feed-phase"></span>
+    `;
+    item.querySelector(".audit-feed-time").textContent = new Date(entry.at)
+      .toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    item.querySelector(".audit-feed-icon").textContent = auditFileIcon(entry.extension);
+    item.querySelector(".audit-feed-title").textContent = entry.title;
+    item.querySelector(".audit-feed-title").title = entry.relativePath || entry.title;
+    item.querySelector(".audit-feed-meta").textContent = entry.sourceTitle;
+    item.querySelector(".audit-feed-phase").textContent = entry.phase;
+    list.append(item);
+  }
+}
+
+function auditRecentFileTone(file) {
+  const quality = file.quality?.status || "";
+  if (quality === "error" || Number(file.chunks || 0) <= 0) return "error";
+  if (quality === "warning") return "warning";
+  return "ready";
+}
+
+function renderAuditRecentFiles() {
+  const list = $("#audit-recent-list");
+  if (!list) return;
+  const recent = state.audit.recent;
+  list.innerHTML = "";
+
+  if (recent.loading && !recent.files.length) {
+    setText("#audit-recent-summary", "Загрузка файлов...");
+    list.innerHTML = '<div class="empty">Загрузка...</div>';
+    return;
+  }
+  if (recent.error) {
+    setText("#audit-recent-summary", recent.error);
+    list.innerHTML = `<div class="empty">${recent.error}</div>`;
+    return;
+  }
+  if (!recent.files.length) {
+    setText("#audit-recent-summary", "Проиндексированных файлов пока нет.");
+    list.innerHTML = '<div class="empty">Файлы появятся после первой индексации.</div>';
+    return;
+  }
+
+  setText("#audit-recent-summary", `Последние ${formatCount(recent.files.length)} файлов по времени индексации`);
+  for (const file of recent.files) {
+    const item = document.createElement("div");
+    item.className = `audit-recent-item is-${auditRecentFileTone(file)}`;
+    item.innerHTML = `
+      <span class="audit-recent-icon" aria-hidden="true"></span>
+      <span class="audit-recent-main">
+        <span class="audit-recent-title"></span>
+        <span class="audit-recent-meta"></span>
+      </span>
+      <span class="audit-recent-chunks"></span>
+      <span class="audit-recent-actions">
+        <button type="button" class="secondary btn-small audit-recent-open">Открыть</button>
+        <button type="button" class="secondary btn-small audit-recent-reveal">В папке</button>
+      </span>
+    `;
+    item.querySelector(".audit-recent-icon").textContent = auditFileIcon(file.extension);
+    const titleNode = item.querySelector(".audit-recent-title");
+    titleNode.textContent = file.title;
+    titleNode.title = file.relativePath || file.title;
+    item.querySelector(".audit-recent-meta").textContent = [
+      file.sourceTitle,
+      file.indexedAt ? shortDateTime(file.indexedAt) : ""
+    ].filter(Boolean).join(" · ");
+    item.querySelector(".audit-recent-chunks").textContent = Number(file.chunks || 0) > 0
+      ? `${formatCount(file.chunks)} фрагм.`
+      : "нет фрагментов";
+    item.querySelector(".audit-recent-open")
+      .addEventListener("click", () => openPreviewSystemFile("open", file));
+    item.querySelector(".audit-recent-reveal")
+      .addEventListener("click", () => openPreviewSystemFile("reveal", file));
+    list.append(item);
+  }
+}
+
+// История берётся из уже существующего /indexed-files по самым свежим источникам —
+// отдельного бэкенд-эндпойнта под ленту нет.
+async function loadAuditRecentFiles({ limitSources = 4, limitFiles = 20 } = {}) {
+  const recent = state.audit.recent;
+  if (recent.loading) return;
+
+  const candidates = state.sources
+    .filter((source) => source?.indexStatus?.status && source.indexStatus.status !== "not_indexed")
+    .sort((left, right) => {
+      const leftRunning = left.indexStatus.status === "running" ? 1 : 0;
+      const rightRunning = right.indexStatus.status === "running" ? 1 : 0;
+      if (leftRunning !== rightRunning) return rightRunning - leftRunning;
+      const leftTime = new Date(left.indexStatus.updatedAt || left.indexStatus.finishedAt || 0).getTime();
+      const rightTime = new Date(right.indexStatus.updatedAt || right.indexStatus.finishedAt || 0).getTime();
+      return rightTime - leftTime;
+    })
+    .slice(0, limitSources);
+
+  if (!candidates.length) {
+    state.audit.recent = { loading: false, error: "", files: [], updatedAt: Date.now() };
+    renderAuditRecentFiles();
+    return;
+  }
+
+  recent.loading = true;
+  renderAuditRecentFiles();
+
+  const results = await Promise.allSettled(candidates.map((source) =>
+    api(`/api/sources/${encodeURIComponent(source.id)}/indexed-files`)
+  ));
+
+  const files = [];
+  const seen = new Set();
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    for (const file of result.value.files || []) {
+      const key = file.fileId || `${file.sourceId}:${file.relativePath}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (file.indexedAt) files.push(file);
+    }
+  }
+  files.sort((left, right) => new Date(right.indexedAt).getTime() - new Date(left.indexedAt).getTime());
+
+  const failed = results.every((result) => result.status === "rejected");
+  state.audit.recent = {
+    loading: false,
+    error: failed ? "Не удалось загрузить список файлов" : "",
+    files: files.slice(0, limitFiles),
+    updatedAt: Date.now()
+  };
+  renderAuditRecentFiles();
 }
 
 async function refreshAuditStatus({ silent = false } = {}) {
@@ -2859,6 +3133,7 @@ async function refreshAuditStatus({ silent = false } = {}) {
   state.audit.updatedAt = Date.now();
   state.audit.loading = false;
   renderAuditPanel();
+  loadAuditRecentFiles().catch(() => {});
 }
 
 function sourceIndexDotClass(status = {}) {

@@ -3991,6 +3991,7 @@ Object.assign(INDEXED_QUALITY_REASON_LABELS, {
   ocr_rejected_pages: "часть OCR-страниц отбракована по качеству",
   no_usable_ocr_pages: "ни одна OCR-страница не прошла проверку качества",
   ocr_failed_pages: "OCR упал на отдельных страницах",
+  ocr_page_failed: "OCR упал на этой странице",
   chunks_skipped_for_quality: "фрагменты не сохранены из-за низкого качества",
   conversion_error: "не удалось обработать файл",
   unsupported_google_context_link: "Google ссылка пока не поддерживается для индексации",
@@ -7989,6 +7990,8 @@ function renderPreviewShell(source, statusText = "") {
     preview.append(status);
   }
 
+  appendOcrQualitySection(preview, source);
+
   return preview;
 }
 
@@ -8005,6 +8008,84 @@ function appendPreviewNote(preview, text) {
   note.className = "hint preview-status";
   note.textContent = text;
   preview.append(note);
+}
+
+function ocrPageVerdict(page) {
+  if (page.failed) return { label: "ошибка", variant: "error" };
+  if (page.usable === false) return { label: "отбракована", variant: "error" };
+  if (page.usable === true) return { label: "принята", variant: "ok" };
+  return { label: "-", variant: "" };
+}
+
+function ocrPageReasons(page) {
+  const reasons = (page.warnings || []).map((warning) => INDEXED_QUALITY_REASON_LABELS[warning] || warning);
+  if (page.error) reasons.push(page.error);
+  return reasons.join("; ");
+}
+
+// The per-page OCR stats already travel with every indexed file; without this table the only
+// way to see which pages failed was to read the manifest by hand.
+function appendOcrQualitySection(preview, source) {
+  const recognition = source.recognition || {};
+  const pages = Array.isArray(recognition.ocrPageStats) ? recognition.ocrPageStats : [];
+  if (!pages.length) return;
+
+  const accepted = pages.filter((page) => page.usable === true).length;
+  const rejected = pages.filter((page) => page.usable === false && !page.failed).length;
+  const failed = pages.filter((page) => page.failed).length;
+
+  const details = document.createElement("details");
+  details.className = "ocr-quality";
+  // Open by default when something is wrong: that is exactly when it needs looking at.
+  details.open = rejected > 0 || failed > 0;
+
+  const summary = document.createElement("summary");
+  summary.className = "ocr-quality-summary";
+  const summaryParts = [`страниц ${pages.length}`, `принято ${accepted}`];
+  if (rejected) summaryParts.push(`отбраковано ${rejected}`);
+  if (failed) summaryParts.push(`ошибок ${failed}`);
+  if (Number.isFinite(Number(recognition.ocrConfidence))) {
+    summaryParts.push(`сред. ${Math.round(Number(recognition.ocrConfidence))}%`);
+  }
+  if (Number.isFinite(Number(recognition.ocrScale))) {
+    summaryParts.push(`scale ${recognition.ocrScale} (~${Math.round(Number(recognition.ocrScale) * 72)} DPI)`);
+  }
+  summary.textContent = `Качество OCR: ${summaryParts.join(", ")}`;
+  details.append(summary);
+
+  const table = document.createElement("table");
+  table.className = "ocr-quality-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Стр.</th>
+        <th>Символов</th>
+        <th>Слов</th>
+        <th>Уверенность</th>
+        <th>Вердикт</th>
+        <th>Причина</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+
+  const body = table.querySelector("tbody");
+  for (const page of pages) {
+    const verdict = ocrPageVerdict(page);
+    const row = document.createElement("tr");
+    if (verdict.variant) row.className = `ocr-quality-row--${verdict.variant}`;
+
+    const confidence = Number.isFinite(Number(page.confidence)) ? `${Math.round(Number(page.confidence))}%` : "-";
+    for (const value of [page.page, page.chars ?? 0, page.words ?? 0, confidence, verdict.label, ocrPageReasons(page)]) {
+      const cell = document.createElement("td");
+      cell.textContent = String(value ?? "");
+      row.append(cell);
+    }
+    body.append(row);
+  }
+
+  details.append(table);
+  preview.append(details);
 }
 
 function simplePreviewFocus(markdown, focusText) {

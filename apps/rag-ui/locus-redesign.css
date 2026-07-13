@@ -3104,3 +3104,78 @@ button.danger-solid:hover:not(:disabled) {
     opacity: 1;
   }
 }
+
+/* Постраничное качество OCR в карточке файла */
+.ocr-quality {
+  margin-top: var(--sp-2);
+  border: 1px solid var(--border-solid);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.ocr-quality-summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  color: var(--text-muted);
+  list-style: none;
+}
+
+.ocr-quality-summary::-webkit-details-marker {
+  display: none;
+}
+
+.ocr-quality-summary::before {
+  content: "+";
+  display: inline-block;
+  width: 12px;
+  font-family: var(--font-mono);
+}
+
+.ocr-quality[open] > .ocr-quality-summary::before {
+  content: "-";
+}
+
+.ocr-quality-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  display: block;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.ocr-quality-table th,
+.ocr-quality-table td {
+  padding: 3px 10px;
+  text-align: left;
+  border-top: 1px solid var(--border-solid);
+  white-space: nowrap;
+}
+
+.ocr-quality-table td:last-child {
+  white-space: normal;
+  color: var(--text-muted);
+}
+
+.ocr-quality-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-weight: 650;
+}
+
+.ocr-quality-row--ok td:nth-child(5) {
+  color: var(--status-ok-fg);
+}
+
+.ocr-quality-row--error {
+  background: var(--status-error-bg);
+}
+
+.ocr-quality-row--error td:nth-child(5) {
+  color: var(--status-error-fg);
+}

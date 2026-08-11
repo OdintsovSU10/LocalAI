@@ -264,7 +264,9 @@ async function embedChunks({ chunks, embeddings, cache, signal, onProgress }) {
  * `apply: false` считает всё, кроме записи файлов, — так видно объём работы и стоимость
  * прогона до того, как что-то поменяется на диске.
  */
-export async function exportTenderIndex({ tenderRoot, settings = null, signal = null, onProgress = null, apply = true }) {
+export async function exportTenderIndex({
+  tenderRoot, settings = null, signal = null, onProgress = null, apply = true, withVectors = true
+}) {
   const root = path.resolve(tenderRoot);
   const sheetIndexPath = path.join(root, SHEET_INDEX_REL);
 
@@ -276,34 +278,46 @@ export async function exportTenderIndex({ tenderRoot, settings = null, signal = 
   }
 
   const resolved = settings || await readSettings();
-  const embeddings = normalizeEmbeddingSettings(resolved.embeddings);
-  if (!embeddings.enabled) throw new Error("Эмбеддинги выключены в настройках Locus");
-
   const rows = parseCsv(sheetIndexRaw);
   const byFile = indexRowsByFile(rows);
   const chunks = await collectChunks(root, byFile, onProgress);
   if (!chunks.length) throw new Error("Не набрано ни одного чанка: проверьте project/PD/**/markdown");
 
   const indexDir = path.join(root, VECTOR_INDEX_DIR);
-  // Размерность берём с первого настоящего ответа модели, а не из настроек: настройка
-  // может отстать от того, что реально загружено в LM Studio.
-  const [probe] = await embedTexts({ embeddings, texts: [chunks[0].text], signal });
-  if (!probe?.length) throw new Error("Эндпоинт эмбеддингов вернул пустой вектор");
-  const dimensions = probe.length;
+  let vectors = null;
+  let dimensions = 0;
+  let model = "";
+  let computed = 0;
+  let reused = 0;
 
-  const cache = await readPreviousVectors(indexDir, embeddings.model, dimensions);
-  const { vectors, computed, reused } = await embedChunks({
-    chunks, embeddings, cache, signal, onProgress
-  });
+  // Векторы необязательны. Поиск по словам (BM25) считается на стороне тендерных скриптов
+  // прямо по chunks.jsonl и никакой модели не требует, поэтому индекс имеет смысл собрать
+  // и там, где эмбеддинги считать нечем. Векторы можно досчитать позже тем же прогоном:
+  // чанки не изменятся, добавится только vectors.f16.npy.
+  if (withVectors) {
+    const embeddings = normalizeEmbeddingSettings(resolved.embeddings);
+    if (!embeddings.enabled) throw new Error("Эмбеддинги выключены в настройках Locus");
+    model = embeddings.model;
 
-  const wrong = vectors.findIndex((vector) => !vector || vector.length !== dimensions);
-  if (wrong !== -1) throw new Error(`Чанк ${wrong} получил вектор неверной размерности`);
+    // Размерность берём с первого настоящего ответа модели, а не из настроек: настройка
+    // может отстать от того, что реально загружено в LM Studio.
+    const [probe] = await embedTexts({ embeddings, texts: [chunks[0].text], signal });
+    if (!probe?.length) throw new Error("Эндпоинт эмбеддингов вернул пустой вектор");
+    dimensions = probe.length;
+
+    const cache = await readPreviousVectors(indexDir, model, dimensions);
+    ({ vectors, computed, reused } = await embedChunks({ chunks, embeddings, cache, signal, onProgress }));
+
+    const wrong = vectors.findIndex((vector) => !vector || vector.length !== dimensions);
+    if (wrong !== -1) throw new Error(`Чанк ${wrong} получил вектор неверной размерности`);
+  }
 
   const manifest = {
     schema_version: SCHEMA_VERSION,
-    model: embeddings.model,
+    model,
     dim: dimensions,
     metric: "cosine",
+    has_vectors: Boolean(vectors),
     built_at: new Date().toISOString(),
     chunk_count: chunks.length,
     page_count: byFile.size ? [...byFile.values()].reduce((sum, pages) => sum + pages.size, 0) : 0,
@@ -317,7 +331,15 @@ export async function exportTenderIndex({ tenderRoot, settings = null, signal = 
   if (!apply) return { ...manifest, status: "DRY_RUN", index_dir: indexDir };
 
   await fs.mkdir(indexDir, { recursive: true });
-  await fs.writeFile(path.join(indexDir, "vectors.f16.npy"), encodeVectorsNpy(vectors, dimensions));
+  const vectorsPath = path.join(indexDir, "vectors.f16.npy");
+  if (vectors) {
+    await fs.writeFile(vectorsPath, encodeVectorsNpy(vectors, dimensions));
+  } else {
+    // Векторы прошлой сборки соответствуют прежним чанкам построчно, а chunks.jsonl
+    // только что переписан. Оставить файл — значит отдать поиску чужие векторы молча,
+    // и при совпавшем числе чанков это даже не всплывёт как ошибка размера.
+    await fs.rm(vectorsPath, { force: true });
+  }
   await fs.writeFile(
     path.join(indexDir, "chunks.jsonl"),
     chunks.map((chunk) => JSON.stringify(chunk)).join("\n") + "\n",

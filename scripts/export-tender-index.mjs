@@ -17,11 +17,12 @@ import { readSettings, readSources } from "../apps/rag-api/src/store.js";
 import { exportTenderIndex, isTenderPdFolder } from "../apps/rag-api/src/tender-pd-export.js";
 
 function parseArgs(argv) {
-  const args = { all: false, dryRun: false, list: false, sourceId: "", path: "", help: false };
+  const args = { all: false, dryRun: false, list: false, sourceId: "", path: "", help: false, withVectors: true };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--all") args.all = true;
     else if (arg === "--dry-run") args.dryRun = true;
+    else if (arg === "--no-embeddings") args.withVectors = false;
     else if (arg === "--list") args.list = true;
     else if (arg === "--source-id") args.sourceId = argv[++index] || "";
     else if (arg === "--path") args.path = argv[++index] || "";
@@ -38,6 +39,11 @@ function usage() {
     "  node scripts/export-tender-index.mjs --source-id <id> [--dry-run]",
     "  node scripts/export-tender-index.mjs --path <папка тендера> [--dry-run]",
     "  node scripts/export-tender-index.mjs --all",
+    "",
+    "",
+    "  --no-embeddings   собрать только текстовую часть, без векторов.",
+    "                    Поиск по словам (--search) от этого не страдает: он считается",
+                        "                    по chunks.jsonl и модели не требует. Векторы можно досчитать позже.",
     "",
     "Годным считается источник, в папке которого есть project/_admin/SHEET_INDEX.csv.",
     "Индекс пишется внутрь самой папки тендера, в project/_admin/VECTOR_INDEX.",
@@ -65,13 +71,14 @@ function progressLine(event) {
   return null;
 }
 
-async function runOne({ title, tenderRoot, settings, dryRun }) {
+async function runOne({ title, tenderRoot, settings, dryRun, withVectors }) {
   console.log(`\n${title}\n  ${tenderRoot}`);
   const started = Date.now();
   const manifest = await exportTenderIndex({
     tenderRoot,
     settings,
     apply: !dryRun,
+    withVectors,
     onProgress: (event) => {
       const line = progressLine(event);
       if (line) console.log(line);
@@ -82,7 +89,9 @@ async function runOne({ title, tenderRoot, settings, dryRun }) {
     `  ${manifest.status}: ${manifest.chunk_count} чанков, ${manifest.page_count} страниц, ` +
     `${manifest.document_count} томов, dim ${manifest.dim}, ${seconds} c`
   );
-  console.log(`  посчитано ${manifest.vectors_computed}, переиспользовано ${manifest.vectors_reused}`);
+  console.log(manifest.has_vectors
+    ? `  векторы: посчитано ${manifest.vectors_computed}, переиспользовано ${manifest.vectors_reused}`
+    : "  векторы не считались; поиск по словам работает, --similar-to и --semantic — нет");
   return manifest;
 }
 
@@ -143,7 +152,7 @@ async function main() {
   let failed = 0;
   for (const target of targets) {
     try {
-      await runOne({ ...target, settings, dryRun: args.dryRun });
+      await runOne({ ...target, settings, dryRun: args.dryRun, withVectors: args.withVectors });
     } catch (error) {
       failed += 1;
       // Одна сломанная папка не должна ронять прогон по остальным тендерам.

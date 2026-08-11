@@ -30,6 +30,24 @@ export const SHEET_INDEX_REL = path.join("project", "_admin", "SHEET_INDEX.csv")
 const SCHEMA_VERSION = 1;
 
 /**
+ * Тендерная ПД опознаётся по содержимому папки, а не по типу в конфиге.
+ *
+ * Отдельный `sourceType` пришлось бы выставлять руками в config/sources.yaml: интерфейс
+ * берёт тип из активной вкладки и знает только «договор» и «тендер». Наличие
+ * постраничного индекса листов — признак самоописывающийся: он появляется ровно тогда,
+ * когда экспортировать уже есть что, и исчезать сам по себе не может.
+ */
+export async function isTenderPdFolder(folderPath) {
+  if (!folderPath) return false;
+  try {
+    const stats = await fs.stat(path.join(folderPath, SHEET_INDEX_REL));
+    return stats.isFile() && stats.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Разбор CSV по RFC 4180.
  *
  * `SHEET_INDEX.csv` содержит краткое содержание листов: там и запятые, и кавычки, и

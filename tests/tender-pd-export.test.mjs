@@ -1,12 +1,51 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import {
   encodeVectorsNpy,
   indexRowsByFile,
+  isTenderPdFolder,
   npyHeader,
   parseCsv
 } from "../apps/rag-api/src/tender-pd-export.js";
+
+async function tempDir() {
+  return fs.mkdtemp(path.join(os.tmpdir(), "tender-pd-"));
+}
+
+async function withSheetIndex(root, content) {
+  const dir = path.join(root, "project", "_admin");
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "SHEET_INDEX.csv"), content, "utf8");
+}
+
+test("папка с постраничным индексом опознаётся как тендерная ПД", async () => {
+  const root = await tempDir();
+  await withSheetIndex(root, "source_id,file_path,page\nAR-1,x.md,1\n");
+  assert.equal(await isTenderPdFolder(root), true);
+});
+
+test("обычная папка тендерной ПД не считается", async () => {
+  const root = await tempDir();
+  await fs.mkdir(path.join(root, "project"), { recursive: true });
+  assert.equal(await isTenderPdFolder(root), false);
+});
+
+test("пустой индекс листов не годится: экспортировать нечего", async () => {
+  const root = await tempDir();
+  await withSheetIndex(root, "");
+  assert.equal(await isTenderPdFolder(root), false);
+});
+
+test("несуществующий путь и пустая строка не роняют проверку", async () => {
+  assert.equal(await isTenderPdFolder(path.join(os.tmpdir(), "нет-такой-папки-12345")), false);
+  assert.equal(await isTenderPdFolder(""), false);
+  assert.equal(await isTenderPdFolder(null), false);
+});
 
 test("parseCsv держит запятые и кавычки внутри поля", () => {
   const rows = parseCsv('a,b\n1,"текст, с запятой"\n');

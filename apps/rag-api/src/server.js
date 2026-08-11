@@ -39,7 +39,7 @@ import {
   tendersLinkedToContract
 } from "./source-scope.js";
 import { runTenderSourceSync } from "./tender-sync.js";
-import { exportTenderIndex } from "./tender-pd-export.js";
+import { exportTenderIndex, isTenderPdFolder } from "./tender-pd-export.js";
 import { createHubTenderAdapterFromEnv } from "./hubtender-adapter.js";
 import { runTenderPriceAudit } from "./tender-price-audit.js";
 import { getGlobalTenderAuditRun, startGlobalTenderAudit } from "./tender-global-audit.js";
@@ -3251,13 +3251,27 @@ app.post("/api/sources/:id/index", async (req, res, next) => {
  * не нужны ни Qdrant, ни модель. Работа идёт тем же механизмом задач, что и индексация:
  * прогресс виден в UI и останавливается общей кнопкой.
  */
+/** Годится ли папка источника для экспорта индекса ПД. Опрашивается при выборе источника. */
+app.get("/api/sources/:id/tender-pd", async (req, res, next) => {
+  try {
+    const sources = await readSources();
+    const source = sources.find((item) => item.id === req.params.id);
+    if (!source) return res.status(404).json({ error: "source not found" });
+    res.json({ tenderPd: await isTenderPdFolder(source.path) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/sources/:id/export-index", async (req, res, next) => {
   try {
     const sources = await readSources();
     const source = sources.find((item) => item.id === req.params.id);
     if (!source) return res.status(404).json({ error: "source not found" });
-    if (String(source.sourceType || "").toLowerCase() !== "tender-pd") {
-      return res.status(400).json({ error: "источник должен иметь sourceType: tender-pd" });
+    if (!(await isTenderPdFolder(source.path))) {
+      return res.status(400).json({
+        error: "в папке источника нет project/_admin/SHEET_INDEX.csv — это не распознанная тендерная ПД"
+      });
     }
 
     const existing = Array.from(jobs.values()).find((job) => job.sourceId === source.id && job.status === "running");

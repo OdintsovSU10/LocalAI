@@ -21,16 +21,16 @@ sources:
     # sourceType: contract
     # linkedContractId: ""
 
-  # Распознанная тендерная ПД: папка тендера из TENDER, а не произвольные документы.
-  # Для такого источника доступен экспорт переносимого векторного индекса — кнопка
-  # «Экспорт индекса для удалёнки» или scripts/export-tender-index.mjs. Индекс ложится
-  # в <тендер>/project/_admin/VECTOR_INDEX и уезжает на удалённую машину вместе с
-  # тендером, поэтому там не нужны ни Qdrant, ни модель.
-  # Требует собранного project/_admin/SHEET_INDEX.csv (навык bootstrap-tender).
+  # Распознанная тендерная ПД: папка тендера из TENDER.
+  # Отдельный sourceType для неё не нужен — она опознаётся по наличию
+  # project/_admin/SHEET_INDEX.csv, который появляется после навыка bootstrap-tender.
+  # Для такой папки в меню действий с индексом появляется «Экспорт индекса для удалёнки»
+  # (либо scripts/export-tender-index.mjs). Индекс ложится в
+  # <тендер>/project/_admin/VECTOR_INDEX и уезжает на удалённую машину вместе с тендером,
+  # поэтому там не нужны ни Qdrant, ни модель.
   - id: demo-tender-pd
     title: Тендер ЖК Пример 6.1
     path: C:\Users\Usrr\VSCode\Odintsov\TENDER\Тендер ЖК Пример 6.1
-    sourceType: tender-pd
     include:
       - "project/PD/**/markdown/*.md"
       - "project/customer-boq/markdown/*.md"

@@ -8,15 +8,13 @@
  *   node scripts/export-tender-index.mjs --path "C:\\...\\TENDER\\Тендер ЖК События 6.1"
  *   node scripts/export-tender-index.mjs --all
  *
- * Источник тендера отличается от обычного полем `sourceType: tender-pd` в
- * config/sources.yaml. `--path` позволяет прогнать папку, ещё не заведённую источником.
+ * Тендерная ПД опознаётся по содержимому папки — наличию project/_admin/SHEET_INDEX.csv,
+ * а не по типу в конфиге. `--path` прогоняет папку, ещё не заведённую источником вовсе.
  */
 
 import path from "node:path";
 import { readSettings, readSources } from "../apps/rag-api/src/store.js";
-import { exportTenderIndex } from "../apps/rag-api/src/tender-pd-export.js";
-
-export const TENDER_PD_SOURCE_TYPE = "tender-pd";
+import { exportTenderIndex, isTenderPdFolder } from "../apps/rag-api/src/tender-pd-export.js";
 
 function parseArgs(argv) {
   const args = { all: false, dryRun: false, list: false, sourceId: "", path: "", help: false };
@@ -41,15 +39,21 @@ function usage() {
     "  node scripts/export-tender-index.mjs --path <папка тендера> [--dry-run]",
     "  node scripts/export-tender-index.mjs --all",
     "",
-    "Тендерным считается источник с sourceType: tender-pd в config/sources.yaml.",
+    "Годным считается источник, в папке которого есть project/_admin/SHEET_INDEX.csv.",
     "Индекс пишется в <тендер>/project/_admin/VECTOR_INDEX/ и уезжает вместе с тендером."
   ].join("\n");
 }
 
-export function tenderSources(sources) {
-  return (Array.isArray(sources) ? sources : []).filter(
-    (source) => String(source?.sourceType || "").trim().toLowerCase() === TENDER_PD_SOURCE_TYPE
-  );
+/**
+ * Источники, годные для экспорта: в папке есть постраничный индекс листов.
+ *
+ * Признак берётся с диска, а не из конфига: тип источника в интерфейсе выставить нельзя,
+ * а наличие SHEET_INDEX.csv появляется ровно тогда, когда экспортировать уже есть что.
+ */
+export async function tenderSources(sources) {
+  const candidates = Array.isArray(sources) ? sources : [];
+  const flags = await Promise.all(candidates.map((source) => isTenderPdFolder(source?.path)));
+  return candidates.filter((_, index) => flags[index]);
 }
 
 function progressLine(event) {
@@ -97,9 +101,9 @@ async function main() {
   }
 
   if (args.list) {
-    const tenders = tenderSources(await readSources());
+    const tenders = await tenderSources(await readSources());
     if (!tenders.length) {
-      console.log("Источников с sourceType: tender-pd нет. Добавьте тендер в config/sources.yaml.");
+      console.log("Годных источников нет: ни в одной папке нет project/_admin/SHEET_INDEX.csv.");
       return;
     }
     for (const source of tenders) console.log(`${source.id}\t${source.title || ""}\t${source.path}`);
@@ -113,7 +117,7 @@ async function main() {
     targets.push({ title: path.basename(path.resolve(args.path)), tenderRoot: path.resolve(args.path) });
   } else if (args.sourceId || args.all) {
     const sources = await readSources();
-    const tenders = tenderSources(sources);
+    const tenders = await tenderSources(sources);
     if (args.sourceId) {
       const source = tenders.find((item) => item.id === args.sourceId)
         || sources.find((item) => item.id === args.sourceId);

@@ -7010,19 +7010,34 @@ function updateAgentButton(run = state.agentStatus.latestRun) {
     stopButton.title = state.indexStopRequested ? "Остановка уже запрошена" : "Остановить текущую индексацию";
   }
   updateExportTenderIndexButton(running);
+  // Признак кешируется по источнику, поэтому повторный вызов ничего не стоит; так кнопка
+  // появляется и при первой загрузке, а не только при смене источника вручную.
+  refreshTenderPdFlag(state.selectedSourceId);
 }
 
-// Экспорт переносимого индекса имеет смысл только для распознанной тендерной ПД:
-// у обычной папки нет ни SHEET_INDEX.csv, ни удалённой машины, куда его везти.
-function isTenderPdSource(source) {
-  return String(source?.sourceType || "").trim().toLowerCase() === "tender-pd";
+// Экспорт переносимого индекса имеет смысл только для распознанной тендерной ПД. Признак
+// самоописывающийся — наличие project/_admin/SHEET_INDEX.csv в папке источника, поэтому
+// отдельный тип в конфиге не нужен и выставлять его руками не приходится. Проверяет
+// сервер: браузер до файловой системы не дотягивается.
+const tenderPdSources = new Map();
+
+async function refreshTenderPdFlag(sourceId) {
+  if (!sourceId || tenderPdSources.has(sourceId)) return;
+  try {
+    const payload = await api(`/api/sources/${encodeURIComponent(sourceId)}/tender-pd`);
+    tenderPdSources.set(sourceId, Boolean(payload?.tenderPd));
+  } catch {
+    // Недоступность сервера не должна показывать кнопку, которая всё равно не сработает.
+    tenderPdSources.set(sourceId, false);
+  }
+  updateExportTenderIndexButton();
 }
 
 function updateExportTenderIndexButton(running = false) {
   const button = $("#export-tender-index-button");
   if (!button) return;
-  const source = sourceById(state.selectedSourceId);
-  button.hidden = !isTenderPdSource(source);
+  const sourceId = state.selectedSourceId;
+  button.hidden = !tenderPdSources.get(sourceId);
   button.disabled = running;
   button.title = running
     ? "Дождитесь завершения индексации"
@@ -7031,8 +7046,7 @@ function updateExportTenderIndexButton(running = false) {
 
 async function exportTenderIndexSelected() {
   const source = sourceById(state.selectedSourceId);
-  if (!isTenderPdSource(source)) return;
-
+  if (!source) return;
   $("#job-status").textContent = `Экспорт векторного индекса: ${source.title || source.id}`;
   showIndexProgress({ status: "running", phase: "queued", message: "Экспорт векторного индекса в очереди" });
   let job;
@@ -8679,6 +8693,7 @@ $("#export-tender-index-button")?.addEventListener("click", exportTenderIndexSel
 $("#source-select").addEventListener("change", (event) => {
   state.selectedSourceId = event.target.value;
   updateExportTenderIndexButton();
+  refreshTenderPdFlag(state.selectedSourceId);
   resetSourcePreview();
   const session = activeChat();
   if (session && !(session.messages || []).length) {

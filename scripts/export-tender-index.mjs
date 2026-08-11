@@ -40,7 +40,8 @@ function usage() {
     "  node scripts/export-tender-index.mjs --all",
     "",
     "Годным считается источник, в папке которого есть project/_admin/SHEET_INDEX.csv.",
-    "Индекс пишется в <тендер>/project/_admin/VECTOR_INDEX/ и уезжает вместе с тендером."
+    "Индекс пишется внутрь самой папки тендера, в project/_admin/VECTOR_INDEX.",
+    "Отдельной выгрузки нет: на удалённую машину он уезжает обычной синхронизацией."
   ].join("\n");
 }
 

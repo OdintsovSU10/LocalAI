@@ -7041,7 +7041,7 @@ function updateExportTenderIndexButton(running = false) {
   button.disabled = running;
   button.title = running
     ? "Дождитесь завершения индексации"
-    : "Собрать векторный индекс ПД в project/_admin/VECTOR_INDEX и увезти его на удалённую машину";
+    : "Посчитать эмбеддинги и записать индекс в папку тендера; на удалённую машину он уедет синхронизацией";
 }
 
 async function exportTenderIndexSelected() {

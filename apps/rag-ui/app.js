@@ -4618,6 +4618,13 @@ function renderSources() {
 
   const visibleSources = settingsOpen ? sourceListTabSources() : state.sources;
 
+  for (const source of state.sources) {
+    const option = document.createElement("option");
+    option.value = source.id;
+    option.textContent = source.title;
+    select.append(option);
+  }
+
   for (const source of visibleSources) {
     const editingTitle = settingsOpen && !state.sourceSelectionMode && isSourceTitleEditing(source);
     const item = document.createElement("div");
@@ -4646,12 +4653,6 @@ function renderSources() {
       });
       item.append(form);
       list.append(item);
-      if (isContractSource(source)) {
-        const option = document.createElement("option");
-        option.value = source.id;
-        option.textContent = source.title;
-        select.append(option);
-      }
       continue;
     }
 
@@ -4717,13 +4718,6 @@ function renderSources() {
       item.append(editButton);
     }
     list.append(item);
-
-    if (!isContractSource(source)) continue;
-
-    const option = document.createElement("option");
-    option.value = source.id;
-    option.textContent = source.title;
-    select.append(option);
   }
 
   if (state.sources.length === 0) {
@@ -4732,14 +4726,9 @@ function renderSources() {
     list.innerHTML = state.sourceListTab === "tender"
       ? '<div class="empty">Тендеров пока нет. Запустите синхронизацию с Google Drive.</div>'
       : '<div class="empty">Договоров пока нет. Добавьте папку договора в RAG.</div>';
-  } else if (contractSourcesForUi().length === 0) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "Нет договоров — только тендеры";
-    select.append(option);
   }
 
-  if (state.selectedSourceId && !contractSourcesForUi().some((source) => source.id === state.selectedSourceId)) {
+  if (state.selectedSourceId && !state.sources.some((source) => source.id === state.selectedSourceId)) {
     state.selectedSourceId = "";
   }
 

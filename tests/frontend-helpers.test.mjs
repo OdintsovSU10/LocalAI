@@ -13,6 +13,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const appJs = fs.readFileSync(path.resolve(__dirname, "../apps/rag-ui/app.js"), "utf8");
 const appCss = fs.readFileSync(path.resolve(__dirname, "../apps/rag-ui/styles.css"), "utf8");
+const redesignCss = fs.readFileSync(path.resolve(__dirname, "../apps/rag-ui/locus-redesign.css"), "utf8");
 const indexHtml = fs.readFileSync(path.resolve(__dirname, "../apps/rag-ui/index.html"), "utf8");
 
 test("parseSseEventBlock parses JSON data", () => {
@@ -86,6 +87,19 @@ test("chat request carries previous source context without clearing auto mode", 
   assert.match(appJs, /const contextSourceId = !sourceId && contractSourceById\(session\.sourceId\) \? session\.sourceId : ""/);
   assert.match(appJs, /if \(sourceId\) \{\s*session\.sourceId = sourceId;\s*touchActiveChat\(\);\s*\}/);
   assert.match(appJs, /JSON\.stringify\(\{ question, sourceId, contextSourceId \}\)/);
+});
+
+test("project picker includes tenders and keeps native options dark", () => {
+  assert.match(
+    appJs,
+    /const visibleSources = settingsOpen \? sourceListTabSources\(\) : state\.sources;\s+for \(const source of state\.sources\) \{[\s\S]*?select\.append\(option\);\s+\}\s+for \(const source of visibleSources\)/
+  );
+  assert.match(
+    appJs,
+    /if \(state\.selectedSourceId && !state\.sources\.some\(\(source\) => source\.id === state\.selectedSourceId\)\)/
+  );
+  assert.match(redesignCss, /#source-select \{[\s\S]*?background: var\(--surface-2\);[\s\S]*?color-scheme: dark;/);
+  assert.match(redesignCss, /#source-select option,[\s\S]*?background-color: var\(--surface-1\);/);
 });
 
 test("chat history uses LLM titles, monthly groups, and action menu", () => {

@@ -521,11 +521,18 @@ body {
   min-height: 28px;
   max-width: 300px;
   border: 0;
-  background: transparent;
+  background: var(--surface-2);
   padding: 0 24px 0 0;
   color: var(--text-primary);
+  color-scheme: dark;
   font-size: var(--fs-sm);
   font-weight: 650;
+}
+
+.toolbar .project-picker #source-select option,
+.toolbar .project-picker #source-select optgroup {
+  background-color: var(--surface-1);
+  color: var(--text-primary);
 }
 
 .toolbar .project-picker #source-select:focus-visible {

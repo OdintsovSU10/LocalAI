@@ -245,7 +245,9 @@ export function chunkTenderPd({ markdown, filePath, discipline = "", revision = 
       pageKind: page.pageKind,
       cropUrl: page.cropUrl,
       summary: page.summary,
-      sheetRevision: page.revision
+      sheetRevision: page.revision,
+      // Идентификаторы блоков страницы: по ним ищется заранее снятый текст кропов.
+      blockIds: page.blockIds
     };
     const header = chunkHeader(meta);
     // Шапка повторяется в каждой части, поэтому бюджет тела — то, что от лимита осталось.

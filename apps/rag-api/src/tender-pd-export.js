@@ -27,7 +27,43 @@ import { chunkTenderPd, looksLikeTenderPd } from "./tender-pd-source.js";
 
 export const VECTOR_INDEX_DIR = path.join("project", "_admin", "VECTOR_INDEX");
 export const SHEET_INDEX_REL = path.join("project", "_admin", "SHEET_INDEX.csv");
+export const CROP_TEXT_DIR = path.join("project", "_admin", "CROP_TEXT");
 const SCHEMA_VERSION = 1;
+// Текста кропа на страницу берём ограниченно: он дополняет описание листа, а не
+// заменяет его, и раздувать чанк до бесконечности смысла нет.
+const CROP_TEXT_BUDGET = 3000;
+
+/**
+ * Текст кропов страницы, снятый заранее скриптом extract_crop_text.py.
+ *
+ * У блока чертежа в markdown лежит словесное описание, а размеры, отметки и марки —
+ * в кропе, векторном PDF. Снятый заранее текст лежит локально, поэтому его можно
+ * подмешать в чанк и получить точные числа и в поиске по словам, и в векторах.
+ *
+ * Файлов может не быть вовсе — тогда поведение прежнее.
+ */
+async function cropTextForBlocks(tenderRoot, discipline, blockIds) {
+  if (!blockIds?.length) return "";
+  const parts = [];
+  let budget = CROP_TEXT_BUDGET;
+  for (const blockId of blockIds) {
+    if (budget <= 0) break;
+    const file = path.join(tenderRoot, CROP_TEXT_DIR, discipline, `${blockId}.md`);
+    let raw;
+    try {
+      raw = await fs.readFile(file, "utf8");
+    } catch {
+      continue;
+    }
+    // Шапка файла нужна человеку, а в чанке она только шум: берём тело после разделителя.
+    const body = raw.split(/^---$/m).slice(1).join("---").trim();
+    if (!body) continue;
+    const slice = body.slice(0, budget);
+    budget -= slice.length;
+    parts.push(slice);
+  }
+  return parts.join("\n");
+}
 
 /**
  * Тендерная ПД опознаётся по содержимому папки, а не по типу в конфиге.
@@ -177,6 +213,7 @@ async function collectChunks(tenderRoot, byFile, onProgress) {
   const chunks = [];
   const files = [...byFile.keys()].sort();
   let done = 0;
+  let cropped = 0;
   for (const relative of files) {
     done += 1;
     if (!relative.toLowerCase().endsWith(".md")) continue;
@@ -202,6 +239,13 @@ async function collectChunks(tenderRoot, byFile, onProgress) {
       const indexRow = pages.get(String(chunk.page));
       // Страница, которой нет в SHEET_INDEX, в расчёт не входит: индекс — источник правды.
       if (!indexRow) continue;
+      // Текст кропов дописывается только к первой части страницы: у разрезанной
+      // расчётной записки он всё равно один на всю страницу, и дублировать его в
+      // каждой части значило бы засорить выдачу одинаковыми совпадениями.
+      const crops = chunk.chunkOrd === 0
+        ? await cropTextForBlocks(tenderRoot, indexRow.discipline || chunk.discipline, chunk.blockIds)
+        : "";
+      if (crops) cropped += 1;
       chunks.push({
         row: indexRow.row,
         source_id: indexRow.source_id || chunk.sourceId,
@@ -218,13 +262,16 @@ async function collectChunks(tenderRoot, byFile, onProgress) {
         zone: indexRow.zone || chunk.zone,
         page_kind: indexRow.page_kind || chunk.pageKind,
         crop_url: indexRow.crop_url || chunk.cropUrl,
-        text_hash: textHash(chunk.text),
-        text: chunk.text
+        text_hash: textHash(crops ? `${chunk.text}
+${crops}` : chunk.text),
+        has_crop_text: Boolean(crops),
+        text: crops ? `${chunk.text}
+${crops}` : chunk.text
       });
     }
     onProgress?.({ stage: "parse", done, total: files.length, file: relative, chunks: chunks.length });
   }
-  return chunks;
+  return { chunks, cropped };
 }
 
 async function embedChunks({ chunks, embeddings, cache, signal, onProgress }) {
@@ -280,7 +327,7 @@ export async function exportTenderIndex({
   const resolved = settings || await readSettings();
   const rows = parseCsv(sheetIndexRaw);
   const byFile = indexRowsByFile(rows);
-  const chunks = await collectChunks(root, byFile, onProgress);
+  const { chunks, cropped } = await collectChunks(root, byFile, onProgress);
   if (!chunks.length) throw new Error("Не набрано ни одного чанка: проверьте project/PD/**/markdown");
 
   const indexDir = path.join(root, VECTOR_INDEX_DIR);
@@ -324,6 +371,7 @@ export async function exportTenderIndex({
     document_count: byFile.size,
     sheet_index_rows: rows.length,
     sheet_index_sha256: sha256(sheetIndexRaw),
+    chunks_with_crop_text: cropped,
     vectors_computed: computed,
     vectors_reused: reused
   };

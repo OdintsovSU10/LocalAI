@@ -7,11 +7,84 @@ import path from "node:path";
 
 import {
   encodeVectorsNpy,
+  exportTenderIndex,
   indexRowsByFile,
   isTenderPdFolder,
   npyHeader,
   parseCsv
 } from "../apps/rag-api/src/tender-pd-export.js";
+
+const VOLUME_MD = [
+  "# Document: PD-AR.pdf", "",
+  "**Stamp:** Code: PD-AR | Stage: PD", "", "---", "",
+  "## Page 1", "",
+  "### BLOCK #1 [IMAGE]: blk_aaa", "",
+  "**[IMAGE]** | Type: План | Level: -9,300", "",
+  "**Summary:** План перекрытия.", ""
+].join("\n");
+
+/** Минимальный тендер: один том, одна страница, один графический блок. */
+async function makeTender(root) {
+  await fs.mkdir(path.join(root, "project", "PD", "AR", "markdown"), { recursive: true });
+  await fs.writeFile(path.join(root, "project", "PD", "AR", "markdown", "t_results.md"), VOLUME_MD, "utf8");
+  await fs.mkdir(path.join(root, "project", "_admin"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, "project", "_admin", "SHEET_INDEX.csv"),
+    "source_id,discipline,file_path,page\nAR-1,AR,project/PD/AR/markdown/t_results.md,1\n",
+    "utf8"
+  );
+  return root;
+}
+
+async function writeCropText(root, blockId, body) {
+  const dir = path.join(root, "project", "_admin", "CROP_TEXT", "AR");
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${blockId}.md`), `# Crop ${blockId}\n\n- Раздел: AR\n\n---\n\n${body}\n`, "utf8");
+}
+
+async function buildTextOnly(root) {
+  const manifest = await exportTenderIndex({ tenderRoot: root, withVectors: false, settings: {} });
+  const raw = await fs.readFile(path.join(root, "project/_admin/VECTOR_INDEX/chunks.jsonl"), "utf8");
+  return { manifest, chunks: raw.trim().split("\n").map((line) => JSON.parse(line)) };
+}
+
+test("без CROP_TEXT сборка не меняется", async () => {
+  const root = await makeTender(await tempDir());
+  const { manifest, chunks } = await buildTextOnly(root);
+  assert.equal(manifest.chunks_with_crop_text, 0);
+  assert.equal(chunks[0].has_crop_text, false);
+  assert.equal(manifest.has_vectors, false);
+});
+
+test("текст кропа дописывается в чанк страницы и меняет хеш", async () => {
+  const root = await makeTender(await tempDir());
+  const before = await buildTextOnly(root);
+
+  await writeCropText(root, "blk_aaa", "Плита 200мм бетон В25 W6 отм. -9,300");
+  const after = await buildTextOnly(root);
+
+  assert.equal(after.manifest.chunks_with_crop_text, 1);
+  assert.equal(after.chunks[0].has_crop_text, true);
+  assert.ok(after.chunks[0].text.includes("В25 W6"));
+  // Хеш обязан измениться: иначе кеш отдал бы вектор, посчитанный без размеров.
+  assert.notEqual(after.chunks[0].text_hash, before.chunks[0].text_hash);
+});
+
+test("кроп другого блока не подмешивается", async () => {
+  const root = await makeTender(await tempDir());
+  await writeCropText(root, "blk_чужой", "Не тот блок");
+  const { chunks } = await buildTextOnly(root);
+  assert.equal(chunks[0].has_crop_text, false);
+  assert.ok(!chunks[0].text.includes("Не тот блок"));
+});
+
+test("пустое тело кропа не считается за текст", async () => {
+  const root = await makeTender(await tempDir());
+  await writeCropText(root, "blk_aaa", "   ");
+  const { manifest, chunks } = await buildTextOnly(root);
+  assert.equal(manifest.chunks_with_crop_text, 0);
+  assert.equal(chunks[0].has_crop_text, false);
+});
 
 async function tempDir() {
   return fs.mkdtemp(path.join(os.tmpdir(), "tender-pd-"));

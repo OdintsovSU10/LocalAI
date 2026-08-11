@@ -7009,6 +7009,45 @@ function updateAgentButton(run = state.agentStatus.latestRun) {
     stopButton.disabled = state.indexStopRequested || !running;
     stopButton.title = state.indexStopRequested ? "Остановка уже запрошена" : "Остановить текущую индексацию";
   }
+  updateExportTenderIndexButton(running);
+}
+
+// Экспорт переносимого индекса имеет смысл только для распознанной тендерной ПД:
+// у обычной папки нет ни SHEET_INDEX.csv, ни удалённой машины, куда его везти.
+function isTenderPdSource(source) {
+  return String(source?.sourceType || "").trim().toLowerCase() === "tender-pd";
+}
+
+function updateExportTenderIndexButton(running = false) {
+  const button = $("#export-tender-index-button");
+  if (!button) return;
+  const source = sourceById(state.selectedSourceId);
+  button.hidden = !isTenderPdSource(source);
+  button.disabled = running;
+  button.title = running
+    ? "Дождитесь завершения индексации"
+    : "Собрать векторный индекс ПД в project/_admin/VECTOR_INDEX и увезти его на удалённую машину";
+}
+
+async function exportTenderIndexSelected() {
+  const source = sourceById(state.selectedSourceId);
+  if (!isTenderPdSource(source)) return;
+
+  $("#job-status").textContent = `Экспорт векторного индекса: ${source.title || source.id}`;
+  showIndexProgress({ status: "running", phase: "queued", message: "Экспорт векторного индекса в очереди" });
+  let job;
+  try {
+    job = await api(`/api/sources/${encodeURIComponent(source.id)}/export-index`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+  } catch (error) {
+    $("#job-status").textContent = apiErrorMessage(error, "Не удалось запустить экспорт индекса");
+    hideIndexProgress(5000);
+    return;
+  }
+  showIndexProgress(job);
+  pollJob(job.id);
 }
 
 function clearAgentPollTimer() {
@@ -8636,8 +8675,10 @@ $("#skipped-modal")?.addEventListener("click", (event) => {
   if (event.target.id === "skipped-modal") closeSkippedModal();
 });
 $("#force-reindex-button")?.addEventListener("click", forceReindexSelected);
+$("#export-tender-index-button")?.addEventListener("click", exportTenderIndexSelected);
 $("#source-select").addEventListener("change", (event) => {
   state.selectedSourceId = event.target.value;
+  updateExportTenderIndexButton();
   resetSourcePreview();
   const session = activeChat();
   if (session && !(session.messages || []).length) {

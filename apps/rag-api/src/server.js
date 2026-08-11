@@ -39,6 +39,7 @@ import {
   tendersLinkedToContract
 } from "./source-scope.js";
 import { runTenderSourceSync } from "./tender-sync.js";
+import { exportTenderIndex } from "./tender-pd-export.js";
 import { createHubTenderAdapterFromEnv } from "./hubtender-adapter.js";
 import { runTenderPriceAudit } from "./tender-price-audit.js";
 import { getGlobalTenderAuditRun, startGlobalTenderAudit } from "./tender-global-audit.js";
@@ -3231,6 +3232,98 @@ app.post("/api/sources/:id/index", async (req, res, next) => {
             updatedAt: new Date().toISOString()
           });
         }
+        jobs.set(job.id, job);
+        return persistJob(job);
+      })
+      .finally(() => {
+        jobControllers.delete(job.id);
+      });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Экспорт переносимого векторного индекса тендерной ПД.
+ *
+ * Считает эмбеддинги здесь, на локальной машине, и кладёт результат файлами внутрь самого
+ * тендера. Дальше индекс уезжает на удалённую машину обычной синхронизацией, поэтому там
+ * не нужны ни Qdrant, ни модель. Работа идёт тем же механизмом задач, что и индексация:
+ * прогресс виден в UI и останавливается общей кнопкой.
+ */
+app.post("/api/sources/:id/export-index", async (req, res, next) => {
+  try {
+    const sources = await readSources();
+    const source = sources.find((item) => item.id === req.params.id);
+    if (!source) return res.status(404).json({ error: "source not found" });
+    if (String(source.sourceType || "").toLowerCase() !== "tender-pd") {
+      return res.status(400).json({ error: "источник должен иметь sourceType: tender-pd" });
+    }
+
+    const existing = Array.from(jobs.values()).find((job) => job.sourceId === source.id && job.status === "running");
+    if (existing) return res.json(publicJobStatus(existing));
+
+    const controller = new AbortController();
+    const now = new Date().toISOString();
+    const job = {
+      id: crypto.randomUUID(),
+      sourceId: source.id,
+      sourceTitle: source.title,
+      kind: "export-index",
+      status: "running",
+      phase: "queued",
+      message: "Экспорт векторного индекса в очереди",
+      processed: 0,
+      total: 0,
+      startedAt: now,
+      updatedAt: now
+    };
+
+    jobs.set(job.id, job);
+    jobControllers.set(job.id, controller);
+    await persistJob(job);
+    res.status(202).json(publicJobStatus(job));
+
+    exportTenderIndex({
+      tenderRoot: source.path,
+      signal: controller.signal,
+      apply: !req.body?.dryRun,
+      onProgress: (event) => {
+        Object.assign(job, {
+          phase: event.stage,
+          processed: event.done,
+          total: event.total,
+          message: event.stage === "embed"
+            ? `Эмбеддинги ${event.done}/${event.total}, переиспользовано ${event.reused}`
+            : `Разбор томов ${event.done}/${event.total}`,
+          updatedAt: new Date().toISOString()
+        });
+        jobs.set(job.id, job);
+        persistJob(job).catch(() => {});
+      }
+    })
+      .then((manifest) => {
+        Object.assign(job, {
+          status: "completed",
+          phase: "done",
+          processed: manifest.chunk_count,
+          total: manifest.chunk_count,
+          message: `Готово: ${manifest.chunk_count} чанков, ${manifest.page_count} страниц, dim ${manifest.dim}`,
+          manifest,
+          finishedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+        jobs.set(job.id, job);
+        return persistJob(job);
+      })
+      .catch((error) => {
+        Object.assign(job, {
+          status: isAbortError(error) || controller.signal.aborted ? "cancelled" : "failed",
+          phase: job.phase && job.phase !== "queued" ? job.phase : "error",
+          message: error.message,
+          finishedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
         jobs.set(job.id, job);
         return persistJob(job);
       })

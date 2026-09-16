@@ -79,7 +79,8 @@ function runtimeEnv({ tempProjectRoot, port, requireAuth = false }) {
     NODE_ENV: "test",
     RAG_HOST: "127.0.0.1",
     RAG_PORT: String(port),
-    RAG_DATA_DIR: path.join(tempProjectRoot, "data"),
+    // Not "<root>/data": paths.js maps the legacy repo data dir to the live D:\LOCAL_RAG\data.
+    RAG_DATA_DIR: path.join(tempProjectRoot, "smoke-data"),
     RAG_METADATA_PROVIDER: "json",
     RAG_REQUIRE_AUTH: requireAuth ? "true" : "false",
     RAG_AUTH_TOKEN: requireAuth ? smokeToken : "",

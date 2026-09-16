@@ -14,3 +14,6 @@ LocalAI-analysis-*.zip
 *-analysis-sanitized-*.zip
 smoke-output/
 benchmark-output/
+# Private Product V2 evals over real documents (never commit)
+evals-private/*
+!evals-private/README.md

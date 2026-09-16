@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { matchTenderToRagSource } from "../apps/rag-api/src/tender-audit-match.js";
@@ -34,7 +37,17 @@ test("aggregateGlobalTotals counts severities from nested findings", () => {
   assert.equal(totals.low, 1);
 });
 
-test("startGlobalTenderAudit runs sync dry-run over mock tenders", async () => {
+test("startGlobalTenderAudit runs sync dry-run over mock tenders", async (t) => {
+  // Audit runs are persisted under dataDir(); keep them out of the live data folder.
+  const previousDataDir = process.env.RAG_DATA_DIR;
+  const tempDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "localai-global-audit-"));
+  process.env.RAG_DATA_DIR = tempDataDir;
+  t.after(async () => {
+    if (previousDataDir === undefined) delete process.env.RAG_DATA_DIR;
+    else process.env.RAG_DATA_DIR = previousDataDir;
+    await fs.rm(tempDataDir, { recursive: true, force: true });
+  });
+
   const adapter = createMockHubTenderAdapter({
     tenders: [{ id: "ht-1", tenderNumber: "298", title: "Сокольники" }],
     priceRecords: []

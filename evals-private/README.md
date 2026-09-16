@@ -11,7 +11,7 @@
 ## Запуск
 
 ```powershell
-node scripts/run-product-evals.mjs --dir evals-private --json evals-private/report.json
+node scripts/run-product-evals.mjs --dir evals-private --json .tmp/product-eval-private-report.json
 ```
 
-Отчёт содержит пути и цитаты из документов — не коммитить и не пересылать.
+Отчёт пишется только вне каталога с кейсами (иначе следующий запуск прочитает его как набор кейсов); `.tmp/` в `.gitignore`. Отчёт содержит пути и цитаты из документов — не коммитить и не пересылать.

@@ -82,8 +82,14 @@ export async function runProductEvals({ evalsDir = path.join(projectRoot, "evals
 
 async function main() {
   const jsonOut = readOption("json");
-  const evalsDir = readOption("dir");
-  const { problems, rows, metrics, corpora = [] } = await runProductEvals(evalsDir ? { evalsDir: path.resolve(evalsDir) } : {});
+  const evalsDir = path.resolve(readOption("dir") || path.join(projectRoot, "evals", "product-v2"));
+  // Every *.json in the eval directory is loaded as a case set, so a report written there breaks the next run.
+  if (jsonOut && !path.relative(evalsDir, path.resolve(jsonOut)).startsWith("..")) {
+    console.error(`FAIL: --json report must be written outside the eval directory (${evalsDir})`);
+    process.exitCode = 1;
+    return;
+  }
+  const { problems, rows, metrics, corpora = [] } = await runProductEvals({ evalsDir });
 
   if (rows.length) {
     console.log(`Product V2 eval (retrieval-only): ${rows.length} case(s), corpus ${corpora.join(", ")}`);
@@ -113,6 +119,7 @@ async function main() {
       })),
       problems
     };
+    await fs.mkdir(path.dirname(path.resolve(jsonOut)), { recursive: true });
     await fs.writeFile(path.resolve(jsonOut), `${JSON.stringify(report, null, 2)}\n`, "utf8");
   }
 

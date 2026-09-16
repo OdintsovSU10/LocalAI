@@ -52,3 +52,31 @@ Status: PASS
 ## Ready for next stage?
 YES
 Reason: схема и runner существуют, baseline сохранён, набор различает «нашли файл» и «нашли правильный evidence/редакцию».
+
+---
+
+## Revision 1 — после независимой проверки (verdict PARTIAL)
+
+Status: PASS (ожидает повторной проверки)
+
+### Findings
+1. **[P2] Исчезнувшие метрики проходили проверку.**
+   - Причина: `silentMetricFailures` перебирал только ключи, которые есть в отчёте.
+   - Исправление: полный контракт `EXPECTED_METRICS` в `scripts/product-eval/metrics.mjs`; проверяется каждая ожидаемая метрика и любая лишняя из отчёта.
+   - Регрессионный тест: удаление `answer.numericFidelity` и всей группы `verifier` → метрики попадают в список сбоев. До исправления тест падал.
+2. **[P2] Документированная команда ломалась при повторном запуске.**
+   - Причина: отчёт `--json` сохранялся в каталог кейсов, а загрузчик читает все `*.json`.
+   - Исправление: `scripts/run-product-evals.mjs` отклоняет `--json` внутри каталога кейсов (exit 1 с объяснением) и создаёт каталог отчёта; README использует `.tmp/product-eval-private-report.json`.
+   - Регрессионный тест: отчёт внутри каталога → exit 1; два запуска подряд с отчётом вне каталога → без проблем. До исправления тест падал.
+
+### Changed
+- `scripts/product-eval/metrics.mjs`, `scripts/run-product-evals.mjs`, `evals-private/README.md`, `tests/product-eval.test.mjs`
+
+### Tests / evidence
+- `npm run check` -> PASS
+- `npm test` -> PASS 303/303
+- `npm run check:ui` -> PASS
+- `npm run eval:demo` -> PASS
+- `npm run eval:product` -> PASS, baseline не изменился (R@5 0.870, citation 0.400, current version 0.000)
+- `npm run mcp:check`, `npm run mcp:test` -> PASS
+- `npm run smoke:api` -> PASS

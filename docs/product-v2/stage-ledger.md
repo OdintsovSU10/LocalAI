@@ -4,8 +4,8 @@
 
 | Stage | Название | Статус | Отчёт |
 |---|---|---|---|
-| 00 | Baseline & architecture freeze | PASS (ожидает независимой проверки) | [stage-00-report.md](stage-00-report.md) |
-| 01 | Product eval contract | PASS (ожидает независимой проверки) | [stage-01-report.md](stage-01-report.md) |
+| 00 | Baseline & architecture freeze | PASS (независимая проверка: PASS) | [stage-00-report.md](stage-00-report.md) |
+| 01 | Product eval contract | PASS после revision 1 (ожидает повторной проверки) | [stage-01-report.md](stage-01-report.md) |
 | 02 | Answer-core extraction | не начат | |
 | 03 | Server conversations | не начат | |
 | 04 | Evidence + document graph | не начат | |

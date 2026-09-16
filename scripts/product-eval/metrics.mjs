@@ -164,17 +164,43 @@ export function computeProductMetrics(rows = []) {
   };
 }
 
-// Returns names of metrics that are neither computed nor explicitly NOT_AVAILABLE with a reason.
+// Full Product V2 metric contract. A metric missing from a report is a silent failure,
+// so the check walks this list rather than whatever keys the report happens to contain.
+export const EXPECTED_METRICS = [
+  "retrieval.recallAt5",
+  "retrieval.recallAt10",
+  "retrieval.fileRecallAt5",
+  "retrieval.mrr",
+  "retrieval.projectSelectionAccuracy",
+  "retrieval.wrongProjectLeakRateAt5",
+  "retrieval.citationTargetAccuracy",
+  "retrieval.currentVersionAccuracy",
+  "clarification.precision",
+  "clarification.recall",
+  "answer.materialClaimSupportRate",
+  "answer.numericFidelity",
+  "answer.noAnswerHallucinationRate",
+  "verifier.falsePassRate",
+  "verifier.falseRejectRate"
+];
+
+function metricIsExplicit(metric) {
+  const ok = metric?.status === METRIC_OK && Number.isFinite(metric.value);
+  const declared = metric?.status === METRIC_NOT_AVAILABLE && Boolean(metric.reason);
+  return ok || declared;
+}
+
+// Returns names of metrics that are missing, or neither computed nor explicitly NOT_AVAILABLE with a reason.
 export function silentMetricFailures(metrics) {
-  const failures = [];
+  const reported = [];
   for (const [group, values] of Object.entries(metrics || {})) {
-    for (const [name, metric] of Object.entries(values || {})) {
-      const ok = metric?.status === METRIC_OK && Number.isFinite(metric.value);
-      const declared = metric?.status === METRIC_NOT_AVAILABLE && Boolean(metric.reason);
-      if (!ok && !declared) failures.push(`${group}.${name}`);
-    }
+    for (const name of Object.keys(values || {})) reported.push(`${group}.${name}`);
   }
-  return failures;
+  const names = [...new Set([...EXPECTED_METRICS, ...reported])];
+  return names.filter((name) => {
+    const [group, key] = name.split(".");
+    return !metricIsExplicit(metrics?.[group]?.[key]);
+  });
 }
 
 // Metrics that must be computable on the committed corpus; NOT_AVAILABLE there means the eval set lost coverage.

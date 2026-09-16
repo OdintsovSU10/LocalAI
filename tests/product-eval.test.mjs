@@ -74,7 +74,7 @@ test("metrics are explicit: empty denominators become NOT_AVAILABLE with a reaso
   assert.ok(metrics.retrieval.recallAt5.reason);
   assert.deepEqual(silentMetricFailures(metrics), []);
   assert.ok(missingRequiredMetrics(metrics).includes("retrieval.recallAt5"));
-  assert.deepEqual(silentMetricFailures({ retrieval: { broken: { status: METRIC_OK, value: null } } }), ["retrieval.broken"]);
+  assert.ok(silentMetricFailures({ retrieval: { broken: { status: METRIC_OK, value: null } } }).includes("retrieval.broken"));
 });
 
 test("runProductEvals fails on an empty eval directory", async (t) => {
@@ -91,4 +91,39 @@ test("committed product-v2 eval set covers all classes and computes required met
   assert.deepEqual(missingRequiredMetrics(metrics), []);
   // The set must distinguish "right file" from "right evidence/citation".
   assert.ok(metrics.retrieval.fileRecallAt5.value >= metrics.retrieval.recallAt5.value);
+});
+
+test("silentMetricFailures flags metrics and groups that disappeared from the report", async () => {
+  const { metrics } = await runProductEvals();
+  const withoutNumeric = structuredClone(metrics);
+  delete withoutNumeric.answer.numericFidelity;
+  assert.ok(silentMetricFailures(withoutNumeric).includes("answer.numericFidelity"));
+
+  const withoutVerifier = structuredClone(metrics);
+  delete withoutVerifier.verifier;
+  const failures = silentMetricFailures(withoutVerifier);
+  assert.ok(failures.includes("verifier.falsePassRate"));
+  assert.ok(failures.includes("verifier.falseRejectRate"));
+});
+
+test("product eval --json report inside the eval directory is rejected, repeated runs stay green", async (t) => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const run = promisify(execFile);
+  const evalsDir = await fs.mkdtemp(path.join(os.tmpdir(), "localai-product-eval-rerun-"));
+  t.after(() => fs.rm(evalsDir, { recursive: true, force: true }));
+  await fs.copyFile(path.join("evals", "product-v2", "contracts-core.json"), path.join(evalsDir, "contracts-core.json"));
+  const script = path.join("scripts", "run-product-evals.mjs");
+
+  const inside = await run(process.execPath, [script, "--dir", evalsDir, "--json", path.join(evalsDir, "report.json")]).catch((error) => error);
+  assert.equal(inside.code, 1);
+  assert.match(String(inside.stderr), /outside the eval directory/);
+
+  const reportPath = path.join(os.tmpdir(), `localai-product-eval-report-${process.pid}.json`);
+  t.after(() => fs.rm(reportPath, { force: true }));
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await run(process.execPath, [script, "--dir", evalsDir, "--json", reportPath]);
+  }
+  const report = JSON.parse(await fs.readFile(reportPath, "utf8"));
+  assert.deepEqual(report.problems, []);
 });

@@ -19,15 +19,13 @@ import { buildCompletedVectorBackfillJob, buildVectorBackfillRows, countJsonVect
 import { managedQdrantStatus, restartManagedQdrant, startManagedQdrant, stopManagedQdrant } from "./qdrant-process.js";
 import { listFolders, listRoots, openFileInSystem, revealFileInSystem } from "./filesystem.js";
 import { chooseFolderWithExplorer } from "./dialog.js";
-import { chatCompletion, chatCompletionStream, isLmStudioRuntime, listLlmModels, lmStudioNativeBaseUrl, matchConfiguredModel, mergeModelRows, modelRowsFromPayload, normalizeRemoteRuntime } from "./llm.js";
+import { isLmStudioRuntime, listLlmModels, lmStudioNativeBaseUrl, matchConfiguredModel, mergeModelRows, modelRowsFromPayload, normalizeRemoteRuntime } from "./llm.js";
 import { converterStatus } from "./converters.js";
 import { clearGoogleAuth, completeGoogleAuth, googleAuthPublicStatus, startGoogleAuth } from "./google-auth.js";
 import { rerankerStatus } from "./reranker.js";
 import { managedRerankerStatus, restartManagedReranker, startManagedReranker, stopManagedReranker } from "./reranker-process.js";
 import { matchSourceForQuestion } from "./source-match.js";
 import { applySourcePatch } from "./source-updates.js";
-import { resolveChatSourceScope } from "./chat-scope.js";
-import { expandedChatRetrievalQuery, hasBroadAnswerIntent } from "./chat-intent.js";
 import {
   contractSources,
   contractForTender,
@@ -43,7 +41,10 @@ import { exportTenderIndex, isTenderPdFolder } from "./tender-pd-export.js";
 import { createHubTenderAdapterFromEnv } from "./hubtender-adapter.js";
 import { runTenderPriceAudit } from "./tender-price-audit.js";
 import { getGlobalTenderAuditRun, startGlobalTenderAudit } from "./tender-global-audit.js";
-import { chatLlmCandidates, llmRouteMetadata, normalizeLlmProvider, providerLabel, selectedLlmSettings } from "./llm-routing.js";
+import { normalizeLlmProvider, providerLabel, selectedLlmSettings } from "./llm-routing.js";
+import { answerQuestion } from "./answer-core/answer-question.js";
+import { generateChatTitle } from "./answer-core/chat-llm.js";
+import { createLlmUsageTracker } from "./answer-core/llm-usage-tracker.js";
 import { createApiSecurityMiddleware, readApiSecurityConfig, warnIfUnsafeNetworkBinding } from "./security.js";
 import { findKnownSource, resolveMarkdownCachePath, resolvePreviewTarget } from "./preview-access.js";
 import { startSseResponse, writeSseEvent } from "./sse.js";
@@ -66,11 +67,9 @@ const apiSecurity = readApiSecurityConfig();
 const jobs = new Map();
 const jobControllers = new Map();
 const execFileAsync = promisify(execFile);
-const llmRequests = new Map();
-const lastLlmGenerations = new Map();
+const llmUsage = createLlmUsageTracker();
 let agentRunInProcess = false;
 let agentRunController = null;
-let lastLlmActivity = null;
 let usageCache = { at: 0, payload: null };
 let cpuUsageSample = null;
 
@@ -1066,37 +1065,6 @@ function publicRerankerSettings(reranker = {}) {
   };
 }
 
-function emptyRouteMetadata(settings = null) {
-  return llmRouteMetadata(chatLlmCandidates(settings || {})[0]);
-}
-
-function ragDebugMetadata({
-  routeMetadata = {},
-  searchMetadata = {},
-  matchedSource = null,
-  finalSourceCount = 0,
-  promptChars = 0,
-  answer = "",
-  llmMs = 0,
-  totalMs = 0
-} = {}) {
-  const searchTimings = searchMetadata.timings || {};
-  return {
-    ...routeMetadata,
-    ...searchMetadata,
-    matchedSource,
-    finalSourceCount: Number(finalSourceCount || 0),
-    promptChars: Number(promptChars || 0),
-    answerChars: String(answer || "").length,
-    timings: {
-      retrievalMs: Number(searchTimings.retrievalMs || 0),
-      rerankMs: Number(searchTimings.rerankMs || 0),
-      llmMs: Number(llmMs || 0),
-      totalMs: Number(totalMs || 0)
-    }
-  };
-}
-
 function publicSettings(settings) {
   return {
     ...settings,
@@ -1314,370 +1282,9 @@ async function refreshExistingIndexState() {
   };
 }
 
-function withFallbackSources(answer, sourceCount) {
-  const text = String(answer || "").trim();
-  if (!text || /(^|\n)\s*Источники\s*:/i.test(text)) return text;
-
-  const maxSourceNumber = Math.max(Number(sourceCount || 0), 0);
-  if (!maxSourceNumber) return text;
-
-  const cited = Array.from(text.matchAll(/\[(\d+)\]/g), (match) => Number(match[1]))
-    .filter((number, index, numbers) => (
-      Number.isInteger(number)
-      && number > 0
-      && number <= maxSourceNumber
-      && numbers.indexOf(number) === index
-    ));
-  const sourceNumbers = cited.length
-    ? cited.slice(0, 12)
-    : Array.from({ length: Math.min(maxSourceNumber, 3) }, (_value, index) => index + 1);
-  const refs = sourceNumbers.map((number) => `[${number}]`).join(", ");
-  return `${text}\n\nИсточники: ${refs}.`;
-}
-
-function buildRagContext(results, profile = {}) {
-  const maxSources = Math.max(1, Number(profile.maxSources || 8));
-  const maxCharsPerSource = Math.max(500, Number(profile.maxCharsPerSource || 1400));
-  return results
-    .slice(0, maxSources)
-    .map((item, index) => `[${index + 1}] Источник: ${item.citationLabel || formatCitationLabel(item)}\nПроект: ${item.sourceTitle || ""}\nФайл: ${item.title}\nПуть: ${item.path}\nФрагмент:\n${item.text.slice(0, maxCharsPerSource)}`)
-    .join("\n\n");
-}
-
-function buildChatMessages(question, context, options = {}) {
-  const broadAnswer = Boolean(options.broadAnswer);
-  const broadInstructions = broadAnswer
-    ? [
-        "Запрос широкий или обзорный: сначала собери все разные релевантные факты из контекста, затем дай сводку прямо в ответе.",
-        "Не отвечай двумя общими пунктами, если контекст содержит больше: перечисли предметные условия отдельными строками или короткими разделами.",
-        "Для условий договора проверь и отрази, если есть в контексте: предмет/стороны, документы и редакции, цену и изменения цены, сроки, оплату и аванс, гарантийное удержание или обеспечение, ответственность и допсоглашения.",
-        "Если важная категория не подтверждена найденными фрагментами, так и напиши: «в найденных фрагментах не подтверждено»."
-      ]
-    : [];
-  return [
-    {
-      role: "system",
-      content: [
-        "Ты локальный RAG-помощник по рабочим документам.",
-        "Отвечай на русском, развёрнуто и по делу: покрывай все релевантные найденные факты, но без воды.",
-        "Не используй thinking/reasoning режим. Сразу выводи финальный ответ.",
-        "Используй только предоставленный контекст.",
-        "Если ответа нет в контексте, прямо скажи, что в найденных фрагментах нет подтверждения.",
-        "Не придумывай значения, суммы, даты и условия.",
-        "Строго различай типы значений: размер, процент, сумма, срок, дата, период, условие возврата или выплаты.",
-        "Проценты и суммы никогда не называй сроком. Слово срок используй только для дней, месяцев, лет, дат или дедлайнов.",
-        "Если вопрос содержит несколько сущностей, например срок и размер, отвечай отдельными строками: Размер, Срок/период, Условия возврата/выплаты.",
-        "Каждое смысловое утверждение, пункт списка или предложение с фактом, числом, сроком, суммой, процентом, условием, названием документа или выводом сопровождай ссылкой на источник сразу в конце этой строки: [1], [2].",
-        "Не оставляй фактические строки без ссылок. Если строка является только твоим заголовком/группировкой и не взята из документа, не формулируй ее как факт.",
-        "Не заменяй построчные ссылки общим блоком источников в конце; общий блок допустим только дополнительно.",
-        "Для гарантийного удержания отдельно указывай: размер удержания, порядок удержания, срок выплаты или возврата, гарантийный период и вариант с банковской гарантией, если это есть в контексте.",
-        "Перед финальным ответом проверь, что каждое число подписано правильным смыслом: 3% — это размер/процент, 30 дней — срок выплаты, 3 года или 60 месяцев — период.",
-        "Не сокращай составные сроки: если написано «в течение 30 дней после истечения 3 лет», укажи и 30 дней, и событие/период отсчета.",
-        "Если в контексте есть несколько разных значений по одному вопросу, например разные редакции договора или допсоглашения, не выбирай одно молча: перечисли варианты и укажи документы или пункты.",
-        "Если вопрос задан по нескольким проектам, всем проектам или в контексте много файлов, не ограничивайся одним-двумя пунктами: сгруппируй ответ по проектам/документам и перечисли найденные значения по каждому релевантному источнику.",
-        "Если одно и то же значение встречается в нескольких документах, укажи значение один раз и рядом перечисли документы/проекты, где оно подтверждено.",
-        ...broadInstructions,
-        "В конце ответа укажи источники номерами в формате: Источники: [1], [2]."
-      ].join(" ")
-    },
-    {
-      role: "user",
-      content: `/no_think\n\nВопрос:\n${question}\n\nКонтекст:\n${context}`
-    }
-  ];
-}
-
-function normalizeFallbackText(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replaceAll("ё", "е")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function fallbackTokens(value) {
-  return Array.from(new Set(normalizeFallbackText(value).split(" ").filter((token) => token.length >= 2)));
-}
-
-function compactAnswerText(value) {
-  return String(value || "")
-    .replace(/\r/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
-}
-
-function sanitizeChatTitle(value = "") {
-  const title = String(value || "")
-    .replace(/<[^>]*>/g, " ")
-    .replace(/^[\s"'«»`]+|[\s"'«»`.,:;!?]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return title.slice(0, 72);
-}
-
-function fallbackChatTitle(question = "") {
-  const title = sanitizeChatTitle(question);
-  return title || "Новый чат";
-}
-
-function buildChatTitleMessages({ question = "", answer = "", sourceTitle = "" } = {}) {
-  const compactQuestion = compactAnswerText(question).slice(0, 900);
-  const compactAnswer = compactAnswerText(answer).slice(0, 1400);
-  return [
-    {
-      role: "system",
-      content: [
-        "Ты называешь чат по смыслу переписки.",
-        "Верни только короткое русское название, 2-6 слов.",
-        "Не добавляй дату, кавычки, двоеточие, точку, markdown или пояснения.",
-        "Не раскрывай секреты, токены, ключи или приватные URL."
-      ].join(" ")
-    },
-    {
-      role: "user",
-      content: `/no_think\n\nПроект: ${sourceTitle || "Авто"}\n\nВопрос:\n${compactQuestion}\n\nОтвет:\n${compactAnswer}`
-    }
-  ];
-}
-
-async function generateChatTitle({ settings = {}, question = "", answer = "", sourceTitle = "", signal } = {}) {
-  const fallbackTitle = fallbackChatTitle(question);
-  const candidates = chatLlmCandidates(settings).filter((llm) => llm.enabled !== false);
-  if (!candidates.length) return { title: fallbackTitle, fallbackUsed: true };
-
-  let lastError = null;
-  for (const candidate of candidates) {
-    if (candidate.missingRemoteContext || candidate.missingBaseUrl || candidate.missingApiKey) {
-      lastError = new Error("LLM route is not configured for title generation");
-      if (!candidate.allowAutoFallback) break;
-      continue;
-    }
-
-    try {
-      const reply = await chatCompletion({
-        llm: candidate,
-        signal,
-        messages: buildChatTitleMessages({ question, answer, sourceTitle })
-      });
-      const title = sanitizeChatTitle(reply.text);
-      if (title) {
-        return {
-          title,
-          model: reply.model,
-          provider: candidate.provider,
-          fallbackUsed: false
-        };
-      }
-    } catch (error) {
-      lastError = error;
-      if (signal?.aborted) throw error;
-      if (!candidate.allowAutoFallback) break;
-    }
-  }
-
-  return { title: fallbackTitle, fallbackUsed: true, error: lastError?.message || "" };
-}
-
-function resultExcerptForFallback(result, question) {
-  const terms = fallbackTokens(question);
-  const paragraphs = compactAnswerText(result.text)
-    .split(/\n{2,}/)
-    .map((part) => part.trim())
-    .filter((part) => part.length >= 30);
-
-  const scored = paragraphs.map((text, index) => {
-    const normalized = normalizeFallbackText(text);
-    const score = terms.reduce((sum, term) => sum + (normalized.includes(term) ? 1 : 0), 0)
-      + (/\d{2}\.\d{2}\.\d{4}/.test(text) ? 0.5 : 0);
-    return { text, index, score };
-  });
-
-  const selected = scored
-    .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-    .slice(0, 4)
-    .sort((left, right) => left.index - right.index)
-    .map((item) => item.text);
-
-  const excerpt = selected.length ? selected.join("\n\n") : compactAnswerText(result.text).slice(0, 900);
-  return excerpt.length > 1200 ? `${excerpt.slice(0, 1200).trim()}...` : excerpt;
-}
-
-function llmErrorAnswer(error, results, question) {
-  const topResults = results.slice(0, 3);
-  const lines = [
-    `Модель временно не ответила (${String(error?.message || error || "ошибка генерации")}). Индекс при этом работает, ниже самые релевантные выдержки:`
-  ];
-
-  topResults.forEach((result, index) => {
-    lines.push(`\n[${index + 1}] ${result.citationLabel || formatCitationLabel(result)}\n${resultExcerptForFallback(result, question)}`);
-  });
-
-  lines.push(`\nИсточники: ${topResults.map((_result, index) => `[${index + 1}]`).join(", ")}.`);
-  return lines.join("\n");
-}
-
-function isContextSizeError(error) {
-  return /context size|context length|n_ctx|n_keep/i.test(String(error?.message || error || ""));
-}
-
-const chatContextProfiles = [
-  { name: "compact", maxSources: 8, maxCharsPerSource: 1400 },
-  { name: "tight", maxSources: 6, maxCharsPerSource: 900 }
-];
-
-const broadChatContextProfiles = [
-  { name: "broad", maxSources: 14, maxCharsPerSource: 1200 },
-  { name: "broad-tight", maxSources: 10, maxCharsPerSource: 900 }
-];
-
-const allSourcesChatContextProfiles = [
-  { name: "all-sources-compact", maxSources: 16, maxCharsPerSource: 900 },
-  { name: "all-sources-tight", maxSources: 12, maxCharsPerSource: 700 }
-];
-
-const allSourcesBroadChatContextProfiles = [
-  { name: "all-sources-broad", maxSources: 20, maxCharsPerSource: 900 },
-  { name: "all-sources-broad-tight", maxSources: 14, maxCharsPerSource: 700 }
-];
-
-function chatContextProfilesForRequest({ sourceId = "", broadAnswer = false } = {}) {
-  if (sourceId) return broadAnswer ? broadChatContextProfiles : chatContextProfiles;
-  return broadAnswer ? allSourcesBroadChatContextProfiles : allSourcesChatContextProfiles;
-}
-
-function chatSearchLimit({ searchAllSources = false, broadAnswer = false } = {}) {
-  if (searchAllSources) return broadAnswer ? 36 : 24;
-  return broadAnswer ? 20 : 12;
-}
-
-async function runChatLlm({
-  llmCandidates,
-  results,
-  question,
-  sourceId,
-  broadAnswer = false,
-  signal,
-  stream = false,
-  onToken = () => {}
-}) {
-  let reply;
-  let usedLlm = null;
-  let lastLlmError = null;
-  let promptChars = 0;
-  const llmStartedAt = Date.now();
-  const contextProfiles = chatContextProfilesForRequest({ sourceId, broadAnswer });
-
-  for (let candidateIndex = 0; candidateIndex < llmCandidates.length; candidateIndex += 1) {
-    const candidateLlm = llmCandidates[candidateIndex];
-    if (candidateLlm.missingRemoteContext) {
-      lastLlmError = new Error("Удаленный контекст выключен. Включите remote context в настройках LLM, чтобы отправлять RAG-контекст в удаленную LM Studio.");
-      if (!candidateLlm.allowAutoFallback) break;
-      continue;
-    }
-
-    if (candidateLlm.missingBaseUrl || candidateLlm.missingApiKey) {
-      lastLlmError = new Error(`${providerLabel(candidateLlm.provider)} не настроен. Проверьте URL и токен в настройках LLM.`);
-      if (!candidateLlm.allowAutoFallback) break;
-      continue;
-    }
-
-    const llmRequestId = crypto.randomUUID();
-    updateLlmRequest(llmRequestId, {
-      phase: "generating",
-      model: candidateLlm.model,
-      provider: candidateLlm.provider,
-      selectedBy: candidateLlm.selectedBy || "",
-      autoFallbackReason: candidateLlm.autoFallbackReason || "",
-      timeoutSeconds: candidateLlm.timeoutSeconds,
-      sourceId,
-      sourcesCount: results.length,
-      promptChars: 0
-    });
-
-    try {
-      for (let attempt = 0; attempt < contextProfiles.length; attempt += 1) {
-        const contextProfile = contextProfiles[attempt];
-        const context = buildRagContext(results, contextProfile);
-        updateLlmRequest(llmRequestId, {
-          phase: attempt > 0 ? "compacting_context" : "generating",
-          promptChars: context.length,
-          contextProfile: contextProfile.name
-        });
-        promptChars = context.length;
-
-        try {
-          const completionArgs = {
-            llm: candidateLlm,
-            signal,
-            onProgress: (progress) => updateLlmRequest(llmRequestId, progress),
-            messages: buildChatMessages(question, context, { broadAnswer })
-          };
-          reply = stream
-            ? await chatCompletionStream({ ...completionArgs, onToken })
-            : await chatCompletion(completionArgs);
-          break;
-        } catch (error) {
-          lastLlmError = error;
-          if (!isContextSizeError(error) || attempt === contextProfiles.length - 1) throw error;
-        }
-      }
-
-      if (!reply) throw lastLlmError || new Error("LLM response is empty");
-      usedLlm = { ...candidateLlm, fallbackUsed: candidateIndex > 0 };
-      recordLlmGeneration(candidateLlm, reply, {
-        selectedBy: candidateLlm.selectedBy || "",
-        autoFallbackReason: candidateLlm.autoFallbackReason || "",
-        sourceId,
-        sourcesCount: results.length,
-        promptChars: llmRequests.get(llmRequestId)?.promptChars || 0
-      });
-      finishLlmRequest(llmRequestId, "completed");
-      break;
-    } catch (error) {
-      finishLlmRequest(llmRequestId, signal?.aborted ? "cancelled" : "failed", error.message);
-      lastLlmError = error;
-      if (signal?.aborted) throw error;
-      if (!candidateLlm.allowAutoFallback) break;
-    }
-  }
-
-  return {
-    reply,
-    usedLlm,
-    lastLlmError,
-    promptChars,
-    llmMs: Date.now() - llmStartedAt
-  };
-}
-
-function activeLlmRequests() {
-  return Array.from(llmRequests.values()).map((request) => ({
-    id: request.id,
-    phase: request.phase,
-    model: request.model,
-    modelState: request.modelState || "",
-    modelLoaded: request.modelLoaded === undefined ? null : Boolean(request.modelLoaded),
-    provider: request.provider,
-    providerLabel: providerLabel(request.provider),
-    selectedBy: request.selectedBy || "",
-    autoFallbackReason: request.autoFallbackReason || "",
-    timeoutSeconds: request.timeoutSeconds || 0,
-    sourceId: request.sourceId,
-    sourcesCount: request.sourcesCount || 0,
-    promptChars: request.promptChars || 0,
-    contextProfile: request.contextProfile || "",
-    startedAt: request.startedAt,
-    updatedAt: request.updatedAt
-  }));
-}
-
 function activeLlmRequestsForProvider(provider) {
   const normalized = normalizeLlmProvider(provider);
-  return activeLlmRequests().filter((request) => request.provider === normalized);
+  return llmUsage.activeRequests().filter((request) => request.provider === normalized);
 }
 
 function llmAuthHeaders(llm) {
@@ -1769,56 +1376,6 @@ function configuredModelSummary(configuredModel, models) {
     loaded: Boolean(row.loaded || row.state === "loaded"),
     state: row.state || (row.loaded ? "loaded" : "")
   };
-}
-
-function generationStatsFromReply(reply = {}) {
-  const stats = reply.stats || {};
-  const usage = reply.usage || {};
-  return {
-    endpoint: reply.endpoint || "",
-    tokensPerSecond: Number(stats.tokens_per_second ?? stats.tokensPerSecond ?? 0) || null,
-    timeToFirstToken: Number(stats.time_to_first_token ?? stats.timeToFirstToken ?? 0) || null,
-    generationTime: Number(stats.generation_time ?? stats.generationTime ?? 0) || null,
-    stopReason: stats.stop_reason || stats.stopReason || "",
-    promptTokens: Number(usage.prompt_tokens ?? usage.promptTokens ?? 0) || null,
-    completionTokens: Number(usage.completion_tokens ?? usage.completionTokens ?? 0) || null,
-    totalTokens: Number(usage.total_tokens ?? usage.totalTokens ?? 0) || null,
-    modelInfo: reply.modelInfo || null,
-    runtime: reply.runtime || null
-  };
-}
-
-function recordLlmGeneration(llm, reply, meta = {}) {
-  const provider = normalizeLlmProvider(llm?.provider);
-  const generation = {
-    provider,
-    providerLabel: providerLabel(provider),
-    model: reply?.model || llm?.model || "",
-    checkedAt: new Date().toISOString(),
-    ...generationStatsFromReply(reply),
-    ...meta
-  };
-  lastLlmGenerations.set(provider, generation);
-  return generation;
-}
-
-function updateLlmRequest(id, patch) {
-  const now = new Date().toISOString();
-  const existing = llmRequests.get(id) || { id, startedAt: now };
-  llmRequests.set(id, { ...existing, ...patch, updatedAt: now });
-}
-
-function finishLlmRequest(id, status = "completed", error = "") {
-  const request = llmRequests.get(id);
-  if (request) {
-    lastLlmActivity = {
-      ...request,
-      status,
-      error,
-      finishedAt: new Date().toISOString()
-    };
-  }
-  llmRequests.delete(id);
 }
 
 function readCpuPercent() {
@@ -2679,7 +2236,7 @@ app.get("/api/llm/status", async (req, res) => {
       embeddingChecked,
       chatModelAvailable: Boolean(chatModel && matchConfiguredModel(chatModel, models)),
       embeddingModelAvailable,
-      activeRequests: activeLlmRequests()
+      activeRequests: llmUsage.activeRequests()
     });
   } catch (error) {
     res.json({
@@ -2690,7 +2247,7 @@ app.get("/api/llm/status", async (req, res) => {
       activeProvider: normalizeLlmProvider(settings.llm?.provider),
       baseUrl: llm.baseUrl,
       error: error.message,
-      activeRequests: activeLlmRequests()
+      activeRequests: llmUsage.activeRequests()
     });
   }
 });
@@ -2713,7 +2270,7 @@ app.get("/api/llm/diagnostics", async (req, res) => {
     activeRequests,
     activeRequestsCount: activeRequests.length,
     busy: activeRequests.length > 0,
-    lastGeneration: lastLlmGenerations.get(llm.provider) || null
+    lastGeneration: llmUsage.lastGeneration(llm.provider)
   };
 
   if (llm.missingBaseUrl || llm.missingApiKey) {
@@ -2816,10 +2373,10 @@ app.get("/api/llm/usage", async (_req, res) => {
   const usage = await readComputerUsage();
   res.json({
     checkedAt: new Date().toISOString(),
-    activeRequests: activeLlmRequests(),
-    activeRequestsCount: llmRequests.size,
-    busy: llmRequests.size > 0,
-    lastActivity: lastLlmActivity,
+    activeRequests: llmUsage.activeRequests(),
+    activeRequestsCount: llmUsage.activeCount(),
+    busy: llmUsage.activeCount() > 0,
+    lastActivity: llmUsage.lastActivity(),
     computer: usage
   });
 });
@@ -3882,6 +3439,29 @@ app.post("/api/chat/title", async (req, res, next) => {
   }
 });
 
+function chatAnswerInput(body = {}) {
+  return {
+    question: String(body.question || "").trim(),
+    requestedSourceId: String(body.sourceId || "").trim(),
+    contextSourceId: String(body.contextSourceId || "").trim()
+  };
+}
+
+function chatAnswerDeps() {
+  return {
+    readSources,
+    readSettings,
+    readManifest,
+    readJobs,
+    searchChunksWithMetadata,
+    publicMatchedSource,
+    latestJobForSource,
+    publicJobStatus,
+    allSourcesNoResultsAnswer,
+    usageTracker: llmUsage
+  };
+}
+
 app.post("/api/chat", async (req, res, next) => {
   let clientAborted = false;
   const requestController = new AbortController();
@@ -3893,178 +3473,11 @@ app.post("/api/chat", async (req, res, next) => {
   });
 
   try {
-    const totalStartedAt = Date.now();
-    const question = String(req.body.question || "").trim();
-    const requestedSourceId = String(req.body.sourceId || "").trim();
-    const contextSourceId = String(req.body.contextSourceId || "").trim();
-    const sources = await readSources();
-    const settings = await readSettings();
-    const chatScope = resolveChatSourceScope({ question, requestedSourceId, contextSourceId, sources });
-    const { source, sourceId, searchSourceIds, autoMatch, searchAllSources } = chatScope;
-    const broadAnswer = hasBroadAnswerIntent(question);
-    const retrievalQuery = expandedChatRetrievalQuery(question);
-
-    if (chatScope.requestedSourceMissing) {
-      const candidates = autoMatch?.candidates || [];
-      const candidatesText = candidates.length
-        ? `\n\nПохожие проекты: ${candidates.map((candidate) => candidate.title).join("; ")}.`
-        : "";
-      const answer = `Не понял, к какому проекту относится вопрос. Добавьте в запрос название или адрес проекта, например: «Балчуг, Садовническая — какие основные условия договора?».${candidatesText}`;
-      return res.json({
-        answer,
-        sources: [],
-        matchedSource: null,
-        projectCandidates: candidates,
-        metadata: ragDebugMetadata({
-          routeMetadata: emptyRouteMetadata(settings),
-          answer,
-          totalMs: Date.now() - totalStartedAt
-        })
-      });
-    }
-
-    const matchedSource = source ? publicMatchedSource(source, {
-      autoSelected: !requestedSourceId || chatScope.contextSourceUsed,
-      score: autoMatch?.score || 0
-    }) : null;
-    const searchLimit = chatSearchLimit({ searchAllSources, broadAnswer });
-    let effectiveSearchSourceIds = searchAllSources ? null : searchSourceIds;
-    if (!searchAllSources && searchSourceIds.length) {
-      const manifest = await readManifest();
-      const scopedSources = sources.filter((item) => searchSourceIds.includes(item.id));
-      effectiveSearchSourceIds = indexSourceIdsForSources(scopedSources, manifest);
-    }
-    const searchResult = await searchChunksWithMetadata({
-      query: retrievalQuery,
-      sourceId,
-      sourceIds: effectiveSearchSourceIds,
-      limit: searchLimit
-    });
-    const results = searchResult.results;
-    const searchMetadata = searchResult.metadata;
-    const llmCandidates = chatLlmCandidates(settings);
-    const llm = llmCandidates[0];
-    const initialMetadata = (answer = "", overrides = {}) => ragDebugMetadata({
-      routeMetadata: llmRouteMetadata(llm),
-      searchMetadata,
-      matchedSource,
-      finalSourceCount: results.length,
-      answer,
-      totalMs: Date.now() - totalStartedAt,
-      ...overrides
-    });
-
-    if (!results.length) {
-      if (searchAllSources) {
-        const manifest = await readManifest();
-        const answer = allSourcesNoResultsAnswer(manifest);
-        return res.json({
-          answer,
-          matchedSource,
-          sources: [],
-          metadata: initialMetadata(answer)
-        });
-      }
-
-      const [manifest, persistedJobs] = await Promise.all([readManifest(), readJobs()]);
-      const currentSourceIds = new Set(sources.map((item) => item?.id).filter(Boolean));
-      const indexedChunks = indexedSnapshotForSource(source, manifest, { currentSourceIds }).chunks;
-      const latestJob = latestJobForSource(sourceId, persistedJobs);
-      if (!indexedChunks) {
-        const status = publicJobStatus(latestJob);
-        const progress = status.status === "running" && status.total
-          ? ` Сейчас идет индексация: ${status.processed || 0}/${status.total}.`
-          : "";
-        const answer = `По проекту «${source.title}» пока нет готового индекса.${progress} Запустите агента или дождитесь завершения индексации, затем повторите вопрос.`;
-        return res.json({
-          answer,
-          matchedSource,
-          sources: [],
-          metadata: initialMetadata(answer)
-        });
-      }
-
-      const answer = "По готовому индексу ничего не найдено. Попробуйте уточнить формулировку или выберите другой проект.";
-      return res.json({
-        answer,
-        matchedSource,
-        sources: [],
-        metadata: initialMetadata(answer)
-      });
-    }
-
-    if (!llm.enabled) {
-      const answer = "LLM выключен в настройках. Ниже самые релевантные фрагменты.";
-      return res.json({
-        answer,
-        matchedSource,
-        sources: results,
-        metadata: initialMetadata(answer)
-      });
-    }
-
-    const {
-      reply,
-      usedLlm,
-      lastLlmError,
-      promptChars,
-      llmMs
-    } = await runChatLlm({
-      llmCandidates,
-      results,
-      question,
-      sourceId,
-      broadAnswer,
+    const { payload } = await answerQuestion({
+      ...chatAnswerInput(req.body),
       signal: requestController.signal
-    });
-
-    if (!reply) {
-      const failedLlm = llmCandidates[0] || llm;
-      const answer = llmErrorAnswer(lastLlmError || new Error("LLM response is empty"), results, question);
-      return res.json({
-        answer,
-        model: failedLlm?.model || "",
-        provider: failedLlm?.provider,
-        providerLabel: providerLabel(failedLlm?.provider),
-        selectedBy: failedLlm?.selectedBy,
-        fallbackReason: "llm_failed",
-        matchedSource,
-        sources: results,
-        metadata: ragDebugMetadata({
-          routeMetadata: llmRouteMetadata(failedLlm),
-          searchMetadata,
-          matchedSource,
-          finalSourceCount: results.length,
-          promptChars,
-          answer,
-          llmMs,
-          totalMs: Date.now() - totalStartedAt
-        })
-      });
-    }
-
-    const answer = withFallbackSources(reply.text, results.length);
-    const metadata = ragDebugMetadata({
-      routeMetadata: llmRouteMetadata(usedLlm, { fallbackUsed: usedLlm?.fallbackUsed }),
-      searchMetadata,
-      matchedSource,
-      finalSourceCount: results.length,
-      promptChars,
-      answer,
-      llmMs,
-      totalMs: Date.now() - totalStartedAt
-    });
-    res.json({
-      answer,
-      model: reply.model,
-      provider: usedLlm?.provider,
-      providerLabel: providerLabel(usedLlm?.provider),
-      selectedBy: usedLlm?.selectedBy,
-      fallbackReason: usedLlm?.autoFallbackReason || "",
-      matchedSource,
-      sources: results,
-      metadata
-    });
+    }, chatAnswerDeps());
+    res.json(payload);
   } catch (error) {
     if (clientAborted || (error.name === "AbortError" && requestController.signal.aborted)) {
       if (!res.headersSent) res.status(499).json({ error: "request cancelled" });
@@ -4106,206 +3519,16 @@ app.post("/api/chat/stream", async (req, res) => {
   startSseResponse(res);
 
   try {
-    const totalStartedAt = Date.now();
-    const question = String(req.body.question || "").trim();
-    const requestedSourceId = String(req.body.sourceId || "").trim();
-    const contextSourceId = String(req.body.contextSourceId || "").trim();
-    writeSseEvent(res, "status", { status: "retrieval_started" });
-
-    const sources = await readSources();
-    const settings = await readSettings();
-    const chatScope = resolveChatSourceScope({ question, requestedSourceId, contextSourceId, sources });
-    const { source, sourceId, searchSourceIds, autoMatch, searchAllSources } = chatScope;
-    const broadAnswer = hasBroadAnswerIntent(question);
-    const retrievalQuery = expandedChatRetrievalQuery(question);
-
-    if (chatScope.requestedSourceMissing) {
-      const candidates = autoMatch?.candidates || [];
-      const candidatesText = candidates.length
-        ? `\n\nПохожие проекты: ${candidates.map((candidate) => candidate.title).join("; ")}.`
-        : "";
-      const answer = `Не понял, к какому проекту относится вопрос. Добавьте в запрос название или адрес проекта, например: «Балчуг, Садовническая — какие основные условия договора?».${candidatesText}`;
-      writeSseEvent(res, "status", { status: "retrieval_done", matched: false });
-      return streamChatPayload(res, {
-        answer,
-        sources: [],
-        matchedSource: null,
-        projectCandidates: candidates,
-        metadata: ragDebugMetadata({
-          routeMetadata: emptyRouteMetadata(settings),
-          answer,
-          totalMs: Date.now() - totalStartedAt
-        })
-      });
-    }
-
-    const matchedSource = source ? publicMatchedSource(source, {
-      autoSelected: !requestedSourceId || chatScope.contextSourceUsed,
-      score: autoMatch?.score || 0
-    }) : null;
-    const searchLimit = chatSearchLimit({ searchAllSources, broadAnswer });
-    let effectiveSearchSourceIds = searchAllSources ? null : searchSourceIds;
-    if (!searchAllSources && searchSourceIds.length) {
-      const manifest = await readManifest();
-      const scopedSources = sources.filter((item) => searchSourceIds.includes(item.id));
-      effectiveSearchSourceIds = indexSourceIdsForSources(scopedSources, manifest);
-    }
-    const searchResult = await searchChunksWithMetadata({
-      query: retrievalQuery,
-      sourceId,
-      sourceIds: effectiveSearchSourceIds,
-      limit: searchLimit
-    });
-    const results = searchResult.results;
-    const searchMetadata = searchResult.metadata;
-    const llmCandidates = chatLlmCandidates(settings);
-    const llm = llmCandidates[0];
-    const initialMetadata = (answer = "", overrides = {}) => ragDebugMetadata({
-      routeMetadata: llmRouteMetadata(llm),
-      searchMetadata,
-      matchedSource,
-      finalSourceCount: results.length,
-      answer,
-      totalMs: Date.now() - totalStartedAt,
-      ...overrides
-    });
-
-    writeSseEvent(res, "status", {
-      status: "retrieval_done",
-      matched: Boolean(source),
-      sourceId,
-      searchAllSources,
-      resultCount: results.length,
-      metadata: searchMetadata
-    });
-
-    if (!results.length) {
-      if (searchAllSources) {
-        const manifest = await readManifest();
-        const answer = allSourcesNoResultsAnswer(manifest);
-        return streamChatPayload(res, {
-          answer,
-          matchedSource,
-          sources: [],
-          metadata: initialMetadata(answer)
-        });
-      }
-
-      const [manifest, persistedJobs] = await Promise.all([readManifest(), readJobs()]);
-      const currentSourceIds = new Set(sources.map((item) => item?.id).filter(Boolean));
-      const indexedChunks = indexedSnapshotForSource(source, manifest, { currentSourceIds }).chunks;
-      const latestJob = latestJobForSource(sourceId, persistedJobs);
-      if (!indexedChunks) {
-        const status = publicJobStatus(latestJob);
-        const progress = status.status === "running" && status.total
-          ? ` Сейчас идет индексация: ${status.processed || 0}/${status.total}.`
-          : "";
-        const answer = `По проекту «${source.title}» пока нет готового индекса.${progress} Запустите агента или дождитесь завершения индексации, затем повторите вопрос.`;
-        return streamChatPayload(res, {
-          answer,
-          matchedSource,
-          sources: [],
-          metadata: initialMetadata(answer)
-        });
-      }
-
-      const answer = "По готовому индексу ничего не найдено. Попробуйте уточнить формулировку или выберите другой проект.";
-      return streamChatPayload(res, {
-        answer,
-        matchedSource,
-        sources: [],
-        metadata: initialMetadata(answer)
-      });
-    }
-
-    if (!llm.enabled) {
-      const answer = "LLM выключен в настройках. Ниже самые релевантные фрагменты.";
-      return streamChatPayload(res, {
-        answer,
-        matchedSource,
-        sources: results,
-        metadata: initialMetadata(answer)
-      });
-    }
-
-    writeSseEvent(res, "status", {
-      status: "llm_started",
-      provider: llm.provider,
-      providerLabel: providerLabel(llm.provider),
-      model: llm.model || ""
-    });
-
-    let streamedAnswer = "";
-    const {
-      reply,
-      usedLlm,
-      lastLlmError,
-      promptChars,
-      llmMs
-    } = await runChatLlm({
-      llmCandidates,
-      results,
-      question,
-      sourceId,
-      broadAnswer,
-      signal: requestController.signal,
+    const { payload, answerStreamed } = await answerQuestion({
+      ...chatAnswerInput(req.body),
       stream: true,
-      onToken: (token) => {
-        streamedAnswer += token;
-        writeSseEvent(res, "token", { text: token });
+      signal: requestController.signal,
+      onEvent: (event) => {
+        if (event.type === "token") writeSseEvent(res, "token", { text: event.text });
+        else if (event.type === "status") writeSseEvent(res, "status", event.payload);
       }
-    });
-
-    if (!reply) {
-      const failedLlm = llmCandidates[0] || llm;
-      const answer = llmErrorAnswer(lastLlmError || new Error("LLM response is empty"), results, question);
-      return streamChatPayload(res, {
-        answer,
-        model: failedLlm?.model || "",
-        provider: failedLlm?.provider,
-        providerLabel: providerLabel(failedLlm?.provider),
-        selectedBy: failedLlm?.selectedBy,
-        fallbackReason: "llm_failed",
-        matchedSource,
-        sources: results,
-        metadata: ragDebugMetadata({
-          routeMetadata: llmRouteMetadata(failedLlm),
-          searchMetadata,
-          matchedSource,
-          finalSourceCount: results.length,
-          promptChars,
-          answer,
-          llmMs,
-          totalMs: Date.now() - totalStartedAt
-        })
-      }, { emitAnswerToken: !streamedAnswer });
-    }
-
-    const answer = withFallbackSources(reply.text, results.length);
-    const suffix = answer.startsWith(streamedAnswer) ? answer.slice(streamedAnswer.length) : "";
-    if (suffix) writeSseEvent(res, "token", { text: suffix });
-
-    const payload = {
-      answer,
-      model: reply.model,
-      provider: usedLlm?.provider,
-      providerLabel: providerLabel(usedLlm?.provider),
-      selectedBy: usedLlm?.selectedBy,
-      fallbackReason: usedLlm?.autoFallbackReason || "",
-      matchedSource,
-      sources: results,
-      metadata: ragDebugMetadata({
-        routeMetadata: llmRouteMetadata(usedLlm, { fallbackUsed: usedLlm?.fallbackUsed }),
-        searchMetadata,
-        matchedSource,
-        finalSourceCount: results.length,
-        promptChars,
-        answer,
-        llmMs,
-        totalMs: Date.now() - totalStartedAt
-      })
-    };
-    return streamChatPayload(res, payload, { emitAnswerToken: false });
+    }, chatAnswerDeps());
+    return streamChatPayload(res, payload, { emitAnswerToken: !answerStreamed });
   } catch (error) {
     if (clientAborted || (error.name === "AbortError" && requestController.signal.aborted)) {
       if (!res.writableEnded) res.end();

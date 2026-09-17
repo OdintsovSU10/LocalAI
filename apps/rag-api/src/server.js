@@ -7,7 +7,7 @@ import os from "node:os";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { formatCitationLabel } from "./citations.js";
-import { appStateSqlitePath, chunksPath, markdownCacheDir, projectRoot } from "./paths.js";
+import { appStateSqlitePath, chunksPath, evidenceSqlitePath, markdownCacheDir, projectRoot } from "./paths.js";
 import { ensureStorage, readChunks, readJobs, readManifest, readSettings, readSourceSummaries, readSources, readVectors, writeChunks, writeJobs, writeManifest, writeSettings, writeSourceSummaries, writeSources, writeVectors } from "./store.js";
 import { indexSource, scanSkippedFiles } from "./indexer.js";
 import { ensureChunkEmbeddings } from "./embeddings.js";
@@ -48,6 +48,9 @@ import { createLlmUsageTracker } from "./answer-core/llm-usage-tracker.js";
 import { loadChatConversation, persistChatTurn } from "./conversation/chat-turn.js";
 import { createConversationStore } from "./conversation/conversation-store.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
+import { createEvidenceStore } from "./evidence/evidence-store.js";
+import { rebuildSourceEvidence } from "./evidence/source-evidence-runtime.js";
+import { registerEvidenceRoutes } from "./routes/evidence.js";
 import { createApiSecurityMiddleware, readApiSecurityConfig, warnIfUnsafeNetworkBinding } from "./security.js";
 import { findKnownSource, resolveMarkdownCachePath, resolvePreviewTarget } from "./preview-access.js";
 import { startSseResponse, writeSseEvent } from "./sse.js";
@@ -72,6 +75,7 @@ const jobControllers = new Map();
 const execFileAsync = promisify(execFile);
 const llmUsage = createLlmUsageTracker();
 let conversationStorePromise = null;
+let evidenceStorePromise = null;
 let agentRunInProcess = false;
 let agentRunController = null;
 let usageCache = { at: 0, payload: null };
@@ -2773,6 +2777,10 @@ app.post("/api/sources/:id/index", async (req, res, next) => {
           updatedAt: new Date().toISOString()
         });
         jobs.set(job.id, job);
+        // Evidence enrichment follows indexing in the background; its failure never fails the index job.
+        rebuildEvidenceForSource(source.id).catch((error) => {
+          console.error(`Evidence rebuild failed for ${source.id}: ${error.message}`);
+        });
         return persistJob(job);
       })
       .catch((error) => {
@@ -3461,6 +3469,27 @@ function conversationStore() {
 }
 
 registerConversationRoutes(app, { getStore: conversationStore, channel: "web" });
+
+// Evidence (documents, spans, facts) is derived from the index and opened on first use, like app state.
+function evidenceStore() {
+  evidenceStorePromise ||= createEvidenceStore({ databasePath: evidenceSqlitePath() }).catch((error) => {
+    evidenceStorePromise = null;
+    throw error;
+  });
+  return evidenceStorePromise;
+}
+
+async function rebuildEvidenceForSource(sourceId) {
+  return rebuildSourceEvidence(sourceId, {
+    store: await evidenceStore(),
+    readSources,
+    readManifest,
+    readChunks,
+    markdownCacheRoot: markdownCacheDir()
+  });
+}
+
+registerEvidenceRoutes(app, { getStore: evidenceStore, rebuildSource: rebuildEvidenceForSource });
 
 function chatAnswerDeps() {
   return {

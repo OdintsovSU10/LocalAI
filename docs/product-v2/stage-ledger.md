@@ -7,8 +7,8 @@
 | 00 | Baseline & architecture freeze | PASS (независимая проверка: PASS) | [stage-00-report.md](stage-00-report.md) |
 | 01 | Product eval contract | PASS (независимая проверка после revision 1) | [stage-01-report.md](stage-01-report.md) |
 | 02 | Answer-core extraction | PASS (независимая проверка после revision 2) | [stage-02-report.md](stage-02-report.md) |
-| 03 | Server conversations | revision 2 (очистка контракта, тест 404), ожидает повторной проверки | [stage-03-report.md](stage-03-report.md) |
-| 04 | Evidence + document graph | не начат | |
+| 03 | Server conversations | PASS (независимая проверка после revision 2) | [stage-03-report.md](stage-03-report.md) |
+| 04 | Evidence + document graph | код готов, ожидает прогона и проверки | [stage-04-report.md](stage-04-report.md) |
 | 05 | Query planner & clarification | не начат | |
 | 06 | Retrieval 2.0 | не начат | |
 | 07 | Verified answering | не начат | |
@@ -33,4 +33,5 @@ npm run smoke:api
 npm run eval:product
 npm run test:chat-contract
 npm run test:conversation-contract
+npm run test:evidence-contract
 ```

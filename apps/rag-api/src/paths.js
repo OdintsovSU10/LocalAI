@@ -75,6 +75,11 @@ export function appStateSqlitePath() {
   return path.join(stateDir(), "app-state.sqlite");
 }
 
+// Documents, evidence spans and facts derived from the index (rebuildable), see ADR-003.
+export function evidenceSqlitePath() {
+  return path.join(stateDir(), "evidence.sqlite");
+}
+
 export function vectorsPath() {
   return path.join(stateDir(), "vectors.json");
 }

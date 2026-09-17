@@ -49,3 +49,4 @@ Final Renderer                  статус: verified | verified_with_conflict 
 
 - [ADR-001 — answer-core с внедрением зависимостей](adr/ADR-001-answer-core.md)
 - [ADR-002 — отдельная app-state SQLite](adr/ADR-002-app-state-db.md)
+- [ADR-003 — производный слой документов, evidence и фактов](adr/ADR-003-evidence-store.md)

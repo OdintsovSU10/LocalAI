@@ -1,6 +1,6 @@
 # Stage 03 report
 
-Status: PARTIAL — код и тесты написаны, прогон выполняется на машине владельца
+Status: PASS — независимая проверка после Revision 2: npm test 329/329, test:conversation-contract и test:chat-contract PASS, мутационная проверка 404 PASS
 
 ## Baseline
 - Stage 02 PASS (`0fbd870`): единый `answerQuestion`; история чата только в браузере (`localStorage`), сервер получает `question/sourceId/contextSourceId`, модель не видит предыдущих реплик.

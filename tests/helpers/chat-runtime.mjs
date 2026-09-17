@@ -132,7 +132,7 @@ export async function extractAppsAtRevision(revision, destDir) {
 }
 
 // Temp runtimes live under <repo>/.tmp so the copied server resolves the repo node_modules.
-export async function createTempRuntime({ runDir, label, revision = "" }) {
+export async function createTempRuntime({ runDir, label, revision = "", extraFixtures = [] }) {
   const root = path.join(runDir, label);
   await fs.mkdir(root, { recursive: true });
   if (revision) await extractAppsAtRevision(revision, root);
@@ -141,6 +141,9 @@ export async function createTempRuntime({ runDir, label, revision = "" }) {
   await fs.cp(path.join(projectRoot, "fixtures", "demo-project"), path.join(root, "fixtures", "second-project"), { recursive: true });
   await fs.mkdir(path.join(root, "fixtures", "empty-project"), { recursive: true });
   await fs.writeFile(path.join(root, "fixtures", "empty-project", "notes.md"), "# Заметки\n\nПусто.\n", "utf8");
+  for (const name of extraFixtures) {
+    await fs.cp(path.join(projectRoot, "fixtures", name), path.join(root, "fixtures", name), { recursive: true });
+  }
   return root;
 }
 

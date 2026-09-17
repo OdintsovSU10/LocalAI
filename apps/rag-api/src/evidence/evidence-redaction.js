@@ -35,12 +35,24 @@ const SECRET_PATTERNS = [
 
 // "пароль: hunter2" / api_key=abc — the value is masked; the trailing sentence punctuation stays.
 const SECRET_ASSIGNMENT = /(?<![\p{L}\p{N}_])(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret|token|password|passwd|пароль)(\s*[:=]\s*)(["']?)([^\s"',;]*[^\s"',;.!?:)])\3/giu;
-// Plain-language values state that there is no secret ("Пароль: не требуется", "api_key: none") and keep their meaning.
-const NOT_A_SECRET_VALUE = /^(?:\p{Script=Cyrillic}+|none|null|nil|no|not|n\/a|na|empty|required|optional|unset|-+|—|–|\[redacted\])$/iu;
+// Only a statement that there is no secret keeps its value: the word itself says so
+// ("Пароль: не требуется", "api_key: none") or a negation follows it ("Токен: доступа не требуется").
+// Any other value — including a Cyrillic word — is treated as a secret.
+const NO_SECRET_WORD = /^(?:не|нет|отсутству\p{L}*|без|none|null|nil|no|not|n\/a|na|empty|unset|unknown|-+|—|–|\[redacted\])$/iu;
+const NEXT_WORD = /^\s*([^\s"',;.!?]+)/u;
+const NEGATION_LOOKAHEAD_CHARS = 40;
+
+function statesNoSecret(value, tail) {
+  if (NO_SECRET_WORD.test(value)) return true;
+  const nextWord = tail.slice(0, NEGATION_LOOKAHEAD_CHARS).match(NEXT_WORD)?.[1] || "";
+  return NO_SECRET_WORD.test(nextWord);
+}
 
 function redactSecretAssignments(text) {
-  return text.replace(SECRET_ASSIGNMENT, (match, key, separator, _quote, value) => (
-    NOT_A_SECRET_VALUE.test(value) ? match : `${key}${separator}${SECRET_PLACEHOLDER}`
+  return text.replace(SECRET_ASSIGNMENT, (match, key, separator, _quote, value, offset, whole) => (
+    statesNoSecret(value, whole.slice(offset + match.length))
+      ? match
+      : `${key}${separator}${SECRET_PLACEHOLDER}`
   ));
 }
 

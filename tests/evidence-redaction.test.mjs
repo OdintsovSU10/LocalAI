@@ -45,11 +45,22 @@ test("plain-language statements that there is no secret keep their meaning", () 
     "Пароль: не требуется.",
     "Password: not required.",
     "api_key: none",
+    "пароль: нет",
+    "Пароль: отсутствует.",
+    "token: unknown",
+    "Пароль: —",
+    // The value itself is an ordinary word, the negation follows it.
+    "Токен: доступа не требуется.",
     "Токен: отсутствует; пароль — не задан.",
     "Токен не требуется. Пароль не задан."
   ]) {
     assert.equal(redactEvidenceText(text), text);
   }
+});
+
+test("a Cyrillic password is a secret, not a statement about its absence", () => {
+  assert.equal(redactEvidenceText("Пароль: Секрет"), `Пароль: ${SECRET_PLACEHOLDER}`);
+  assert.equal(redactEvidenceText("Пароль: Ромашка2026, выдан администратором"), `Пароль: ${SECRET_PLACEHOLDER}, выдан администратором`);
 });
 
 test("secret values are masked while the sentence punctuation after them stays", () => {

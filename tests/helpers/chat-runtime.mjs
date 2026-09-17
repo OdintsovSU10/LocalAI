@@ -92,7 +92,11 @@ export async function startFakeLlm() {
   return {
     baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
     chatRequests,
-    close: () => new Promise((resolve) => server.close(resolve))
+    // fetch keeps connections alive; without dropping them server.close() waits and the test run hangs.
+    close: () => new Promise((resolve) => {
+      server.closeAllConnections();
+      server.close(resolve);
+    })
   };
 }
 

@@ -128,7 +128,7 @@ function assertScenarioBranches(results) {
 test(`chat API matches pre-refactor baseline ${BASE_REVISION}`, { timeout: 15 * 60 * 1000 }, async (t) => {
   const runDir = path.join(projectRoot, ".tmp", "chat-contract", `run-${process.pid}-${Date.now()}`);
   t.after(async () => {
-    if (!KEEP_TEMP) await fs.rm(runDir, { recursive: true, force: true });
+    if (!KEEP_TEMP) await fs.rm(runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
 
   // Absolute paths go into the LLM context, so promptChars depends on path length:

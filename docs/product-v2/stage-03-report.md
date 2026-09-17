@@ -73,3 +73,23 @@ Reason: acceptance подтверждается прогоном на машин
 
 ### Tests / evidence
 - Машина разработки: `node --check` -> PASS; все 67 регулярных выражений статического теста сверены с текущими `app.js`/CSS/HTML -> совпадают (сам `npm test` здесь не запускался).
+
+---
+
+## Revision 2 — после повторной проверки (verdict FAIL)
+
+Подтверждено: `npm test` 329/329, требование `contextSourceId` не ослаблено, `apps/` не менялся; контракт диалогов проходит с `CONVERSATION_CONTRACT_KEEP_TEMP=1`.
+
+### Findings
+1. **`test:conversation-contract` зависал в Windows при очистке.**
+   - Причины: удаление временного runtime было зарегистрировано раньше остановки API (открытые `app-state.sqlite`/WAL → EBUSY); `server.close()` fake LLM ждал keep-alive соединений `fetch`.
+   - Исправление: один `t.after` с фиксированным порядком — остановка API → закрытие fake LLM → удаление каталога (с повторами); fake LLM закрывает все соединения перед `close()`. Повторы удаления добавлены и в `test:chat-contract`.
+2. **Статический тест не доказывал повтор после 404.**
+   - Исправление: тест требует весь блок восстановления — условие 404, `delete session.serverConversationId`, повторный импорт через `ensureServerConversation` и повторный `streamChat`.
+   - Мутационная проверка регулярного выражения в памяти: без сброса id, без повторной отправки и без повторного импорта — не совпадает; с текущим кодом — совпадает.
+
+### Changed
+- `tests/conversation-api.contract.mjs`, `tests/chat-http-contract.contract.mjs`, `tests/helpers/chat-runtime.mjs`, `tests/frontend-helpers.test.mjs`
+
+### Tests / evidence
+- Машина разработки: `node --check` -> PASS; 67 регулярных выражений статического теста совпадают с текущими исходниками; мутационная проверка 404 -> ожидаемые несовпадения. Тесты здесь не запускались.

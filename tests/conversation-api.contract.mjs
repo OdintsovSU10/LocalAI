@@ -30,16 +30,18 @@ function donePayload(sse) {
 
 test("server conversations: follow-up, isolation, persistence across restart", { timeout: 10 * 60 * 1000 }, async (t) => {
   const runDir = path.join(projectRoot, ".tmp", "conversation-contract", `run-${process.pid}-${Date.now()}`);
+  let llm = null;
+  let api = null;
+  // One cleanup hook in a fixed order: the API process holds app-state.sqlite (and its WAL files)
+  // open, and Windows cannot delete open files, so processes stop before the runtime is removed.
   t.after(async () => {
-    if (!KEEP_TEMP) await fs.rm(runDir, { recursive: true, force: true });
+    if (api) await api.stop();
+    if (llm) await llm.close();
+    if (!KEEP_TEMP) await fs.rm(runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
   const root = await createTempRuntime({ runDir, label: "head" });
-  const llm = await startFakeLlm();
-  let api = await startApi({ root, llmBaseUrl: llm.baseUrl });
-  t.after(async () => {
-    await api.stop();
-    await llm.close();
-  });
+  llm = await startFakeLlm();
+  api = await startApi({ root, llmBaseUrl: llm.baseUrl });
 
   const demo = await addSource(api.baseUrl, { title: "Demo Project", folder: path.join(root, "fixtures", "demo-project") });
   const second = await addSource(api.baseUrl, { title: "Second Project", folder: path.join(root, "fixtures", "second-project") });

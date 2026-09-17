@@ -92,7 +92,11 @@ test("chat request carries previous source context without clearing auto mode", 
 test("chat request continues the server conversation and survives a lost one", () => {
   assert.match(appJs, /JSON\.stringify\(\{ question, sourceId, contextSourceId, \.\.\.\(conversationId \? \{ conversationId \} : \{\}\) \}\)/);
   assert.match(appJs, /const conversationId = await ensureServerConversation\(session, priorMessages\)\.catch\(\(\) => ""\)/);
-  assert.match(appJs, /if \(error\.status !== 404 \|\| !conversationId\) throw error;/);
+  // The whole 404 recovery must stay: forget the lost id, import the session again, resend once.
+  assert.match(
+    appJs,
+    /if \(error\.status !== 404 \|\| !conversationId\) throw error;\s*(?:\/\/[^\n]*\n\s*)*delete session\.serverConversationId;\s*await streamChat\(await ensureServerConversation\(session, priorMessages\)\.catch\(\(\) => ""\)\);/
+  );
   assert.match(appJs, /api\("\/api\/conversations\/import"/);
 });
 

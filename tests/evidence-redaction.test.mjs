@@ -30,6 +30,35 @@ test("secret-like values are masked", () => {
   assert.ok(redacted.includes(SECRET_PLACEHOLDER));
 });
 
+// Revision 2 regressions (independent re-verification findings).
+
+test("file:// paths with spaces in folder names are masked completely", () => {
+  assert.equal(redactEvidenceText("Путь file:///C:/Проект Альфа/акт.pdf."), `Путь ${PATH_PLACEHOLDER}.`);
+  assert.equal(redactEvidenceText("file://fileserver/share/Проект Бета/смета.xlsx, лист 2"), `${PATH_PLACEHOLDER}, лист 2`);
+  for (const leaked of ["Альфа", "акт.pdf", "fileserver", "Бета"]) {
+    assert.ok(!redactEvidenceText("Путь file:///C:/Проект Альфа/акт.pdf и file://fileserver/share/Проект Бета/смета.xlsx").includes(leaked), `leaked ${leaked}`);
+  }
+});
+
+test("plain-language statements that there is no secret keep their meaning", () => {
+  for (const text of [
+    "Пароль: не требуется.",
+    "Password: not required.",
+    "api_key: none",
+    "Токен: отсутствует; пароль — не задан.",
+    "Токен не требуется. Пароль не задан."
+  ]) {
+    assert.equal(redactEvidenceText(text), text);
+  }
+});
+
+test("secret values are masked while the sentence punctuation after them stays", () => {
+  assert.equal(redactEvidenceText("пароль: hunter2."), `пароль: ${SECRET_PLACEHOLDER}.`);
+  assert.equal(redactEvidenceText("Пароль: Секрет123, логин admin"), `Пароль: ${SECRET_PLACEHOLDER}, логин admin`);
+  assert.equal(redactEvidenceText("password: qwerty"), `password: ${SECRET_PLACEHOLDER}`);
+  assert.equal(redactEvidenceText("api_key=abc123secret; token = \"tok-999\""), `api_key=${SECRET_PLACEHOLDER}; token = ${SECRET_PLACEHOLDER}`);
+});
+
 test("ordinary contract text is unchanged and redaction is idempotent", () => {
   const ordinary = [
     "3.1. Аванс в размере 20% от цены договора 245 000 000 рублей, НДС 20%, пени 1/300 ставки, срок до 10.02.2026.",
@@ -37,6 +66,11 @@ test("ordinary contract text is unchanged and redaction is idempotent", () => {
     "Приложение С: график. Токен доступа не требуется. Секретность обеспечивает Заказчик."
   ].join("\n");
   assert.equal(redactEvidenceText(ordinary), ordinary);
-  const once = redactEvidenceText("C:\\Users\\ivan\\x.docx пароль: hunter2 Bearer abc.def");
-  assert.equal(redactEvidenceText(once), once);
+  for (const input of [
+    "C:\\Users\\ivan\\x.docx пароль: hunter2 Bearer abc.def",
+    "Путь file:///C:/Проект Альфа/акт.pdf. Пароль: не требуется. api_key=abc123secret."
+  ]) {
+    const once = redactEvidenceText(input);
+    assert.equal(redactEvidenceText(once), once);
+  }
 });

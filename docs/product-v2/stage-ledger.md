@@ -8,7 +8,7 @@
 | 01 | Product eval contract | PASS (независимая проверка после revision 1) | [stage-01-report.md](stage-01-report.md) |
 | 02 | Answer-core extraction | PASS (независимая проверка после revision 2) | [stage-02-report.md](stage-02-report.md) |
 | 03 | Server conversations | PASS (независимая проверка после revision 2) | [stage-03-report.md](stage-03-report.md) |
-| 04 | Evidence + document graph | revision 1 (сроки, пункты, маскировка), ожидает повторной проверки | [stage-04-report.md](stage-04-report.md) |
+| 04 | Evidence + document graph | revision 2 (маскировка file:// и фраз без секрета), ожидает повторной проверки | [stage-04-report.md](stage-04-report.md) |
 | 05 | Query planner & clarification | не начат | |
 | 06 | Retrieval 2.0 | не начат | |
 | 07 | Verified answering | не начат | |

@@ -12,8 +12,8 @@ const SEGMENT = "(?:[^\\s\\\\/\"'«»<>|*?]+|[^\\\\/\\r\\n\"'«»<>|*?.,;:]{1,60
 const LAST_SEGMENT = "(?:[^\\s\"'«»<>|*?]*[^\\s\"'«»<>|*?.,;:!)\\]])?";
 
 const PATH_PATTERNS = [
-  // file:///C:/..., file://server/share
-  new RegExp(`file:\\/\\/\\/?${LAST_SEGMENT}`, "giu"),
+  // file:///C:/Проект Альфа/акт.pdf, file://server/share
+  new RegExp(`file:\\/\\/\\/?(?:${SEGMENT})*${LAST_SEGMENT}`, "giu"),
   // C:\Users\name\Documents\Project folder\file.docx
   new RegExp(`(?<![\\p{L}\\p{N}])[A-Za-z]:[\\\\/](?:${SEGMENT})*${LAST_SEGMENT}`, "gu"),
   // \\fileserver\share\folder
@@ -27,16 +27,27 @@ const SECRET_PATTERNS = [
   [/\/\/[^/@\s:]+:[^/@\s]+@/g, `//${SECRET_PLACEHOLDER}@`],
   [/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, `Bearer ${SECRET_PLACEHOLDER}`],
   [/([?&](?:token|access_token|api_key|apikey|key|password|secret)=)[^&\s#]+/gi, `$1${SECRET_PLACEHOLDER}`],
-  [/(?<![\p{L}\p{N}_])(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret|token|password|passwd|пароль)(\s*[:=]\s*)["']?(?!\[redacted\])[^\s"',;]+["']?/giu, `$1$2${SECRET_PLACEHOLDER}`],
   [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, SECRET_PLACEHOLDER],
   [/\bsk-[A-Za-z0-9_-]{16,}/g, SECRET_PLACEHOLDER],
   [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, SECRET_PLACEHOLDER],
   [/\bAKIA[0-9A-Z]{16}\b/g, SECRET_PLACEHOLDER]
 ];
 
+// "пароль: hunter2" / api_key=abc — the value is masked; the trailing sentence punctuation stays.
+const SECRET_ASSIGNMENT = /(?<![\p{L}\p{N}_])(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret|token|password|passwd|пароль)(\s*[:=]\s*)(["']?)([^\s"',;]*[^\s"',;.!?:)])\3/giu;
+// Plain-language values state that there is no secret ("Пароль: не требуется", "api_key: none") and keep their meaning.
+const NOT_A_SECRET_VALUE = /^(?:\p{Script=Cyrillic}+|none|null|nil|no|not|n\/a|na|empty|required|optional|unset|-+|—|–|\[redacted\])$/iu;
+
+function redactSecretAssignments(text) {
+  return text.replace(SECRET_ASSIGNMENT, (match, key, separator, _quote, value) => (
+    NOT_A_SECRET_VALUE.test(value) ? match : `${key}${separator}${SECRET_PLACEHOLDER}`
+  ));
+}
+
 export function redactEvidenceText(value = "") {
   let text = String(value ?? "");
   for (const [pattern, replacement] of SECRET_PATTERNS) text = text.replace(pattern, replacement);
+  text = redactSecretAssignments(text);
   for (const pattern of PATH_PATTERNS) text = text.replace(pattern, PATH_PLACEHOLDER);
   return text;
 }

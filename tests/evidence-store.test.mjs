@@ -102,6 +102,30 @@ test("stored evidence has no absolute paths and invalid builds leave the previou
   assert.ok(!dump.includes(path.dirname(databasePath)));
 });
 
+test("the store masks paths and secrets even when a build carries them unmasked", async (t) => {
+  const { store } = await openTempStore(t);
+  const build = await buildFixtureSourceEvidence("pv2-balchug");
+  const leaky = {
+    ...build,
+    documents: build.documents.map((document) => ({ ...document, title: `${document.title} C:\\Users\\ivan\\dogovor.docx` })),
+    spans: build.spans.map((span, index) => (index === 0 ? { ...span, text: `${span.text} пароль: hunter2 \\\\fileserver\\share\\x.pdf` } : span)),
+    facts: build.facts.map((fact, index) => (index === 0
+      ? { ...fact, rawValue: `${fact.rawValue} api_key=abc123secret`, condition: "см. /home/ivan/scan.pdf", normalized: { ...fact.normalized, note: "D:\\secret\\x" } }
+      : fact))
+  };
+  store.replaceSourceEvidence(leaky);
+
+  const dump = JSON.stringify({
+    documents: store.listDocuments("pv2-balchug"),
+    facts: store.listFacts({ sourceId: "pv2-balchug" }),
+    traces: store.listFacts({ sourceId: "pv2-balchug" }).map((fact) => store.getFactTrace(fact.factId))
+  });
+  for (const leaked of ["ivan", "hunter2", "fileserver", "abc123secret", "/home/", "secret\\\\x"]) {
+    assert.ok(!dump.includes(leaked), `store leaked ${leaked}`);
+  }
+  assert.ok(dump.includes("[path]") && dump.includes("[redacted]"));
+});
+
 test("evidence migrations are idempotent across reopen", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "localai-evidence-reopen-"));
   const databasePath = path.join(dir, "evidence.sqlite");

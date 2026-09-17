@@ -169,3 +169,55 @@ test("a build with a fact that has no evidence is rejected", async () => {
   const dangling = { ...build, facts: [{ ...build.facts[0], evidenceIds: ["ev_missing"] }] };
   assert.throws(() => validateEvidenceBuild(dangling), /unknown evidence/);
 });
+
+// Revision 1 regressions (independent verification findings).
+
+test("a term of another obligation in the next sentence is not read as the advance or retention term", () => {
+  const advance = syntheticDocument("a", "# Договор подряда № 10 от 01.01.2026\n\nАванс в размере 3%. Подрядчик передает отчет в течение 30 календарных дней после окончания работ.");
+  assert.deepEqual(advance.facts.map((fact) => [fact.factType, fact.normalized]), [["advance_percent", { percent: 3 }]]);
+
+  const retention = syntheticDocument("b", "# Договор подряда № 11 от 01.01.2026\n\nГарантийное удержание составляет 5%. Отчёт возвращается на доработку в течение 10 дней.");
+  assert.deepEqual(retention.facts.map((fact) => fact.factType), ["retention_percent"]);
+
+  const penalty = syntheticDocument("c", "# Договор подряда № 12 от 01.01.2026\n\nНеустойка в размере 0,5% за каждый день. Общая ответственность Подрядчика не более 20% цены.");
+  assert.deepEqual(penalty.facts.map((fact) => fact.normalized), [{ percent: 0.5 }]);
+
+  const sameSentence = syntheticDocument("d", "# Договор подряда № 13 от 01.01.2026\n\nАванс в размере 3% выплачивается в течение 30 календарных дней с даты подписания.");
+  assert.deepEqual(sameSentence.facts.find((fact) => fact.factType === "advance_term").normalized, { days: 30, dayKind: "календарных" });
+});
+
+test("an amendment of an explicitly different clause does not supersede the base clause", () => {
+  const base = syntheticDocument("base", "# Договор подряда № 10 от 01.01.2026\n\n3.1. Аванс составляет 20% от цены договора.");
+  const amendment = syntheticDocument("ds", "# Дополнительное соглашение № 1 от 01.03.2026 к договору подряда № 10 от 01.01.2026\n\nПункт 9.9 договора изложить в новой редакции: «Аванс составляет 10% от цены договора».");
+  const graph = link(base, amendment);
+  assert.equal(graph.relations[0].relation, "amends");
+  const advances = graph.facts.filter((fact) => fact.factType === "advance_percent");
+  assert.equal(advances.filter((fact) => fact.status === "superseded").length, 0);
+  assert.deepEqual(advances.map((fact) => fact.status), ["conflict", "conflict"]);
+  assert.ok(advances.every((fact) => !fact.supersedesFactId && !fact.supersededByFactId));
+});
+
+test("a single base fact without a clause number is still replaced by a dated amendment of a named clause", () => {
+  const base = syntheticDocument("base", "# Договор подряда № 10 от 01.01.2026\n\nАванс составляет 20% от цены договора.");
+  const amendment = syntheticDocument("ds", "# Дополнительное соглашение № 1 от 01.03.2026 к договору подряда № 10 от 01.01.2026\n\nПункт 3.1 договора изложить в новой редакции: «Аванс составляет 10% от цены договора».");
+  const graph = link(base, amendment);
+  const advances = graph.facts.filter((fact) => fact.factType === "advance_percent");
+  assert.deepEqual(advances.map((fact) => [fact.normalized.percent, fact.status]), [[20, "superseded"], [10, "active"]]);
+});
+
+test("absolute paths and secret-like values in the document body are masked in spans and facts", () => {
+  const privacy = syntheticDocument("p", [
+    "# Договор подряда № 13 от 01.01.2026",
+    "",
+    "Заказчик: ООО «Ромашка». Документы лежат в C:\\Users\\ivan\\Documents\\Проект\\dogovor.docx, пароль: hunter2, api_key=abc123secret.",
+    "",
+    "Скан: \\\\fileserver\\share\\ПД\\act.pdf и /home/ivan/scans/act.pdf, Authorization: Bearer abc.def.ghi"
+  ].join("\n"));
+  const serialized = JSON.stringify(privacy);
+  for (const leaked of ["C:\\\\Users", "ivan", "hunter2", "abc123secret", "fileserver", "/home/", "abc.def.ghi"]) {
+    assert.ok(!serialized.includes(leaked), `evidence leaked ${leaked}`);
+  }
+  assert.ok(privacy.spans[0].text.includes("[path]"));
+  assert.ok(privacy.spans[0].text.includes("[redacted]"));
+  assert.deepEqual(privacy.facts.map((fact) => fact.normalized), [{ name: "ООО «Ромашка»" }]);
+});

@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { openMigratedDatabase } from "../sqlite-migrations.js";
+import { redactEvidenceText } from "./evidence-redaction.js";
 
 const migrationsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "migrations");
 const PREVIEW_FOCUS_CHARS = 300;
@@ -137,7 +138,7 @@ export async function createEvidenceStore({ databasePath, now = () => new Date()
         for (const document of build.documents) {
           insertDocument.run(
             document.documentId, build.sourceId, document.fileId, path.basename(String(document.fileLabel || "")), document.kind,
-            document.title || "", document.number || "", document.documentDate || null, document.effectiveDate || null,
+            redactEvidenceText(document.title || ""), document.number || "", document.documentDate || null, document.effectiveDate || null,
             document.revision || "", document.contentHash, document.parentDocumentId || null,
             JSON.stringify(document.parentRef || {}), document.relation || "none", JSON.stringify(document.classification || {}),
             document.indexedAt || null, builtAt
@@ -153,7 +154,7 @@ export async function createEvidenceStore({ databasePath, now = () => new Date()
           insertSpan.run(
             span.evidenceId, span.documentId, build.sourceId, span.fileId, span.chunkId || null, span.kind, span.ordinal,
             span.pageStart ?? null, span.pageEnd ?? null, span.sheetName || null, span.rowStart ?? null, span.rowEnd ?? null,
-            span.sectionTitle || null, span.text, span.contentHash, span.charStart ?? null, span.charEnd ?? null,
+            span.sectionTitle ? redactEvidenceText(span.sectionTitle) : null, redactEvidenceText(span.text), span.contentHash, span.charStart ?? null, span.charEnd ?? null,
             JSON.stringify(span.recognition || {})
           );
         }
@@ -166,8 +167,8 @@ export async function createEvidenceStore({ databasePath, now = () => new Date()
         const insertFactEvidence = db.prepare("INSERT INTO fact_evidence (fact_id, evidence_id) VALUES (?, ?)");
         for (const fact of build.facts) {
           insertFact.run(
-            fact.factId, fact.documentId, build.sourceId, fact.factType, fact.rawValue, JSON.stringify(fact.normalized),
-            fact.unit || "", fact.condition || "", fact.clauseRef || "", fact.amends ? 1 : 0, fact.validFrom || null,
+            fact.factId, fact.documentId, build.sourceId, fact.factType, redactEvidenceText(fact.rawValue), redactEvidenceText(JSON.stringify(fact.normalized)),
+            fact.unit || "", redactEvidenceText(fact.condition || ""), fact.clauseRef || "", fact.amends ? 1 : 0, fact.validFrom || null,
             fact.validTo || null, fact.status, fact.supersedesFactId || null, fact.supersededByFactId || null,
             fact.extractionMethod, fact.extractionVersion, builtAt
           );

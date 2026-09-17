@@ -39,6 +39,15 @@ function currencyOf(text) {
   return "";
 }
 
+function sentences(text) {
+  return String(text || "").split(/(?<=[.;!?])\s+/u);
+}
+
+// A term or cap belongs to the obligation of its own sentence: "Аванс 3%. Отчёт в течение 30 дней" is not an advance term.
+function sentenceMatching(text, ...patterns) {
+  return sentences(text).find((sentence) => patterns.every((pattern) => pattern.test(sentence))) || null;
+}
+
 function dayTerm(text) {
   const match = text.match(/в\s+течение\s+(\d+)\s+(рабочих|календарных|банковских)?\s*(?:дн\p{L}*)([^.;]*)/iu);
   if (!match) return null;
@@ -95,8 +104,8 @@ const PARAGRAPH_RULES = [
   {
     type: "advance_term",
     read: (text) => {
-      if (!ADVANCE_SIZE.test(text)) return null;
-      const term = dayTerm(text);
+      const sentence = sentenceMatching(text, ADVANCE_SIZE);
+      const term = sentence ? dayTerm(sentence) : null;
       return term ? { ...term, unit: "days" } : null;
     }
   },
@@ -110,8 +119,8 @@ const PARAGRAPH_RULES = [
   {
     type: "retention_return_term",
     read: (text) => {
-      if (!/гарантийн\p{L}*\s+удержани/iu.test(text) || !/возвра/iu.test(text)) return null;
-      const term = dayTerm(text);
+      const sentence = sentenceMatching(text, /гарантийн\p{L}*\s+удержани/iu, /возвра/iu);
+      const term = sentence ? dayTerm(sentence) : null;
       return term ? { ...term, unit: "days" } : null;
     }
   },
@@ -139,9 +148,11 @@ const PARAGRAPH_RULES = [
   {
     type: "penalty_rate",
     read: (text) => {
-      const match = text.match(new RegExp(`неустойк\\p{L}*\\s+в\\s+размере\\s+${DECIMAL}\\s*%`, "iu"));
+      const penalty = new RegExp(`неустойк\\p{L}*\\s+в\\s+размере\\s+${DECIMAL}\\s*%`, "iu");
+      const sentence = sentenceMatching(text, penalty);
+      const match = sentence?.match(penalty);
       if (!match) return null;
-      const cap = text.slice(match.index).match(new RegExp(`не\\s+более\\s+${DECIMAL}\\s*%`, "iu"));
+      const cap = sentence.slice(match.index).match(new RegExp(`не\\s+более\\s+${DECIMAL}\\s*%`, "iu"));
       return {
         raw: match[0],
         normalized: { percent: toNumber(match[1]), ...(cap ? { capPercent: toNumber(cap[1]) } : {}) },

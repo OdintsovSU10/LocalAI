@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { classifyDocument, stripFrontMatter } from "./document-classifier.js";
+import { redactEvidenceText } from "./evidence-redaction.js";
 import { buildEvidenceSpans, sha1 } from "./evidence-spans.js";
 import { EXTRACTION_VERSION, extractDocumentFacts } from "./fact-extractor.js";
 import { linkDocumentFamily } from "./version-graph.js";
@@ -32,7 +33,7 @@ export async function buildSourceEvidence({ sourceId, files = [], chunks = [], r
     const fileChunks = chunks.filter((chunk) => chunk.fileId === file.fileId);
     const cached = await readMarkdown(file).catch(() => null);
     const markdown = cached === null || cached === undefined ? markdownFromChunks(fileChunks) : cached;
-    const body = stripFrontMatter(markdown);
+    const body = redactEvidenceText(stripFrontMatter(markdown));
     if (!body.trim()) continue;
 
     const fileLabel = file.title || path.basename(String(file.path || "")) || file.fileId;

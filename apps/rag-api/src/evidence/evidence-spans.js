@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 import { normalizeText } from "../text.js";
 import { stripFrontMatter } from "./document-classifier.js";
+import { redactEvidenceText } from "./evidence-redaction.js";
 
 export const MAX_SPAN_CHARS = 2000;
 const CHUNK_PROBE_CHARS = 120;
@@ -31,15 +32,16 @@ function compact(text) {
 function chunkForSpan(chunks, spanText) {
   const probe = compact(spanText).slice(0, CHUNK_PROBE_CHARS);
   if (!probe) return null;
-  return chunks.find((chunk) => compact(chunk.text).includes(probe)) || null;
+  return chunks.find((chunk) => compact(redactEvidenceText(chunk.text)).includes(probe)) || null;
 }
 
 /**
  * Splits a converted markdown document into evidence spans: one per paragraph, one per table row.
  * Each span carries its own section/page/sheet/row, independent of how the indexer grouped chunks.
+ * Absolute paths and secret-like values in the text are masked before spans are cut.
  */
 export function buildEvidenceSpans({ sourceId, fileId, documentId = fileId, markdown = "", chunks = [], recognition = {} }) {
-  const body = normalizeText(stripFrontMatter(markdown));
+  const body = normalizeText(redactEvidenceText(stripFrontMatter(markdown)));
   const fileChunks = chunks
     .filter((chunk) => chunk.fileId === fileId)
     .sort((left, right) => Number(left.chunkIndex || 0) - Number(right.chunkIndex || 0));

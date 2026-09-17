@@ -32,7 +32,8 @@ function byDateThenOrder(left, right) {
 
 /**
  * Links amendments/appendices to their base contract and applies amendments to facts:
- * a fact from a clause "пункт N изложить в новой редакции" supersedes the base fact of the same type and clause.
+ * a fact from a clause "пункт N изложить в новой редакции" supersedes the base fact of the same type and clause
+ * (or the single same-type fact whose clause is unknown; a different explicit clause is never replaced).
  * Nothing is deleted: superseded facts keep their evidence with status "superseded" and valid_to.
  * Values that differ without a stated precedence are marked "conflict" instead of picking one silently.
  */
@@ -68,7 +69,10 @@ export function linkDocumentFamily({ documents = [], facts = [] }) {
         && item.factType === fact.factType
         && item.status === "active");
       const sameClause = candidates.filter((item) => item.clauseRef && item.clauseRef === fact.clauseRef);
-      const targets = sameClause.length ? sameClause : (candidates.length === 1 ? candidates : []);
+      // Without an exact clause match only a single candidate whose clause does not contradict the amended one
+      // may be replaced: "пункт 9.9" never supersedes a fact read from clause 3.1.
+      const compatible = candidates.filter((item) => !(fact.clauseRef && item.clauseRef && item.clauseRef !== fact.clauseRef));
+      const targets = sameClause.length ? sameClause : (compatible.length === 1 ? compatible : []);
       for (const target of targets) {
         target.status = "superseded";
         target.supersededByFactId = fact.factId;

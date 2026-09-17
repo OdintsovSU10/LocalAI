@@ -57,3 +57,19 @@ Status: PARTIAL — код и тесты написаны, прогон выпо
 ## Ready for next stage?
 NO
 Reason: acceptance подтверждается прогоном на машине владельца.
+
+---
+
+## Revision 1 — после независимой проверки (verdict FAIL)
+
+Проверка подтвердила acceptance Stage 03: follow-up без проекта (JSON и SSE), изоляция истории, переживание перезапуска, идемпотентные миграции и импорт, изоляция каналов, 404 до старта SSE, сохранение ответа при ошибке записи, отсутствие путей в app-state; `test:chat-contract`, `test:conversation-contract`, `smoke:api`, браузерный сценарий — PASS. Не прошёл `npm test` (327/328).
+
+### Finding
+**[P2] Устаревший статический тест `tests/frontend-helpers.test.mjs`** требовал точное тело запроса `{ question, sourceId, contextSourceId }`; теперь в запрос добавляется необязательный `conversationId`.
+- Исправление: проверка передачи `contextSourceId` сохранена и допускает необязательный `conversationId`; добавлен тест, что UI передаёт `conversationId`, импортирует сессию через `/api/conversations/import` и повторяет запрос при 404.
+
+### Changed
+- `tests/frontend-helpers.test.mjs`
+
+### Tests / evidence
+- Машина разработки: `node --check` -> PASS; все 67 регулярных выражений статического теста сверены с текущими `app.js`/CSS/HTML -> совпадают (сам `npm test` здесь не запускался).

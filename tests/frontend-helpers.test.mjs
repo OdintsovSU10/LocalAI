@@ -86,7 +86,14 @@ test("displayedSourcesForAnswer keeps cited sources instead of every retrieval h
 test("chat request carries previous source context without clearing auto mode", () => {
   assert.match(appJs, /const contextSourceId = !sourceId && contractSourceById\(session\.sourceId\) \? session\.sourceId : ""/);
   assert.match(appJs, /if \(sourceId\) \{\s*session\.sourceId = sourceId;\s*touchActiveChat\(\);\s*\}/);
-  assert.match(appJs, /JSON\.stringify\(\{ question, sourceId, contextSourceId \}\)/);
+  assert.match(appJs, /JSON\.stringify\(\{ question, sourceId, contextSourceId(?:, \.\.\.\(conversationId \? \{ conversationId \} : \{\}\))? \}\)/);
+});
+
+test("chat request continues the server conversation and survives a lost one", () => {
+  assert.match(appJs, /JSON\.stringify\(\{ question, sourceId, contextSourceId, \.\.\.\(conversationId \? \{ conversationId \} : \{\}\) \}\)/);
+  assert.match(appJs, /const conversationId = await ensureServerConversation\(session, priorMessages\)\.catch\(\(\) => ""\)/);
+  assert.match(appJs, /if \(error\.status !== 404 \|\| !conversationId\) throw error;/);
+  assert.match(appJs, /api\("\/api\/conversations\/import"/);
 });
 
 test("project picker includes tenders and keeps native options dark", () => {

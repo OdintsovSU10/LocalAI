@@ -7,7 +7,7 @@
 | 00 | Baseline & architecture freeze | PASS (независимая проверка: PASS) | [stage-00-report.md](stage-00-report.md) |
 | 01 | Product eval contract | PASS (независимая проверка после revision 1) | [stage-01-report.md](stage-01-report.md) |
 | 02 | Answer-core extraction | PASS (независимая проверка после revision 2) | [stage-02-report.md](stage-02-report.md) |
-| 03 | Server conversations | код готов, ожидает прогона и проверки | [stage-03-report.md](stage-03-report.md) |
+| 03 | Server conversations | revision 1 (статический тест UI), ожидает повторной проверки | [stage-03-report.md](stage-03-report.md) |
 | 04 | Evidence + document graph | не начат | |
 | 05 | Query planner & clarification | не начат | |
 | 06 | Retrieval 2.0 | не начат | |

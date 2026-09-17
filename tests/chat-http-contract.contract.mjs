@@ -36,7 +36,9 @@ function chatScenarios({ demo, second, empty }) {
     "missing-requested-source": { question: "Какой аванс?", sourceId: "missing-project" },
     "no-results": { question: "zzqxwv", sourceId: demo.id },
     "not-indexed-source": { question: "Какая сумма договора?", sourceId: empty.id },
-    "all-sources-no-results": { question: "zzqxwv по всем проектам" }
+    // "every folder" triggers the all-sources intent; none of these words occur in the demo corpus
+    // (unlike "проект"), so the search really comes back empty.
+    "all-sources-no-results": { question: "zzqxwv across every folder" }
   };
 }
 
@@ -108,7 +110,9 @@ function assertScenarioBranches(results) {
   assert.match(answer("missing-requested-source"), /^Не понял, к какому проекту/);
   assert.equal(answer("no-results"), "По готовому индексу ничего не найдено. Попробуйте уточнить формулировку или выберите другой проект.");
   assert.match(answer("not-indexed-source"), /пока нет готового индекса/);
-  assert.match(answer("all-sources-no-results"), /всех проектов|По всем проектам/);
+  assert.match(answer("all-sources-no-results"), /^По готовым индексам всех проектов ничего не найдено/);
+  assert.deepEqual(results["all-sources-no-results json"].payload.sources, []);
+  assert.deepEqual(results["no-results json"].payload.sources, []);
   assert.equal(results["found-requested-source llm-disabled json"].payload.answer, "LLM выключен в настройках. Ниже самые релевантные фрагменты.");
 
   const streamEvents = eventNames(results["found-requested-source sse"]);

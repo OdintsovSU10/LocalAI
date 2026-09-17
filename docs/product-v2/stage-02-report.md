@@ -1,6 +1,6 @@
 # Stage 02 report
 
-Status: PARTIAL — см. Revision 1 в конце отчёта; ожидает повторной проверки
+Status: PARTIAL — см. Revision 1–2 в конце отчёта; ожидает повторной проверки
 
 ## Baseline
 - Коммит `70552d6`: логика ответа продублирована в `/api/chat` и `/api/chat/stream` внутри `server.js` (4339 строк). Состояние LLM (`llmRequests`, `lastLlmGenerations`, `lastLlmActivity`) — модульные переменные `server.js`. Unit-тестов на чат нет.
@@ -74,3 +74,21 @@ Reason: acceptance подтверждается прогоном на машин
 ### Tests / evidence
 - Машина разработки: `node --check` изменённых файлов -> PASS.
 - `npm run test:chat-contract` и остальные gates -> NOT RUN здесь, прогон у владельца.
+
+---
+
+## Revision 2 — после повторной проверки (verdict FAIL)
+
+Подтверждено: fake LLM и длина путей исправлены; 32 нормализованных результата совпали с `70552d6`; `apps/` не менялся.
+
+### Finding
+**[P2] Сценарий `all-sources-no-results` не попадал в ветку «ничего не найдено».**
+- Причина: вопрос «zzqxwv по всем проектам» находил фрагменты по слову «проект» из демо-корпуса.
+- Исправление: вопрос «zzqxwv across every folder» — включает режим всех проектов (`hasAllSourcesIntent` = true), но ни одно слово не встречается в корпусе и синонимах поиска. Проверка ветки ужесточена: точный текст ответа и пустые `sources` для `all-sources-no-results` и `no-results`.
+
+### Changed
+- `tests/chat-http-contract.contract.mjs`
+
+### Tests / evidence
+- Машина разработки: `node --check` -> PASS; `hasAllSourcesIntent("zzqxwv across every folder")` -> true.
+- `npm run test:chat-contract` и контроль чувствительности -> NOT RUN здесь, прогон у владельца.

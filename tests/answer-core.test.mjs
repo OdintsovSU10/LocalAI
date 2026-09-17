@@ -194,3 +194,42 @@ test("answerQuestion uses contextSourceId when the question names no project", a
   assert.equal(payload.matchedSource.autoSelected, true);
   assert.equal(calls.search[0].sourceId, "second");
 });
+
+test("answerQuestion without conversation context sends exactly system + user messages", async () => {
+  const { deps: answerDeps, calls } = deps();
+  await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo" }, answerDeps);
+  const messages = calls.completions[0].args.messages;
+  assert.deepEqual(messages.map((message) => message.role), ["system", "user"]);
+  assert.ok(!messages[0].content.includes("Предыдущие реплики диалога"));
+});
+
+test("answerQuestion uses the conversation's pinned project and bounded history for a follow-up", async () => {
+  const { deps: answerDeps, calls } = deps();
+  const conversationContext = {
+    conversationId: "conv-1",
+    pinnedSourceId: "second",
+    turns: [{ question: "Какой размер гарантийного удержания?", answer: "Удержание 3%.", sourceId: "second" }]
+  };
+  const { payload } = await answerQuestion({ question: "а какой срок выплаты?", conversationContext }, answerDeps);
+
+  assert.equal(payload.matchedSource.id, "second");
+  assert.equal(calls.search[0].sourceId, "second");
+  assert.equal(calls.search[0].query, ["а какой срок выплаты?", "Какой размер гарантийного удержания?"].join("\n"));
+  const messages = calls.completions[0].args.messages;
+  assert.deepEqual(messages.map((message) => message.role), ["system", "user", "assistant", "user"]);
+  assert.equal(messages[1].content, "Какой размер гарантийного удержания?");
+  assert.equal(messages[2].content, "Удержание 3%.");
+  assert.ok(messages[3].content.includes("Вопрос:\nа какой срок выплаты?"));
+  assert.match(messages[0].content, /Предыдущие реплики диалога/);
+});
+
+test("an explicit project in the request wins over the conversation pin", async () => {
+  const { deps: answerDeps, calls } = deps();
+  const { payload } = await answerQuestion({
+    question: "Какая сумма договора?",
+    requestedSourceId: "demo",
+    conversationContext: { pinnedSourceId: "second", turns: [] }
+  }, answerDeps);
+  assert.equal(payload.matchedSource.id, "demo");
+  assert.equal(calls.search[0].sourceId, "demo");
+});

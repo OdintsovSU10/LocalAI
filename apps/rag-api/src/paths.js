@@ -70,6 +70,11 @@ export function metadataSqlitePath() {
   return path.join(stateDir(), "metadata.sqlite");
 }
 
+// Application state (conversations, turn state) — separate from index metadata, see ADR-002.
+export function appStateSqlitePath() {
+  return path.join(stateDir(), "app-state.sqlite");
+}
+
 export function vectorsPath() {
   return path.join(stateDir(), "vectors.json");
 }

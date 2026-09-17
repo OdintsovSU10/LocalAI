@@ -11,6 +11,10 @@ export function buildRagContext(results, profile = {}) {
 
 export function buildChatMessages(question, context, options = {}) {
   const broadAnswer = Boolean(options.broadAnswer);
+  const history = Array.isArray(options.history) ? options.history : [];
+  const historyInstructions = history.length
+    ? ["Предыдущие реплики диалога даны только чтобы понять, к чему относится текущий вопрос; факты и ссылки [n] бери только из текущего контекста."]
+    : [];
   const broadInstructions = broadAnswer
     ? [
         "Запрос широкий или обзорный: сначала собери все разные релевантные факты из контекста, затем дай сводку прямо в ответе.",
@@ -42,9 +46,11 @@ export function buildChatMessages(question, context, options = {}) {
         "Если вопрос задан по нескольким проектам, всем проектам или в контексте много файлов, не ограничивайся одним-двумя пунктами: сгруппируй ответ по проектам/документам и перечисли найденные значения по каждому релевантному источнику.",
         "Если одно и то же значение встречается в нескольких документах, укажи значение один раз и рядом перечисли документы/проекты, где оно подтверждено.",
         ...broadInstructions,
+        ...historyInstructions,
         "В конце ответа укажи источники номерами в формате: Источники: [1], [2]."
       ].join(" ")
     },
+    ...history,
     {
       role: "user",
       content: `/no_think\n\nВопрос:\n${question}\n\nКонтекст:\n${context}`

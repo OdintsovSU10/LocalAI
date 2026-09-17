@@ -7,7 +7,7 @@ import os from "node:os";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { formatCitationLabel } from "./citations.js";
-import { chunksPath, markdownCacheDir, projectRoot } from "./paths.js";
+import { appStateSqlitePath, chunksPath, markdownCacheDir, projectRoot } from "./paths.js";
 import { ensureStorage, readChunks, readJobs, readManifest, readSettings, readSourceSummaries, readSources, readVectors, writeChunks, writeJobs, writeManifest, writeSettings, writeSourceSummaries, writeSources, writeVectors } from "./store.js";
 import { indexSource, scanSkippedFiles } from "./indexer.js";
 import { ensureChunkEmbeddings } from "./embeddings.js";
@@ -45,6 +45,9 @@ import { normalizeLlmProvider, providerLabel, selectedLlmSettings } from "./llm-
 import { answerQuestion } from "./answer-core/answer-question.js";
 import { generateChatTitle } from "./answer-core/chat-llm.js";
 import { createLlmUsageTracker } from "./answer-core/llm-usage-tracker.js";
+import { loadChatConversation, persistChatTurn } from "./conversation/chat-turn.js";
+import { createConversationStore } from "./conversation/conversation-store.js";
+import { registerConversationRoutes } from "./routes/conversations.js";
 import { createApiSecurityMiddleware, readApiSecurityConfig, warnIfUnsafeNetworkBinding } from "./security.js";
 import { findKnownSource, resolveMarkdownCachePath, resolvePreviewTarget } from "./preview-access.js";
 import { startSseResponse, writeSseEvent } from "./sse.js";
@@ -68,6 +71,7 @@ const jobs = new Map();
 const jobControllers = new Map();
 const execFileAsync = promisify(execFile);
 const llmUsage = createLlmUsageTracker();
+let conversationStorePromise = null;
 let agentRunInProcess = false;
 let agentRunController = null;
 let usageCache = { at: 0, payload: null };
@@ -3447,6 +3451,17 @@ function chatAnswerInput(body = {}) {
   };
 }
 
+// App-state database opens on first use so a broken conversation DB never blocks single-turn chat.
+function conversationStore() {
+  conversationStorePromise ||= createConversationStore({ databasePath: appStateSqlitePath() }).catch((error) => {
+    conversationStorePromise = null;
+    throw error;
+  });
+  return conversationStorePromise;
+}
+
+registerConversationRoutes(app, { getStore: conversationStore, channel: "web" });
+
 function chatAnswerDeps() {
   return {
     readSources,
@@ -3473,11 +3488,14 @@ app.post("/api/chat", async (req, res, next) => {
   });
 
   try {
+    const input = chatAnswerInput(req.body);
+    const conversation = await loadChatConversation(req.body?.conversationId, { getStore: conversationStore, channel: "web" });
     const { payload } = await answerQuestion({
-      ...chatAnswerInput(req.body),
+      ...input,
+      conversationContext: conversation?.context || null,
       signal: requestController.signal
     }, chatAnswerDeps());
-    res.json(payload);
+    res.json(conversation ? persistChatTurn(conversation, input, payload) : payload);
   } catch (error) {
     if (clientAborted || (error.name === "AbortError" && requestController.signal.aborted)) {
       if (!res.headersSent) res.status(499).json({ error: "request cancelled" });
@@ -3516,11 +3534,22 @@ app.post("/api/chat/stream", async (req, res) => {
     }
   });
 
+  // An unknown conversation is reported as plain HTTP 404 before the event stream starts.
+  let conversation = null;
+  try {
+    conversation = await loadChatConversation(req.body?.conversationId, { getStore: conversationStore, channel: "web" });
+  } catch (error) {
+    res.status(Number(error.statusCode) || 500).json({ error: error.message || "Internal error" });
+    return;
+  }
+
   startSseResponse(res);
 
   try {
+    const input = chatAnswerInput(req.body);
     const { payload, answerStreamed } = await answerQuestion({
-      ...chatAnswerInput(req.body),
+      ...input,
+      conversationContext: conversation?.context || null,
       stream: true,
       signal: requestController.signal,
       onEvent: (event) => {
@@ -3528,7 +3557,8 @@ app.post("/api/chat/stream", async (req, res) => {
         else if (event.type === "status") writeSseEvent(res, "status", event.payload);
       }
     }, chatAnswerDeps());
-    return streamChatPayload(res, payload, { emitAnswerToken: !answerStreamed });
+    const finalPayload = conversation ? persistChatTurn(conversation, input, payload) : payload;
+    return streamChatPayload(res, finalPayload, { emitAnswerToken: !answerStreamed });
   } catch (error) {
     if (clientAborted || (error.name === "AbortError" && requestController.signal.aborted)) {
       if (!res.writableEnded) res.end();

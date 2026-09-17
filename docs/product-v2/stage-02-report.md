@@ -1,6 +1,6 @@
 # Stage 02 report
 
-Status: PARTIAL — см. Revision 1–2 в конце отчёта; ожидает повторной проверки
+Status: PASS — независимая проверка после Revision 2: test:chat-contract PASS, контроль чувствительности PASS → FAIL (no-results) → PASS, npm test 311/311
 
 ## Baseline
 - Коммит `70552d6`: логика ответа продублирована в `/api/chat` и `/api/chat/stream` внутри `server.js` (4339 строк). Состояние LLM (`llmRequests`, `lastLlmGenerations`, `lastLlmActivity`) — модульные переменные `server.js`. Unit-тестов на чат нет.

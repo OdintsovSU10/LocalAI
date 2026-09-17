@@ -3,6 +3,7 @@ import { resolveChatSourceScope } from "../chat-scope.js";
 import { indexedSnapshotForSource, indexSourceIdsForSources } from "../index-status.js";
 import { chatLlmCandidates, llmRouteMetadata, providerLabel } from "../llm-routing.js";
 import { chatSearchLimit, runChatLlm } from "./chat-llm.js";
+import { followUpRetrievalQuery, historyMessages } from "./conversation-turns.js";
 import {
   LLM_DISABLED_ANSWER,
   NO_RESULTS_ANSWER,
@@ -28,12 +29,16 @@ import { emptyRouteMetadata, ragDebugMetadata } from "./rag-metadata.js";
  * Server state that is not a pure function of storage (in-memory jobs, the matched-source view,
  * LLM usage tracking) comes in through deps.
  *
+ * conversationContext ({ pinnedSourceId, turns }) is optional: without it the request behaves exactly
+ * like a single-turn /api/chat call. The pinned project only applies when the question names none.
+ *
  * @returns {Promise<AnswerResult>}
  */
 export async function answerQuestion({
   question = "",
   requestedSourceId = "",
   contextSourceId = "",
+  conversationContext = null,
   stream = false,
   signal,
   onEvent = () => {}
@@ -47,10 +52,12 @@ export async function answerQuestion({
 
   const sources = await deps.readSources();
   const settings = await deps.readSettings();
-  const chatScope = resolveChatSourceScope({ question, requestedSourceId, contextSourceId, sources });
+  const turns = Array.isArray(conversationContext?.turns) ? conversationContext.turns : [];
+  const effectiveContextSourceId = contextSourceId || conversationContext?.pinnedSourceId || "";
+  const chatScope = resolveChatSourceScope({ question, requestedSourceId, contextSourceId: effectiveContextSourceId, sources });
   const { source, sourceId, searchSourceIds, autoMatch, searchAllSources } = chatScope;
   const broadAnswer = hasBroadAnswerIntent(question);
-  const retrievalQuery = expandedChatRetrievalQuery(question);
+  const retrievalQuery = followUpRetrievalQuery(expandedChatRetrievalQuery(question), question, turns);
 
   if (chatScope.requestedSourceMissing) {
     const candidates = autoMatch?.candidates || [];
@@ -154,6 +161,7 @@ export async function answerQuestion({
     question,
     sourceId,
     broadAnswer,
+    history: historyMessages(turns),
     signal,
     stream,
     onToken: (token) => {

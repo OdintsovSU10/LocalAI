@@ -23,6 +23,8 @@ function contextSourceCount(messages = []) {
 
 export async function startFakeLlm() {
   const contextFailures = new Set();
+  // Chat (non-title) requests as received, for assertions about prompts and conversation history.
+  const chatRequests = [];
   const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", (chunk) => {
@@ -52,6 +54,7 @@ export async function startFakeLlm() {
       const payload = JSON.parse(body || "{}");
       const question = userMessage(payload.messages).split("\n\nКонтекст:")[0];
       const title = String(payload.messages?.[0]?.content || "").startsWith("Ты называешь чат");
+      if (!title) chatRequests.push({ stream: Boolean(payload.stream), messages: payload.messages || [] });
 
       if (question.includes("СБОЙ")) {
         res.writeHead(500, { "Content-Type": "application/json" });
@@ -88,6 +91,7 @@ export async function startFakeLlm() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return {
     baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+    chatRequests,
     close: () => new Promise((resolve) => server.close(resolve))
   };
 }
@@ -204,6 +208,16 @@ export async function startApi({ root, llmBaseUrl = "", llmEnabled = true }) {
   }
 
   return { baseUrl, stop };
+}
+
+export async function requestJson(baseUrl, route, { method = "GET", body } = {}) {
+  const response = await fetch(`${baseUrl}${route}`, {
+    method,
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  const text = await response.text();
+  return { status: response.status, payload: text ? JSON.parse(text) : null };
 }
 
 export async function postJson(baseUrl, route, body) {

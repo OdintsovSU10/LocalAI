@@ -45,6 +45,7 @@ export async function runChatLlm({
   question,
   sourceId,
   broadAnswer = false,
+  history = [],
   signal,
   stream = false,
   onToken = () => {},
@@ -102,7 +103,7 @@ export async function runChatLlm({
             llm: candidateLlm,
             signal,
             onProgress: (progress) => usageTracker.update(llmRequestId, progress),
-            messages: buildChatMessages(question, context, { broadAnswer })
+            messages: buildChatMessages(question, context, { broadAnswer, history })
           };
           reply = stream
             ? await chatCompletionStream({ ...completionArgs, onToken })

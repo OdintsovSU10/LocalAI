@@ -1,6 +1,6 @@
 # ADR-002 — отдельная app-state SQLite
 
-Статус: принято (Stage 00). Реализация: Stage 03.
+Статус: принято (Stage 00). Реализовано в Stage 03 (`apps/rag-api/src/conversation/`).
 
 ## Контекст
 

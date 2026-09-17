@@ -1160,6 +1160,7 @@ function archiveChat(chatId) {
   if (!session) return;
 
   session.archivedAt = new Date().toISOString();
+  syncServerConversation(session, { method: "PATCH", body: JSON.stringify({ archived: true }) });
   if (state.activeChatId === chatId) activateNextVisibleChat();
 
   saveChatHistory();
@@ -1174,6 +1175,7 @@ function restoreChat(chatId) {
 
   delete session.archivedAt;
   session.updatedAt = new Date().toISOString();
+  syncServerConversation(session, { method: "PATCH", body: JSON.stringify({ archived: false }) });
   saveChatHistory();
   renderChatHistory();
 }
@@ -1192,6 +1194,7 @@ function deleteChat(chatId) {
 
   const wasActive = state.activeChatId === chatId;
   state.chatSessions = state.chatSessions.filter((item) => item.id !== chatId);
+  syncServerConversation(session, { method: "DELETE" });
 
   if (wasActive) activateNextVisibleChat();
 
@@ -1281,6 +1284,58 @@ function addMessageRecord(role, text) {
   saveChatHistory();
   renderChatHistory();
   return record;
+}
+
+const SERVER_IMPORT_SOURCE_FIELDS = ["label", "fileLabel", "pageStart", "pageEnd", "sheetName", "rowStart", "rowEnd", "sourceId", "fileId", "chunkId"];
+
+// Server conversations (Product V2, Stage 03): localStorage still renders the UI, the server keeps
+// the dialogue for multi-turn answers. Only citation ids/locations are sent, not document text.
+function legacySessionForImport(session, messages = []) {
+  return {
+    id: session.id,
+    title: session.title,
+    sourceId: session.sourceId || "",
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    messages: messages
+      .filter((message) => (message.role === "user" || message.role === "assistant") && String(message.text || "").trim())
+      .map((message) => ({
+        role: message.role,
+        text: message.text,
+        createdAt: message.createdAt,
+        sources: (message.sources || []).slice(0, 20).map((source) => ({
+          id: source.id,
+          sourceId: source.sourceId,
+          fileId: source.fileId,
+          chunkId: source.chunkId,
+          citationLabel: source.citationLabel,
+          citationTarget: Object.fromEntries(
+            SERVER_IMPORT_SOURCE_FIELDS
+              .filter((field) => source.citationTarget?.[field] !== undefined)
+              .map((field) => [field, source.citationTarget[field]])
+          )
+        }))
+      }))
+  };
+}
+
+async function ensureServerConversation(session, priorMessages = []) {
+  if (session.serverConversationId) return session.serverConversationId;
+  const payload = await api("/api/conversations/import", {
+    method: "POST",
+    body: JSON.stringify({ sessions: [legacySessionForImport(session, priorMessages)] })
+  });
+  const conversationId = payload?.results?.[0]?.conversationId || "";
+  if (conversationId) {
+    session.serverConversationId = conversationId;
+    saveChatHistory();
+  }
+  return conversationId;
+}
+
+function syncServerConversation(session, init) {
+  if (!session?.serverConversationId) return;
+  api(`/api/conversations/${encodeURIComponent(session.serverConversationId)}`, init).catch(() => {});
 }
 
 function openSettings(tabName = "sources", options = {}) {
@@ -8389,6 +8444,7 @@ async function chat(event) {
   const session = ensureActiveChat();
   const sessionId = session.id;
   const contextSourceId = !sourceId && contractSourceById(session.sourceId) ? session.sourceId : "";
+  const priorMessages = (session.messages || []).slice();
   if (sourceId) {
     session.sourceId = sourceId;
     touchActiveChat();
@@ -8410,11 +8466,7 @@ async function chat(event) {
     let streamMeta = {};
     let finalPayload = null;
 
-    await apiStream("/api/chat/stream", {
-      method: "POST",
-      signal: controller.signal,
-      body: JSON.stringify({ question, sourceId, contextSourceId })
-    }, ({ event: streamEvent, payload }) => {
+    const handleStreamEvent = ({ event: streamEvent, payload }) => {
       if (streamEvent === "status") {
         if (streamedAnswer) return;
         if (payload?.status === "retrieval_started") {
@@ -8456,7 +8508,23 @@ async function chat(event) {
       if (streamEvent === "error") {
         throw new Error(payload?.error || String(payload || "Streaming error"));
       }
-    });
+    };
+
+    const streamChat = (conversationId) => apiStream("/api/chat/stream", {
+      method: "POST",
+      signal: controller.signal,
+      body: JSON.stringify({ question, sourceId, contextSourceId, ...(conversationId ? { conversationId } : {}) })
+    }, handleStreamEvent);
+    // An older server or an unavailable conversation DB must not block the answer.
+    const conversationId = await ensureServerConversation(session, priorMessages).catch(() => "");
+    try {
+      await streamChat(conversationId);
+    } catch (error) {
+      if (error.status !== 404 || !conversationId) throw error;
+      // The server lost this conversation (e.g. a reset app-state DB): import the session again once.
+      delete session.serverConversationId;
+      await streamChat(await ensureServerConversation(session, priorMessages).catch(() => ""));
+    }
 
     const payload = {
       ...streamMeta,

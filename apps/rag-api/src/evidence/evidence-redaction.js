@@ -33,27 +33,26 @@ const SECRET_PATTERNS = [
   [/\bAKIA[0-9A-Z]{16}\b/g, SECRET_PLACEHOLDER]
 ];
 
-// "пароль: hunter2" / api_key=abc — the value is masked; the trailing sentence punctuation stays.
-const SECRET_ASSIGNMENT = /(?<![\p{L}\p{N}_])(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret|token|password|passwd|пароль)(\s*[:=]\s*)(["']?)([^\s"',;]*[^\s"',;.!?:)])\3/giu;
-// Only a statement that there is no secret keeps its value: the word itself says so
-// ("Пароль: не требуется", "api_key: none") or a negation follows it ("Токен: доступа не требуется").
-// Any other value — including a Cyrillic word — is treated as a secret.
-const NO_SECRET_WORD = /^(?:не|нет|отсутству\p{L}*|без|none|null|nil|no|not|n\/a|na|empty|unset|unknown|-+|—|–|\[redacted\])$/iu;
-const NEXT_WORD = /^\s*([^\s"',;.!?]+)/u;
-const NEGATION_LOOKAHEAD_CHARS = 40;
+// "пароль: hunter2" / api_key=abc / Пароль: «Красная Луна» — the whole value is masked, up to the end of
+// its clause (comma, semicolon or sentence end), so a multi-word secret cannot survive partially.
+const SECRET_KEY = "(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret|token|password|passwd|пароль|токен)";
+const QUOTED_VALUE = "«([^»\\r\\n]*)»|\"([^\"\\r\\n]*)\"|'([^'\\r\\n]*)'";
+const CLAUSE_VALUE = "([^\\r\\n,;]*[^\\s\\r\\n,;.!?:)])";
+const SECRET_ASSIGNMENT = new RegExp(
+  `(?<![\\p{L}\\p{N}_])${SECRET_KEY}(\\s*[:=]\\s*)(?:${QUOTED_VALUE}|${CLAUSE_VALUE})`,
+  "giu"
+);
 
-function statesNoSecret(value, tail) {
-  if (NO_SECRET_WORD.test(value)) return true;
-  const nextWord = tail.slice(0, NEGATION_LOOKAHEAD_CHARS).match(NEXT_WORD)?.[1] || "";
-  return NO_SECRET_WORD.test(nextWord);
-}
+// The value is kept only when the clause states that there is no secret: "не требуется", "отсутствует",
+// "доступа не требуется", "без пароля", "none", "not required". A prohibition to pass the secret on
+// ("DemoPass42 не передавать третьим лицам") is not such a statement — the value is still masked.
+const NO_SECRET_CLAUSE = /^(?:[\p{L}\p{N}-]+\s+)?(?:не\s+(?:требует\p{L}*|задан\p{L}*|установл\p{L}*|предусмотр\p{L}*|указан\p{L}*|применя\p{L}*|использ\p{L}*)|нет|отсутству\p{L}*|без\s+\p{L}+|not\s+(?:required|set|used|applicable|provided)|none|null|nil|no|n\/a|na|empty|unset|unknown|[-—–]+|\[redacted\])\s*$/iu;
 
 function redactSecretAssignments(text) {
-  return text.replace(SECRET_ASSIGNMENT, (match, key, separator, _quote, value, offset, whole) => (
-    statesNoSecret(value, whole.slice(offset + match.length))
-      ? match
-      : `${key}${separator}${SECRET_PLACEHOLDER}`
-  ));
+  return text.replace(SECRET_ASSIGNMENT, (match, key, separator, ...groups) => {
+    const value = groups.slice(0, 4).find((group) => group !== undefined) ?? "";
+    return NO_SECRET_CLAUSE.test(value.trim()) ? match : `${key}${separator}${SECRET_PLACEHOLDER}`;
+  });
 }
 
 export function redactEvidenceText(value = "") {

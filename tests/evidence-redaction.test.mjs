@@ -63,6 +63,33 @@ test("a Cyrillic password is a secret, not a statement about its absence", () =>
   assert.equal(redactEvidenceText("Пароль: Ромашка2026, выдан администратором"), `Пароль: ${SECRET_PLACEHOLDER}, выдан администратором`);
 });
 
+// Revision 4 regressions (independent re-verification findings).
+
+test("a multi-word secret is masked whole, up to the end of its clause", () => {
+  assert.equal(redactEvidenceText("Пароль: Красная Луна"), `Пароль: ${SECRET_PLACEHOLDER}`);
+  assert.equal(redactEvidenceText("Пароль: Красная Луна, выдан 01.02.2026"), `Пароль: ${SECRET_PLACEHOLDER}, выдан 01.02.2026`);
+  assert.ok(!redactEvidenceText("Пароль: Красная Луна").includes("Луна"));
+});
+
+test("a quoted secret is masked with its quotes, even when it contains a comma", () => {
+  assert.equal(redactEvidenceText("Пароль: \"Красная Луна\""), `Пароль: ${SECRET_PLACEHOLDER}`);
+  assert.equal(redactEvidenceText("Пароль: «Красная, Луна»"), `Пароль: ${SECRET_PLACEHOLDER}`);
+  assert.equal(redactEvidenceText("Пароль: \"Красная, Луна\" (выдан 01.02.2026)"), `Пароль: ${SECRET_PLACEHOLDER} (выдан 01.02.2026)`);
+});
+
+test("a prohibition to pass the secret on is not a statement that there is no secret", () => {
+  assert.equal(redactEvidenceText("Пароль: DemoPass42 не передавать третьим лицам."), `Пароль: ${SECRET_PLACEHOLDER}.`);
+  assert.equal(redactEvidenceText("token: DemoPass42 не передавать."), `token: ${SECRET_PLACEHOLDER}.`);
+});
+
+test("Cyrillic and Latin keys behave the same way", () => {
+  assert.equal(redactEvidenceText("Токен: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig"), `Токен: ${SECRET_PLACEHOLDER}`);
+  assert.equal(redactEvidenceText("Токен: tok-999"), `Токен: ${SECRET_PLACEHOLDER}`);
+  // The negation follows an ordinary word: neither key form masks it.
+  assert.equal(redactEvidenceText("token: доступа не требуется."), "token: доступа не требуется.");
+  assert.equal(redactEvidenceText("Токен: доступа не требуется."), "Токен: доступа не требуется.");
+});
+
 test("secret values are masked while the sentence punctuation after them stays", () => {
   assert.equal(redactEvidenceText("пароль: hunter2."), `пароль: ${SECRET_PLACEHOLDER}.`);
   assert.equal(redactEvidenceText("Пароль: Секрет123, логин admin"), `Пароль: ${SECRET_PLACEHOLDER}, логин admin`);

@@ -1,6 +1,6 @@
 # Stage 02 report
 
-Status: PARTIAL — код и тесты написаны, прогон выполняется на машине владельца (на машине разработки тесты не запускаются)
+Status: PARTIAL — см. Revision 1 в конце отчёта; ожидает повторной проверки
 
 ## Baseline
 - Коммит `70552d6`: логика ответа продублирована в `/api/chat` и `/api/chat/stream` внутри `server.js` (4339 строк). Состояние LLM (`llmRequests`, `lastLlmGenerations`, `lastLlmActivity`) — модульные переменные `server.js`. Unit-тестов на чат нет.
@@ -52,3 +52,25 @@ Status: PARTIAL — код и тесты написаны, прогон выпо
 ## Ready for next stage?
 NO
 Reason: acceptance подтверждается прогоном на машине владельца.
+
+---
+
+## Revision 1 — после независимой проверки (verdict FAIL)
+
+Проверка подтвердила: единый `answerQuestion`, отсутствие дублирования, local-first routing, UI-маркеры, gates `check`/`test` 311/311/`check:ui`/`eval:*`/`mcp:*`/`smoke:api` PASS, браузерный smoke PASS. Не прошёл `npm run test:chat-contract` — дефекты тестового стенда, не runtime.
+
+### Findings
+1. **[P2] Fake LLM не поддерживал lifecycle модели LM Studio.**
+   - Причина: локальные LLM-настройки по умолчанию имеют `runtime: "lmstudio"`, поэтому сервер запрашивает native `/api/v1|v0/models` и загружает модель, если она не помечена загруженной. Fake отдавал модель без `state: "loaded"`, а на `/api/v1/models/load` отвечал 404 → ответ «Could not load local LM Studio model» уже в baseline; проверка веток (`assertScenarioBranches`) правильно остановила сравнение.
+   - Исправление: `tests/helpers/chat-runtime.mjs` — модель отдаётся как загруженная (`state: "loaded"`, `loaded_context_length: 32768`), `POST …/models/load|unload` отвечает 200.
+2. **[P2] Сравнение зависело от длины временного пути.**
+   - Причина: абсолютные пути входят в LLM-контекст, `promptChars` (metadata, SSE `meta`/`done`, `lastActivity`) различался у каталогов `baseline` и `current`.
+   - Исправление: `tests/chat-http-contract.contract.mjs` — метки runtime одинаковой длины (`base`/`head`); `promptChars` остаётся в сравнении как значимое поле.
+
+### Changed
+- `tests/helpers/chat-runtime.mjs`, `tests/chat-http-contract.contract.mjs`
+- Runtime-код (`apps/`) не менялся.
+
+### Tests / evidence
+- Машина разработки: `node --check` изменённых файлов -> PASS.
+- `npm run test:chat-contract` и остальные gates -> NOT RUN здесь, прогон у владельца.

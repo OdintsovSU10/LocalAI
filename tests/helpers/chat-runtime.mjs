@@ -29,9 +29,18 @@ export async function startFakeLlm() {
       body += chunk;
     });
     req.on("end", () => {
+      // Local LLM settings default to the LM Studio runtime, so the server also queries the native
+      // /api/v1|v0/models endpoints and loads the model unless it is reported as already loaded.
       if (req.method === "GET" && req.url.endsWith("/models")) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ data: [{ id: FAKE_MODEL, object: "model" }] }));
+        res.end(JSON.stringify({
+          data: [{ id: FAKE_MODEL, object: "model", type: "llm", state: "loaded", loaded_context_length: 32768 }]
+        }));
+        return;
+      }
+      if (req.method === "POST" && /\/models\/(load|unload)$/.test(req.url)) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ id: FAKE_MODEL, status: "loaded" }));
         return;
       }
       if (req.method !== "POST" || !req.url.endsWith("/chat/completions")) {

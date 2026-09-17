@@ -127,8 +127,10 @@ test(`chat API matches pre-refactor baseline ${BASE_REVISION}`, { timeout: 15 * 
     if (!KEEP_TEMP) await fs.rm(runDir, { recursive: true, force: true });
   });
 
-  const baseline = await collectRuntime({ runDir, label: "baseline", revision: BASE_REVISION });
-  const current = await collectRuntime({ runDir, label: "current" });
+  // Absolute paths go into the LLM context, so promptChars depends on path length:
+  // both runtime labels must be the same length for the comparison to be meaningful.
+  const baseline = await collectRuntime({ runDir, label: "base", revision: BASE_REVISION });
+  const current = await collectRuntime({ runDir, label: "head" });
 
   assertScenarioBranches(baseline);
   assert.deepEqual(Object.keys(current), Object.keys(baseline));

@@ -98,7 +98,9 @@ function supports(claim, evidence) {
       || (evidence.unit === "date" && evidence.value.startsWith(`${claim.value}-`));
   }
   if (claim.unit === "fraction") return evidence.unit === "fraction" && evidence.value === claim.value;
-  if (claim.unit === "number") return typeof evidence.value === "number" && sameNumber(evidence.value, claim.value);
+  // A bare number is confirmed only by a bare number or an amount (spreadsheet rows), never by a
+  // percentage, duration or share with the same digits: "Сумма аванса — 10" is not "аванс 10%".
+  if (claim.unit === "number") return (evidence.unit === "number" || evidence.unit === "currency") && sameNumber(evidence.value, claim.value);
   if (claim.unit === "currency") {
     // Spreadsheet rows carry amounts without a currency word ("| Итого по смете | 244 800 000 |").
     return (evidence.unit === "currency" || (evidence.unit === "number" && Number(claim.value) >= 1000))

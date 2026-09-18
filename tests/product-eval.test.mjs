@@ -165,3 +165,23 @@ test("the verifier gate counts the verifier model when one is given", async () =
   assert.equal(metrics.verifier.falseRejectRate.value, 0);
   assert.equal(metrics.verifier.falsePassRate.mode, "deterministic checks + verifier model");
 });
+
+test("a deterministic gate regression makes the eval fail, a semantic miss does not", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "localai-verifier-eval-"));
+  try {
+    const cases = [
+      // Labelled as a numeric negative, but the claim is true: the checks let it pass -> regression.
+      { id: "regression-numeric", category: "numeric", sourceId: "pv2-stromynka", expected: "unsupported",
+        claim: { text: "Гарантийное удержание составляет 3% от стоимости выполненных работ.", kind: "percentage", evidence: [{ file: "dogovor-15-p.md", includes: "5.1. Из каждого платежа" }] } },
+      { id: "semantic-miss", category: "semantic", sourceId: "pv2-stromynka", expected: "unsupported",
+        claim: { text: "Гарантийное удержание может быть заменено договором страхования.", kind: "condition", evidence: [{ file: "dogovor-15-p.md", includes: "5.3. По согласованию сторон" }] } },
+      { id: "supported-ok", category: "supported", sourceId: "pv2-stromynka", expected: "supported",
+        claim: { text: "Цена договора составляет 245 000 000 рублей.", kind: "amount", evidence: [{ file: "dogovor-15-p.md", includes: "2.1. Цена договора" }] } }
+    ];
+    await fs.writeFile(path.join(dir, "set.json"), JSON.stringify({ corpus: "fixtures/product-v2", cases }), "utf8");
+    const { problems } = await runProductEvals({ verifierDir: dir });
+    assert.deepEqual(problems, ["verifier gate: numeric claim regression-numeric passed the checks"]);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

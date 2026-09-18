@@ -71,6 +71,16 @@ test("numeric negatives: 3% vs 30 days, 3 years vs 30 days, amount vs percent", 
   assert.ok(codes(percentAsAmount).includes("type_mismatch"));
   assert.ok(codes(check("Пени составляют 1/300 ключевой ставки.", "amount", ["E1"])).includes("type_mismatch"));
   assert.equal(check("Цена договора составляет 245 000 000 рублей, в том числе НДС 20%.", "amount", ["E5"]).issues.some((issue) => issue.code === "type_mismatch"), false);
+
+  // A bare number is not confirmed by a percentage, duration or share with the same digits.
+  const bareVsPercent = check("Сумма аванса составляет 10.", "amount", ["E4"]);
+  assert.equal(bareVsPercent.status, "contradicted");
+  assert.ok(codes(bareVsPercent).includes("unit_mismatch"));
+  assert.ok(codes(check("Сумма удержания составляет 30.", "amount", ["E2"])).includes("unit_mismatch"));
+  assert.deepEqual(compareQuantities("Пени 300", ["Пени 1/300 ключевой ставки"]).map((entry) => entry.status), ["missing"]);
+  // ...but it is confirmed by a bare spreadsheet value or an amount in rubles.
+  assert.deepEqual(compareQuantities("Итого 244 800 000", ["| 12 | Итого по смете | 244 800 000 |"]).map((entry) => entry.status), ["ok"]);
+  assert.deepEqual(compareQuantities("Итого 245 000 000", ["Цена 245 000 000 рублей"]).map((entry) => entry.status), ["ok"]);
 });
 
 test("a period word that is not the label of the value is not a type mismatch", () => {

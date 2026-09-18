@@ -240,3 +240,14 @@ test("the repair limit is enforced inside the pipeline, whatever the settings sa
   assert.equal(payload.verification.maxRepairs, 2);
   assert.equal(llm.draftCalls(), 3);
 });
+
+test("acceptance: a bare number presented as an amount is not confirmed by a percentage or a term", async () => {
+  const llm = scriptedLlm({ drafts: [draftText([
+    claim("Сумма удержания составляет 3.", "amount", ["E1"]),
+    claim("Сумма возврата составляет 30.", "amount", ["E2"])
+  ])] });
+  const { payload } = await run({ llm, maxRepairs: 0 });
+  assert.equal(payload.answerStatus, "insufficient_evidence");
+  assert.equal(payload.answer, INSUFFICIENT_ANSWER);
+  assert.deepEqual(payload.verification.claims.map((entry) => entry.issues), [["unit_mismatch"], ["unit_mismatch"]]);
+});

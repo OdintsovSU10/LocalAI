@@ -95,6 +95,17 @@ test("verified answering: claims, checks, verifier, repair and statuses over JSO
   assert.equal(percentAsAmountDone.answerStatus, "insufficient_evidence");
   assert.ok(!percentAsAmountStream.events.filter((event) => event.event === "token").some((event) => event.payload.text.includes("Сумма аванса")));
 
+  // 4c. A bare number "10" is not confirmed by the evidence percentage 10%.
+  for (const route of ["/api/chat", "/api/chat/stream"]) {
+    const body = { question: "ГОЛОЕ какой аванс по договору?", sourceId: stromynka.id };
+    const payload = route === "/api/chat"
+      ? (await postJson(api.baseUrl, route, body)).payload
+      : (await postSse(api.baseUrl, route, body)).events.find((event) => event.event === "done").payload;
+    assert.equal(payload.answerStatus, "insufficient_evidence", route);
+    assert.deepEqual(payload.verification.claims[0].issues, ["unit_mismatch"], route);
+    assert.ok(!payload.answer.includes("Сумма аванса"), route);
+  }
+
   // 5. The status and a text-free verification summary are stored with the conversation turn.
   const conversation = await requestJson(api.baseUrl, "/api/conversations", { method: "POST", body: {} });
   const turn = await postJson(api.baseUrl, "/api/chat", { question: "Какой размер аванса по договору?", sourceId: stromynka.id, conversationId: conversation.payload.id });

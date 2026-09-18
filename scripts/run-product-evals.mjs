@@ -18,6 +18,7 @@ import {
   corpusEvidenceIndex,
   loadVerifierSets,
   runVerifierCases,
+  verifierGateProblems,
   validateVerifierCase,
   verifierCategoryBreakdown
 } from "./product-eval/verifier-eval.mjs";
@@ -118,6 +119,7 @@ export async function runProductEvals({
     verifierRows.push(...setRows);
   }
   if (verifierRows.length) {
+    problems.push(...verifierGateProblems(verifierRows, { verifierModel: Boolean(verifierLlm) }));
     metrics.verifier = computeVerifierMetrics(verifierRows, { mode: verifierLlm ? "deterministic checks + verifier model" : "deterministic checks" });
   }
 

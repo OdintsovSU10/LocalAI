@@ -108,6 +108,25 @@ export function computeVerifierMetrics(rows, { mode = "deterministic checks" } =
   };
 }
 
+// Categories the deterministic checks alone must get right; a miss there is a gate regression.
+export const DETERMINISTIC_CATEGORIES = ["numeric", "version", "scope", "citation"];
+
+/**
+ * Gate regressions (the eval exits non-zero): an adversarial claim of a deterministic category that
+ * passed, or — without a verifier model — a supported claim the checks rejected. Semantic misses and a
+ * verifier model's rejections are metrics, not regressions.
+ */
+export function verifierGateProblems(rows, { verifierModel = false } = {}) {
+  return rows.flatMap((row) => {
+    const { id, category } = row.testCase;
+    if (DETERMINISTIC_CATEGORIES.includes(category) && row.passed) return [`verifier gate: ${category} claim ${id} passed the checks`];
+    if (category === "supported" && !row.passed && !verifierModel) {
+      return [`verifier gate: supported claim ${id} rejected (${row.check.issues.map((issue) => issue.code).join(", ")})`];
+    }
+    return [];
+  });
+}
+
 export function verifierCategoryBreakdown(rows) {
   return VERIFIER_CATEGORIES.map((category) => {
     const inCategory = rows.filter((row) => row.testCase.category === category);

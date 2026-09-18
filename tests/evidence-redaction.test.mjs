@@ -16,6 +16,24 @@ test("absolute Windows, UNC, POSIX and file:// paths are masked without eating t
   assert.equal(redactEvidenceText("см. file:///C:/secret/x.md"), `см. ${PATH_PLACEHOLDER}`);
 });
 
+// Revision 6 regression: absolute POSIX paths with any root, not only a fixed list of roots.
+test("absolute POSIX paths with any root are masked; ordinary text with slashes is not", () => {
+  assert.equal(redactEvidenceText("Скан /projects/atlas/act.pdf."), `Скан ${PATH_PLACEHOLDER}.`);
+  assert.equal(redactEvidenceText("См. /projects/Проект Альфа/act.pdf, лист 2"), `См. ${PATH_PLACEHOLDER}, лист 2`);
+  assert.equal(redactEvidenceText("Данные в /data/2026/q3/ и далее"), `Данные в ${PATH_PLACEHOLDER} и далее`);
+  assert.equal(redactEvidenceText("Каталог (/srv/share/pd) на сервере"), `Каталог (${PATH_PLACEHOLDER}) на сервере`);
+  for (const ordinary of [
+    "пени 1/300 ставки, срок 01/02/2026",
+    "работы и/или услуги, цена руб./м2, расход м3/сутки",
+    "стоимость / объём / срок",
+    "расход м3 /сутки",
+    "ссылка https://example.test/a/b/c.pdf",
+    "| 5 | 2 | Арматура А500С d12/d32 | т | 1 380 | 68 900 |"
+  ]) {
+    assert.equal(redactEvidenceText(ordinary), ordinary);
+  }
+});
+
 test("secret-like values are masked", () => {
   const redacted = redactEvidenceText([
     "api_key=abc123secret; пароль: hunter2; token = \"tok-999\"",

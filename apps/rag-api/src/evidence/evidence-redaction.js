@@ -18,8 +18,10 @@ const PATH_PATTERNS = [
   new RegExp(`(?<![\\p{L}\\p{N}])[A-Za-z]:[\\\\/](?:${SEGMENT})*${LAST_SEGMENT}`, "gu"),
   // \\fileserver\share\folder
   new RegExp(`\\\\\\\\[^\\s\\\\/]+\\\\(?:${SEGMENT})*${LAST_SEGMENT}`, "gu"),
-  // /home/name/..., /Users/name/..., /mnt/..., /var/...
-  new RegExp(`(?<![\\p{L}\\p{N}.:/])/(?:home|Users|mnt|media|var|etc|opt|srv|root|tmp|private|Volumes)/(?:${SEGMENT})*${LAST_SEGMENT}`, "gu")
+  // Any absolute POSIX path of two or more segments: /projects/atlas/act.pdf, /home/name/..., /mnt/...
+  // Not preceded by a letter, digit, dot, colon or slash, so "1/300", "и/или", "руб./м2", "01/02/2026" and
+  // URL paths stay as they are; a single "/word" (as in "м3 /сутки") is not a path either.
+  new RegExp(`(?<![\\p{L}\\p{N}.:/\\\\])/[^\\s\\\\/\"'«»<>|*?]+/(?:${SEGMENT})*${LAST_SEGMENT}`, "gu")
 ];
 
 const SECRET_PATTERNS = [

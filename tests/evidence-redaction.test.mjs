@@ -82,6 +82,38 @@ test("a prohibition to pass the secret on is not a statement that there is no se
   assert.equal(redactEvidenceText("token: DemoPass42 не передавать."), `token: ${SECRET_PLACEHOLDER}.`);
 });
 
+// Revision 5 regressions (independent re-verification findings).
+
+test("escaped quotes inside a quoted secret are masked in one pass", () => {
+  for (const [input, expected] of [
+    ["Пароль: \"Alpha\\\"Beta42\".", `Пароль: ${SECRET_PLACEHOLDER}.`],
+    ["Пароль: 'Alpha\\'Beta42', выдан", `Пароль: ${SECRET_PLACEHOLDER}, выдан`],
+    ["Пароль: \"a\\\\b\" конец", `Пароль: ${SECRET_PLACEHOLDER} конец`]
+  ]) {
+    const once = redactEvidenceText(input);
+    assert.equal(once, expected);
+    assert.equal(redactEvidenceText(once), once);
+  }
+});
+
+test("the next sentence after a secret value is kept", () => {
+  assert.equal(redactEvidenceText("Пароль: Demo42. Аванс составляет 20%."), `Пароль: ${SECRET_PLACEHOLDER}. Аванс составляет 20%.`);
+  assert.equal(redactEvidenceText("Пароль: Demo42! Аванс составляет 20%."), `Пароль: ${SECRET_PLACEHOLDER}! Аванс составляет 20%.`);
+  assert.equal(redactEvidenceText("Пароль: Demo42.\nАванс составляет 20%."), `Пароль: ${SECRET_PLACEHOLDER}.\nАванс составляет 20%.`);
+  assert.equal(
+    redactEvidenceText("пароль: A1. токен: B2. Цена 100 рублей."),
+    `пароль: ${SECRET_PLACEHOLDER}. токен: ${SECRET_PLACEHOLDER}. Цена 100 рублей.`
+  );
+  // Dots inside a value (not followed by a space) are part of the secret.
+  assert.equal(redactEvidenceText("Токен: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig. Далее текст."), `Токен: ${SECRET_PLACEHOLDER}. Далее текст.`);
+  assert.ok(!redactEvidenceText("Пароль: Demo.42 и прочее").includes("42"));
+});
+
+test("a statement of absence may have up to three words before the negation", () => {
+  assert.equal(redactEvidenceText("Токен: для доступа не требуется."), "Токен: для доступа не требуется.");
+  assert.equal(redactEvidenceText("token: for this access not required."), "token: for this access not required.");
+});
+
 test("Cyrillic and Latin keys behave the same way", () => {
   assert.equal(redactEvidenceText("Токен: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig"), `Токен: ${SECRET_PLACEHOLDER}`);
   assert.equal(redactEvidenceText("Токен: tok-999"), `Токен: ${SECRET_PLACEHOLDER}`);

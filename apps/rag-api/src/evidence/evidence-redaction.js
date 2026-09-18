@@ -36,22 +36,27 @@ const SECRET_PATTERNS = [
 // "пароль: hunter2" / api_key=abc / Пароль: «Красная Луна» — the whole value is masked, up to the end of
 // its clause (comma, semicolon or sentence end), so a multi-word secret cannot survive partially.
 const SECRET_KEY = "(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret|token|password|passwd|пароль|токен)";
-const QUOTED_VALUE = "«([^»\\r\\n]*)»|\"([^\"\\r\\n]*)\"|'([^'\\r\\n]*)'";
-const CLAUSE_VALUE = "([^\\r\\n,;]*[^\\s\\r\\n,;.!?:)])";
+// Quoted values honour backslash escapes (\" inside "..."), so the whole secret goes in one pass.
+const QUOTED_VALUE = "«([^»\\r\\n]*)»|\"((?:\\\\.|[^\"\\\\\\r\\n])*)\"|'((?:\\\\.|[^'\\\\\\r\\n])*)'";
+// An unquoted value ends at a comma, semicolon, line break or sentence end (". " / "! " / "? ");
+// dots inside the value (Demo.42, JWT) stay part of it.
+const CLAUSE_VALUE = "((?:[^\\r\\n,;.!?]|[.!?](?=\\S))*[^\\s\\r\\n,;.!?:)])";
 const SECRET_ASSIGNMENT = new RegExp(
   `(?<![\\p{L}\\p{N}_])${SECRET_KEY}(\\s*[:=]\\s*)(?:${QUOTED_VALUE}|${CLAUSE_VALUE})`,
   "giu"
 );
 
 // The value is kept only when the clause states that there is no secret: "не требуется", "отсутствует",
-// "доступа не требуется", "без пароля", "none", "not required". A prohibition to pass the secret on
-// ("DemoPass42 не передавать третьим лицам") is not such a statement — the value is still masked.
-const NO_SECRET_CLAUSE = /^(?:[\p{L}\p{N}-]+\s+)?(?:не\s+(?:требует\p{L}*|задан\p{L}*|установл\p{L}*|предусмотр\p{L}*|указан\p{L}*|применя\p{L}*|использ\p{L}*)|нет|отсутству\p{L}*|без\s+\p{L}+|not\s+(?:required|set|used|applicable|provided)|none|null|nil|no|n\/a|na|empty|unset|unknown|[-—–]+|\[redacted\])\s*$/iu;
+// "для доступа не требуется" (up to three words before the negation), "без пароля", "none", "not required".
+// A prohibition to pass the secret on ("DemoPass42 не передавать третьим лицам") is not such a statement.
+const NO_SECRET_CLAUSE = /^(?:[\p{L}\p{N}-]+\s+){0,3}(?:не\s+(?:требует\p{L}*|задан\p{L}*|установл\p{L}*|предусмотр\p{L}*|указан\p{L}*|применя\p{L}*|использ\p{L}*)|нет|отсутству\p{L}*|без\s+\p{L}+|not\s+(?:required|set|used|applicable|provided)|none|null|nil|no|n\/a|na|empty|unset|unknown|[-—–]+|\[redacted\])\s*$/iu;
 
 function redactSecretAssignments(text) {
   return text.replace(SECRET_ASSIGNMENT, (match, key, separator, ...groups) => {
-    const value = groups.slice(0, 4).find((group) => group !== undefined) ?? "";
-    return NO_SECRET_CLAUSE.test(value.trim()) ? match : `${key}${separator}${SECRET_PLACEHOLDER}`;
+    const value = (groups.slice(0, 4).find((group) => group !== undefined) ?? "").trim();
+    // An already masked value (possibly followed by the rest of its clause) is left as is: idempotency.
+    if (value.startsWith(SECRET_PLACEHOLDER) || NO_SECRET_CLAUSE.test(value)) return match;
+    return `${key}${separator}${SECRET_PLACEHOLDER}`;
   });
 }
 

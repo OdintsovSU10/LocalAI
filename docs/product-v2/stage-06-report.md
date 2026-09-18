@@ -1,6 +1,6 @@
 # Stage 06 report
 
-Status: IMPLEMENTED — ждёт независимой проверки на машине владельца
+Status: PASS — независимая проверка после Revision 1: npm test 395/395, контракты chat/conversation/evidence PASS, 7 мутаций (6 ловятся тестами, JOIN-фильтр — только объём чтения). NOT RUN: сравнение ответов v2/legacy с реальной LLM (LM Studio недоступен)
 
 ## Baseline
 - Stage 05 PASS (`6504511`). Чат отдавал в LLM чанки поиска (BM25 + векторы + RRF + reranker) как есть: 1800 символов на чанк, без точного фрагмента, без учёта редакций.

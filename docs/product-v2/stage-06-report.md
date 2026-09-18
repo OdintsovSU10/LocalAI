@@ -89,7 +89,7 @@ Status: IMPLEMENTED — ждёт независимой проверки на м
 
 ## Security/privacy
 - В пакет попадает только redacted-текст спанов из `evidence.sqlite` (правила ADR-003). Нередактированный текст чанка уходит в LLM только в fallback — как и до Stage 06.
-- В `metadata.evidencePacket` есть только идентификаторы (`evidenceId`, `chunkId`), причины и счётчики. Текста документов там нет. Ошибка провайдера обрезается до 200 символов.
+- В `metadata.evidencePacket` есть только идентификаторы (`evidenceId`, `chunkId`), причины и счётчики. Текста документов там нет. Текст ошибки провайдера не передаётся (с Revision 1), только `reason: "error"`.
 - Local-first routing и UI-маркеры не менялись.
 
 ## Known limitations

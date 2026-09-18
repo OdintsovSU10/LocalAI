@@ -42,6 +42,8 @@
       "claim": { "text": "Сумма аванса составляет 10.", "kind": "amount", "evidence": [{ "file": "ds-01-k-dogovoru-15-p.md", "includes": "аванс в размере 10%" }] } },
     { "id": "vc-neg-bare-amount-vs-days", "category": "numeric", "sourceId": "pv2-stromynka", "expected": "contradicted",
       "claim": { "text": "Сумма удержания составляет 30.", "kind": "amount", "evidence": [{ "file": "dogovor-15-p.md", "includes": "5.2. Сумма гарантийного удержания" }] } },
+    { "id": "vc-contract-price-million", "category": "supported", "sourceId": "pv2-stromynka", "expected": "supported",
+      "claim": { "text": "Цена договора составляет 245 млн.", "kind": "amount", "evidence": [{ "file": "dogovor-15-p.md", "includes": "2.1. Цена договора" }] } },
     { "id": "vc-estimate-bare-row", "category": "supported", "sourceId": "pv2-stromynka", "expected": "supported",
       "claim": { "text": "Итого по смете — 244 800 000.", "kind": "amount", "evidence": [{ "file": "smeta-stromynka.md", "includes": "Итого по смете" }] } },
     { "id": "vc-neg-advance-amount", "category": "numeric", "sourceId": "pv2-stromynka", "expected": "unsupported",

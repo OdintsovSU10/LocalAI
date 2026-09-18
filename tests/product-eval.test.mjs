@@ -181,6 +181,13 @@ test("a deterministic gate regression makes the eval fail, a semantic miss does 
     await fs.writeFile(path.join(dir, "set.json"), JSON.stringify({ corpus: "fixtures/product-v2", cases }), "utf8");
     const { problems } = await runProductEvals({ verifierDir: dir });
     assert.deepEqual(problems, ["verifier gate: numeric claim regression-numeric passed the checks"]);
+
+    // A verifier model that rejects everything neither hides the checks' regression nor creates new ones:
+    // its rejection of the supported claim stays a false-reject metric.
+    const rejectAll = async () => ({ model: "judge", text: JSON.stringify({ overall: "repair", claims: [{ claim_id: "c1", status: "contradicted", supported_by: [], issues: [] }], missing_evidence_queries: [], conflicts: [] }) });
+    const withModel = await runProductEvals({ verifierDir: dir, verifierLlm: { model: "judge" }, chatCompletion: rejectAll });
+    assert.deepEqual(withModel.problems, ["verifier gate: numeric claim regression-numeric passed the checks"]);
+    assert.equal(withModel.metrics.verifier.falseRejectRate.value, 1);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

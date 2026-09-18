@@ -251,3 +251,11 @@ test("acceptance: a bare number presented as an amount is not confirmed by a per
   assert.equal(payload.answer, INSUFFICIENT_ANSWER);
   assert.deepEqual(payload.verification.claims.map((entry) => entry.issues), [["unit_mismatch"], ["unit_mismatch"]]);
 });
+
+test("acceptance: a bare number the evidence states both as a percentage and as an amount is not shown", async () => {
+  const mixed = item("fee", "Аванс составляет 10% от цены договора, банковская комиссия — 10 рублей.");
+  const llm = scriptedLlm({ drafts: [draftText([claim("Сумма аванса составляет 10.", "amount", ["E1"])])] });
+  const { payload } = await run({ llm, results: [mixed], maxRepairs: 0 });
+  assert.equal(payload.answerStatus, "insufficient_evidence");
+  assert.deepEqual(payload.verification.claims[0].issues, ["ambiguous_number"]);
+});

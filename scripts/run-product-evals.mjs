@@ -119,7 +119,7 @@ export async function runProductEvals({
     verifierRows.push(...setRows);
   }
   if (verifierRows.length) {
-    problems.push(...verifierGateProblems(verifierRows, { verifierModel: Boolean(verifierLlm) }));
+    problems.push(...verifierGateProblems(verifierRows));
     metrics.verifier = computeVerifierMetrics(verifierRows, { mode: verifierLlm ? "deterministic checks + verifier model" : "deterministic checks" });
   }
 

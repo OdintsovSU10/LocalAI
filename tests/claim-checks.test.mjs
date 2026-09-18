@@ -13,6 +13,7 @@ test("extractQuantities reads units, dates, fractions and skips codes and clause
   assert.deepEqual(units("Окончание: 30.11.2026; подписан 1 марта 2026 года; в 2026 году"), ["date:2026-11-30", "date:2026-03-01", "calendar_year:2026"]);
   assert.deepEqual(units("пени 1/300 ключевой ставки"), ["fraction:1/300"]);
   assert.deepEqual(units("245 млн руб. и 1,5 тыс. рублей"), ["currency:245000000", "currency:1500"]);
+  assert.deepEqual(units("цена 245 млн, 3 млрд руб."), ["number:245000000", "currency:3000000000"]);
   assert.deepEqual(units("бетон B30 W8 F150, акты КС-2, договор № 15-П, п. 3.1, статья 719, ДС №1"), []);
   assert.deepEqual(units("245 000 000 рублей"), ["currency:245000000"]);
 });
@@ -81,6 +82,26 @@ test("numeric negatives: 3% vs 30 days, 3 years vs 30 days, amount vs percent", 
   // ...but it is confirmed by a bare spreadsheet value or an amount in rubles.
   assert.deepEqual(compareQuantities("Итого 244 800 000", ["| 12 | Итого по смете | 244 800 000 |"]).map((entry) => entry.status), ["ok"]);
   assert.deepEqual(compareQuantities("Итого 245 000 000", ["Цена 245 000 000 рублей"]).map((entry) => entry.status), ["ok"]);
+
+  // The same digits as a percentage and as an unrelated amount: which one the claim means is unknown.
+  const mixed = "Аванс составляет 10% от цены договора, банковская комиссия — 10 рублей.";
+  assert.deepEqual(compareQuantities("Сумма аванса составляет 10.", [mixed]).map((entry) => entry.status), ["ambiguous"]);
+  assert.deepEqual(compareQuantities("Комиссия составляет 10 рублей.", [mixed]).map((entry) => entry.status), ["ok"]);
+  assert.deepEqual(compareQuantities("Аванс составляет 10%.", [mixed]).map((entry) => entry.status), ["ok"]);
+  const ambiguous = checkClaim(
+    { claimId: "c1", text: "Сумма аванса составляет 10.", kind: "amount", evidenceIds: ["E1"] },
+    { evidenceById: new Map([["E1", item(mixed)]]), allowedSourceIds: ["p1"] }
+  );
+  assert.equal(ambiguous.passed, false);
+  assert.ok(codes(ambiguous).includes("ambiguous_number"));
+});
+
+test("money abbreviations without the currency word are the same amount", () => {
+  const status = (claim, evidence) => compareQuantities(claim, [evidence]).map((entry) => entry.status);
+  assert.deepEqual(status("Цена договора составляет 245 млн.", "Цена договора составляет 245 млн руб."), ["ok"]);
+  assert.deepEqual(status("Цена договора составляет 245 млн.", "2.1. Цена договора составляет 245 000 000 (двести сорок пять миллионов) рублей."), ["ok"]);
+  assert.deepEqual(status("Цена договора составляет 245 000 000 рублей.", "Цена договора 245 млн"), ["ok"]);
+  assert.deepEqual(status("Цена договора составляет 250 млн.", "Цена договора составляет 245 млн руб."), ["missing"]);
 });
 
 test("a period word that is not the label of the value is not a type mismatch", () => {

@@ -79,6 +79,7 @@ export function checkClaim(claim, { evidenceById, allowedSourceIds = null, versi
     for (const { quantity, status } of compareQuantities(claim.text, cited.map((item) => item.text))) {
       if (status === "missing") issues.push({ code: "number_not_in_evidence", detail: quantity.raw });
       if (status === "unit_mismatch") issues.push({ code: "unit_mismatch", detail: quantity.raw });
+      if (status === "ambiguous") issues.push({ code: "ambiguous_number", detail: `${quantity.raw} also appears with another unit` });
     }
     const allSuperseded = cited.every((item) => String(item.retrievalReason || "").includes(":superseded"));
     if (versionPolicy === "current" && allSuperseded && !HISTORY_WORDING.test(claim.text)) {

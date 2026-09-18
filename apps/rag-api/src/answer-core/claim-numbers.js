@@ -68,7 +68,8 @@ export function extractQuantities(text = "") {
     let value = parseNumber(match[1]);
     const rest = source.slice(end).replace(new RegExp(`^${PARENTHETICAL}`, "u"), "");
     const [unit = "number"] = UNIT_RULES.find(([, pattern]) => pattern.test(rest)) || [];
-    if (unit === "currency") {
+    // "245 млн" without "руб." is the same number as "245 000 000": the multiplier scales bare numbers too.
+    if (unit === "currency" || unit === "number") {
       const multiplier = MULTIPLIER.find(([pattern]) => pattern.test(rest));
       if (multiplier) value *= multiplier[1];
     }
@@ -114,14 +115,18 @@ function supports(claim, evidence) {
 
 /**
  * Compares every quantity of a claim with the quantities of its cited evidence.
- * @returns {Array<{ quantity, status: "ok" | "unit_mismatch" | "missing" }>}
+ * "ambiguous": a bare number that the evidence states both as an amount and with another unit
+ * ("аванс 10%, комиссия 10 рублей") — which one the claim means is not decidable without context.
+ * @returns {Array<{ quantity, status: "ok" | "ambiguous" | "unit_mismatch" | "missing" }>}
  */
 export function compareQuantities(claimText, evidenceTexts = []) {
   const evidence = evidenceTexts.flatMap((text) => extractQuantities(text));
   return extractQuantities(claimText).map((quantity) => {
-    if (evidence.some((item) => supports(quantity, item))) return { quantity, status: "ok" };
-    const sameValue = typeof quantity.value === "number"
-      && evidence.some((item) => typeof item.value === "number" && sameNumber(item.value, quantity.value));
-    return { quantity, status: sameValue ? "unit_mismatch" : "missing" };
+    const sameValue = (item) => typeof item.value === "number" && typeof quantity.value === "number" && sameNumber(item.value, quantity.value);
+    if (evidence.some((item) => supports(quantity, item))) {
+      const otherUnit = quantity.unit === "number" && evidence.some((item) => sameValue(item) && item.unit !== "number" && item.unit !== "currency");
+      return { quantity, status: otherUnit ? "ambiguous" : "ok" };
+    }
+    return { quantity, status: evidence.some(sameValue) ? "unit_mismatch" : "missing" };
   });
 }

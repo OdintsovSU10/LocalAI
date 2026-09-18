@@ -11,7 +11,7 @@ import {
   missingRequiredMetrics,
   silentMetricFailures
 } from "./product-eval/metrics.mjs";
-import { runRetrievalCase } from "./product-eval/retrieval.mjs";
+import { RETRIEVAL_MODES, runRetrievalCase } from "./product-eval/retrieval.mjs";
 import { loadProductEvalSets, missingCaseClasses, validateProductCase } from "./product-eval/schema.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,8 +43,9 @@ function caseLine(row) {
   return `- ${testCase.id} [${testCase.class}] scope=${scope} results=${retrieval.results.length}${ranks.length ? ` ${ranks.join(" ")}` : ""}`;
 }
 
-export async function runProductEvals({ evalsDir = path.join(projectRoot, "evals", "product-v2") } = {}) {
+export async function runProductEvals({ evalsDir = path.join(projectRoot, "evals", "product-v2"), retrievalMode = "v2" } = {}) {
   const problems = [];
+  if (!RETRIEVAL_MODES.includes(retrievalMode)) problems.push(`unknown retrieval mode "${retrievalMode}" (use ${RETRIEVAL_MODES.join(" | ")})`);
   const sets = await loadProductEvalSets(evalsDir);
   const cases = sets.flatMap((set) => set.cases.map((testCase) => ({ testCase, corpus: set.corpus })));
   if (!cases.length) problems.push(`no product eval cases in ${path.relative(projectRoot, evalsDir) || evalsDir}`);
@@ -71,28 +72,30 @@ export async function runProductEvals({ evalsDir = path.join(projectRoot, "evals
         problems.push(`${testCase.id}: evidence file ${evidence.sourceId}/${evidence.file} is not in corpus ${corpus}`);
       }
     }
-    rows.push({ testCase, retrieval: runRetrievalCase(testCase, corpusState) });
+    rows.push({ testCase, retrieval: runRetrievalCase(testCase, { ...corpusState, mode: retrievalMode }) });
   }
 
   const metrics = computeProductMetrics(rows);
   silentMetricFailures(metrics).forEach((name) => problems.push(`metric ${name} was not computed and has no NOT_AVAILABLE reason`));
   missingRequiredMetrics(metrics).forEach((name) => problems.push(`required metric ${name} is not computable on this eval set`));
-  return { problems, rows, metrics, corpora: [...corpora.keys()] };
+  return { problems, rows, metrics, corpora: [...corpora.keys()], retrievalMode };
 }
 
 async function main() {
   const jsonOut = readOption("json");
   const evalsDir = path.resolve(readOption("dir") || path.join(projectRoot, "evals", "product-v2"));
+  // --retrieval legacy measures the pre-Stage-06 chunk results for before/after comparison.
+  const retrievalMode = readOption("retrieval") || "v2";
   // Every *.json in the eval directory is loaded as a case set, so a report written there breaks the next run.
   if (jsonOut && !path.relative(evalsDir, path.resolve(jsonOut)).startsWith("..")) {
     console.error(`FAIL: --json report must be written outside the eval directory (${evalsDir})`);
     process.exitCode = 1;
     return;
   }
-  const { problems, rows, metrics, corpora = [] } = await runProductEvals({ evalsDir });
+  const { problems, rows, metrics, corpora = [] } = await runProductEvals({ evalsDir, retrievalMode });
 
   if (rows.length) {
-    console.log(`Product V2 eval (retrieval-only): ${rows.length} case(s), corpus ${corpora.join(", ")}`);
+    console.log(`Product V2 eval (retrieval-only, ${retrievalMode}): ${rows.length} case(s), corpus ${corpora.join(", ")}`);
     rows.forEach((row) => console.log(caseLine(row)));
   }
   if (metrics) {
@@ -108,7 +111,7 @@ async function main() {
     const report = {
       schemaVersion: "product-v2-report/1",
       generatedAt: new Date().toISOString(),
-      mode: "retrieval-only",
+      mode: `retrieval-only/${retrievalMode}`,
       metrics,
       cases: rows.map(({ testCase, retrieval }) => ({
         id: testCase.id,

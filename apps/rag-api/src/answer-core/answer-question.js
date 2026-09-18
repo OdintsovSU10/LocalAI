@@ -4,6 +4,7 @@ import { indexedSnapshotForSource, indexSourceIdsForSources } from "../index-sta
 import { chatLlmCandidates, llmRouteMetadata, providerLabel } from "../llm-routing.js";
 import { chatSearchLimit, runChatLlm } from "./chat-llm.js";
 import { followUpRetrievalQuery, historyMessages } from "./conversation-turns.js";
+import { buildEvidencePacket } from "./evidence-packet.js";
 import { planQuery as defaultPlanQuery } from "./query-planner.js";
 import {
   LLM_DISABLED_ANSWER,
@@ -25,6 +26,27 @@ import { emptyRouteMetadata, ragDebugMetadata } from "./rag-metadata.js";
  * @property {boolean} answerStreamed true when the answer text already went out as token events
  * @property {object} plan            query plan used for the turn (kept out of the payload; stored with the turn)
  */
+
+/**
+ * Retrieval 2.0: turns the ranked chunks into an evidence packet (exact spans, fact hits, version
+ * awareness). Any problem with evidence (disabled, store unavailable, not built for these chunks)
+ * keeps the legacy chunk results, so chat never depends on the evidence database.
+ */
+async function applyEvidencePacket({ settings, plan, question, results, sourceIds, sources, limit, deps }) {
+  if (settings?.search?.retrievalV2 === false) return { results, diagnostics: { enabled: false, used: false, reason: "disabled" } };
+  if (!deps.getEvidenceProvider) return { results, diagnostics: { enabled: true, used: false, reason: "no_provider" } };
+  if (plan?.fallback) return { results, diagnostics: { enabled: true, used: false, reason: "plan_fallback" } };
+  try {
+    const provider = await deps.getEvidenceProvider();
+    const packet = buildEvidencePacket({ plan, question, chunkResults: results, sourceIds, provider, limit, sources });
+    if (!packet.results.some((result) => result.evidenceId)) {
+      return { results, diagnostics: { enabled: true, used: false, reason: "no_evidence" } };
+    }
+    return { results: packet.results, diagnostics: { enabled: true, used: true, reason: "", ...packet.diagnostics } };
+  } catch (error) {
+    return { results, diagnostics: { enabled: true, used: false, reason: "error", error: String(error?.message || error).slice(0, 200) } };
+  }
+}
 
 /**
  * Single chat answer pipeline for /api/chat and /api/chat/stream.
@@ -133,8 +155,22 @@ export async function answerQuestion({
     sourceIds: effectiveSearchSourceIds,
     limit: searchLimit
   });
-  const results = searchResult.results;
-  const searchMetadata = searchResult.metadata;
+  const retrievalV2 = settings?.search?.retrievalV2 !== false;
+  const packet = searchResult.results.length
+    ? await applyEvidencePacket({
+      settings,
+      plan,
+      question,
+      results: searchResult.results,
+      sourceIds: effectiveSearchSourceIds,
+      sources,
+      limit: searchLimit,
+      deps
+    })
+    : { results: searchResult.results, diagnostics: { enabled: retrievalV2, used: false, reason: "no_results" } };
+  const results = packet.results;
+  // With Retrieval 2.0 switched off the metadata stays exactly as before Stage 06.
+  const searchMetadata = retrievalV2 ? { ...searchResult.metadata, evidencePacket: packet.diagnostics } : searchResult.metadata;
   const llmCandidates = chatLlmCandidates(settings);
   const llm = llmCandidates[0];
   const initialMetadata = (answer = "", overrides = {}) => ragDebugMetadata({

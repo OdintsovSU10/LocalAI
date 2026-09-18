@@ -3502,7 +3502,8 @@ function chatAnswerDeps() {
     latestJobForSource,
     publicJobStatus,
     allSourcesNoResultsAnswer,
-    usageTracker: llmUsage
+    usageTracker: llmUsage,
+    getEvidenceProvider: evidenceStore
   };
 }
 

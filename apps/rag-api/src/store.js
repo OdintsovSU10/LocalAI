@@ -78,7 +78,9 @@ export const defaultSearchSettings = {
   vectorCandidates: 200,
   lexicalCandidates: 200,
   finalCandidates: 60,
-  rerankCandidates: 30
+  rerankCandidates: 30,
+  // Retrieval 2.0 (Product V2, Stage 06): chat answers from an evidence packet; false = legacy chunks.
+  retrievalV2: true
 };
 
 export const defaultStorageSettings = {
@@ -633,8 +635,14 @@ function normalizeStoredSearchSettings(search = {}) {
     vectorCandidates: Math.min(1000, Math.max(1, Number(search.vectorCandidates || defaultSearchSettings.vectorCandidates))),
     lexicalCandidates: Math.min(1000, Math.max(1, Number(search.lexicalCandidates || defaultSearchSettings.lexicalCandidates))),
     finalCandidates: Math.min(500, Math.max(1, Number(search.finalCandidates || defaultSearchSettings.finalCandidates))),
-    rerankCandidates: Math.min(200, Math.max(1, Number(search.rerankCandidates || defaultSearchSettings.rerankCandidates)))
+    rerankCandidates: Math.min(200, Math.max(1, Number(search.rerankCandidates || defaultSearchSettings.rerankCandidates))),
+    retrievalV2: search.retrievalV2 !== false
   };
+}
+
+// RAG_RETRIEVAL_V2 overrides the stored flag at read time only, so saving settings never persists it.
+function applySearchEnvOverrides(search) {
+  return { ...search, retrievalV2: envBoolean("RAG_RETRIEVAL_V2") ?? search.retrievalV2 };
 }
 
 export async function readSettings() {
@@ -652,7 +660,7 @@ export async function readSettings() {
   const vectorStore = normalizeStoredVectorStoreSettings(applyVectorStoreEnvOverrides(normalizeStoredVectorStoreSettings(settings.vectorStore || {})));
   const reranker = normalizeStoredRerankerSettings(applyRerankerEnvOverrides(normalizeStoredRerankerSettings(settings.reranker || {})));
   const storage = applyStorageEnvOverrides(normalizeStoredStorageSettings(settings.storage || {}));
-  const search = normalizeStoredSearchSettings(settings.search || {});
+  const search = applySearchEnvOverrides(normalizeStoredSearchSettings(settings.search || {}));
 
   return {
     dataDir: dataDir(),

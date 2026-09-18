@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { answerQuestion } from "../apps/rag-api/src/answer-core/answer-question.js";
 import { createLlmUsageTracker } from "../apps/rag-api/src/answer-core/llm-usage-tracker.js";
+import { createMemoryEvidenceProvider } from "../apps/rag-api/src/evidence/memory-evidence-provider.js";
 
 const demoSource = { id: "demo", title: "Demo Project", path: "fixtures/demo-project", sourceType: "contract" };
 const secondSource = { id: "second", title: "Second Object", path: "fixtures/second-object", sourceType: "contract" };
@@ -293,4 +294,92 @@ test("a failing planner falls back to the legacy scope resolution", async () => 
   assert.equal(calls.search.length, 1);
   assert.equal(calls.search[0].sourceIds, null);
   assert.equal(payload.sources.length, 2);
+});
+
+// Stage 06: Retrieval 2.0 evidence packet.
+
+function evidenceProvider() {
+  return createMemoryEvidenceProvider([{
+    documents: [{ documentId: "doc-1", sourceId: "demo", fileId: "f1", fileLabel: "contract.md", kind: "contract" }],
+    spans: [{
+      evidenceId: "ev-1",
+      documentId: "doc-1",
+      sourceId: "demo",
+      fileId: "f1",
+      chunkId: "chunk-1",
+      kind: "paragraph",
+      ordinal: 0,
+      sectionTitle: "2. Цена договора",
+      text: "2.1. Цена договора составляет 12 450 000 рублей."
+    }],
+    facts: [{
+      factId: "fact-1",
+      documentId: "doc-1",
+      sourceId: "demo",
+      factType: "contract_price",
+      status: "active",
+      validFrom: "2026-01-01",
+      evidenceIds: ["ev-1"]
+    }]
+  }]);
+}
+
+const pricePlan = ({ question, requestedSourceId }) => ({
+  question,
+  requestedSourceId,
+  needsClarification: false,
+  intent: "fact",
+  entities: ["contract_price"],
+  versionPolicy: "current"
+});
+
+test("Retrieval 2.0: the LLM gets the evidence packet, chunks without evidence stay as fallback", async () => {
+  const { deps: answerDeps, calls } = deps({ planQuery: pricePlan, getEvidenceProvider: async () => evidenceProvider() });
+  const { payload } = await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo" }, answerDeps);
+
+  assert.equal(payload.sources[0].evidenceId, "ev-1");
+  assert.equal(payload.sources[0].retrievalReason, "fact:contract_price:active");
+  assert.equal(payload.sources[0].citationEvidence, "2.1. Цена договора составляет 12 450 000 рублей.");
+  assert.equal(payload.sources[1].id, "chunk-2");
+  assert.equal(payload.sources[1].evidenceId, undefined);
+  assert.equal(payload.metadata.evidencePacket.used, true);
+  assert.equal(payload.metadata.evidencePacket.fallbackChunks, 1);
+  assert.equal(payload.metadata.finalSourceCount, 2);
+  assert.ok(calls.completions[0].args.messages.at(-1).content.includes("2.1. Цена договора составляет 12 450 000 рублей."));
+});
+
+test("Retrieval 2.0 switched off keeps the legacy chunks and the pre-Stage 06 metadata", async () => {
+  let providerCalls = 0;
+  const { deps: answerDeps } = deps({
+    planQuery: pricePlan,
+    readSettings: async () => ({ ...settings(), search: { retrievalV2: false } }),
+    getEvidenceProvider: async () => {
+      providerCalls += 1;
+      return evidenceProvider();
+    }
+  });
+  const { payload } = await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo" }, answerDeps);
+
+  assert.deepEqual(payload.sources.map((source) => source.id), ["chunk-1", "chunk-2"]);
+  assert.equal(payload.sources[0].evidenceId, undefined);
+  assert.equal("evidencePacket" in payload.metadata, false);
+  assert.equal(providerCalls, 0);
+});
+
+test("Retrieval 2.0 falls back to legacy chunks when evidence is missing or unavailable", async () => {
+  const empty = deps({ planQuery: pricePlan, getEvidenceProvider: async () => createMemoryEvidenceProvider([]) });
+  const emptyResult = await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo" }, empty.deps);
+  assert.deepEqual(emptyResult.payload.sources.map((source) => source.id), ["chunk-1", "chunk-2"]);
+  assert.deepEqual(emptyResult.payload.metadata.evidencePacket, { enabled: true, used: false, reason: "no_evidence" });
+
+  const broken = deps({
+    planQuery: pricePlan,
+    getEvidenceProvider: async () => {
+      throw new Error("evidence.sqlite is locked");
+    }
+  });
+  const brokenResult = await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo" }, broken.deps);
+  assert.deepEqual(brokenResult.payload.sources.map((source) => source.id), ["chunk-1", "chunk-2"]);
+  assert.equal(brokenResult.payload.metadata.evidencePacket.reason, "error");
+  assert.equal(brokenResult.payload.answer, "Сумма договора 12 450 000 рублей [1].\n\nИсточники: [1].");
 });

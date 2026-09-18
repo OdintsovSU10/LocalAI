@@ -1,6 +1,7 @@
 import { buildCitationTarget, formatCitationLabel } from "../../apps/rag-api/src/citations.js";
 import { expandedChatRetrievalQuery } from "../../apps/rag-api/src/chat-intent.js";
 import { resolveChatSourceScope } from "../../apps/rag-api/src/chat-scope.js";
+import { buildEvidencePacket } from "../../apps/rag-api/src/answer-core/evidence-packet.js";
 import { planQuery } from "../../apps/rag-api/src/answer-core/query-planner.js";
 import { prepareSearchQuery } from "../../apps/rag-api/src/search-query.js";
 import {
@@ -10,6 +11,25 @@ import {
 } from "../../apps/rag-api/src/search-pipeline.js";
 
 export const RETRIEVAL_TOP_K = 10;
+export const RETRIEVAL_MODES = ["v2", "legacy"];
+
+function toEvalResult(item, index) {
+  return {
+    rank: index + 1,
+    id: item.id,
+    chunkId: item.chunkId || item.id,
+    evidenceId: item.evidenceId || "",
+    fileId: item.fileId || "",
+    sourceId: item.sourceId,
+    path: item.path,
+    title: item.title,
+    text: item.text,
+    score: Number(Number(item.score || 0).toFixed(4)),
+    retrievalReason: item.retrievalReason || "",
+    citationLabel: item.citationLabel || formatCitationLabel(item),
+    citationTarget: item.citationTarget || buildCitationTarget(item, index)
+  };
+}
 
 // Offline mirror of the /api/chat retrieval path: same scope resolution and query expansion,
 // BM25 + hybrid scoring without embeddings/Qdrant/reranker (those need live services).
@@ -36,17 +56,7 @@ function searchChunks({ query, chunks, searchSourceIds, searchAllSources }) {
     .filter((chunk) => chunk.score > 0)
     .sort((left, right) => right.score - left.score)
     .slice(0, RETRIEVAL_TOP_K)
-    .map((chunk, index) => ({
-      rank: index + 1,
-      id: chunk.id,
-      sourceId: chunk.sourceId,
-      path: chunk.path,
-      title: chunk.title,
-      text: chunk.text,
-      score: Number(Number(chunk.score || 0).toFixed(4)),
-      citationLabel: formatCitationLabel(chunk),
-      citationTarget: buildCitationTarget(chunk, index)
-    }));
+    .map((chunk) => ({ ...chunk, chunkId: chunk.id }));
 }
 
 // The web UI sends the previous session's project as contextSourceId; follow-up cases replay that.
@@ -60,7 +70,11 @@ function contextSourceIdFromHistory(testCase, sources) {
   return contextSourceId;
 }
 
-export function runRetrievalCase(testCase, { sources, chunks }) {
+/**
+ * Runs one eval case. mode "legacy" = chunk results as /api/chat used them before Stage 06;
+ * mode "v2" = the same chunks turned into an evidence packet (Retrieval 2.0) with the corpus evidence.
+ */
+export function runRetrievalCase(testCase, { sources, chunks, evidenceProvider = null, mode = "v2" }) {
   const contextSourceId = contextSourceIdFromHistory(testCase, sources);
   const scope = resolveChatSourceScope({
     question: testCase.question,
@@ -78,14 +92,31 @@ export function runRetrievalCase(testCase, { sources, chunks }) {
     sources
   });
   const clarificationPredicted = Boolean(scope.requestedSourceMissing || plan.needsClarification);
-  const results = clarificationPredicted
-    ? []
-    : searchChunks({
-        query: expandedChatRetrievalQuery(testCase.question),
-        chunks,
-        searchSourceIds: scope.searchSourceIds,
-        searchAllSources: scope.searchAllSources
+  let results = [];
+  let packetDiagnostics = null;
+  if (!clarificationPredicted) {
+    const chunkResults = searchChunks({
+      query: expandedChatRetrievalQuery(testCase.question),
+      chunks,
+      searchSourceIds: scope.searchSourceIds,
+      searchAllSources: scope.searchAllSources
+    });
+    if (mode === "v2" && evidenceProvider) {
+      const packet = buildEvidencePacket({
+        plan,
+        question: testCase.question,
+        chunkResults,
+        sourceIds: scope.searchAllSources ? null : scope.searchSourceIds,
+        provider: evidenceProvider,
+        limit: RETRIEVAL_TOP_K,
+        sources
       });
+      results = packet.results.map(toEvalResult);
+      packetDiagnostics = packet.diagnostics;
+    } else {
+      results = chunkResults.map(toEvalResult);
+    }
+  }
 
   return {
     scope: {
@@ -95,7 +126,9 @@ export function runRetrievalCase(testCase, { sources, chunks }) {
       contextSourceUsed: scope.contextSourceUsed,
       autoMatchCandidates: (scope.autoMatch?.candidates || []).map((candidate) => candidate.id)
     },
+    plan: { intent: plan.intent, entities: plan.entities, versionPolicy: plan.versionPolicy },
     clarificationPredicted,
+    packetDiagnostics,
     results
   };
 }

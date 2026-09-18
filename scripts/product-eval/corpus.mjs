@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { buildSourceEvidence } from "../../apps/rag-api/src/evidence/build-source-evidence.js";
+import { createMemoryEvidenceProvider } from "../../apps/rag-api/src/evidence/memory-evidence-provider.js";
 import { chunkMarkdown, tokenize } from "../../apps/rag-api/src/text.js";
 
 // Fixture files are already in converter output form (xlsx → "## Лист:", OCR → "## OCR page N"),
@@ -45,5 +47,21 @@ export async function buildProductCorpus({ projectRoot, corpusDir }) {
     }
   }
 
-  return { sources, chunks };
+  return { sources, chunks, evidenceProvider: await buildCorpusEvidenceProvider({ projectRoot, sources, chunks }) };
+}
+
+// Evidence (Stage 04) for the corpus, built in memory exactly like the server builds it from the index.
+export async function buildCorpusEvidenceProvider({ projectRoot, sources, chunks }) {
+  const builds = [];
+  for (const source of sources) {
+    const sourceChunks = chunks.filter((chunk) => chunk.sourceId === source.id);
+    const files = [...new Map(sourceChunks.map((chunk) => [chunk.fileId, { fileId: chunk.fileId, title: chunk.title, path: chunk.path }])).values()];
+    builds.push(await buildSourceEvidence({
+      sourceId: source.id,
+      files,
+      chunks: sourceChunks,
+      readMarkdown: (file) => fs.readFile(path.resolve(projectRoot, file.path), "utf8")
+    }));
+  }
+  return createMemoryEvidenceProvider(builds);
 }

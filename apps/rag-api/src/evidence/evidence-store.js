@@ -270,6 +270,58 @@ export async function createEvidenceStore({ databasePath, now = () => new Date()
       };
     },
 
+    // --- Evidence provider interface (Retrieval 2.0, Stage 06); the in-memory provider mirrors it. ---
+
+    spansForChunks(chunkIds = []) {
+      const ids = [...new Set(chunkIds.filter(Boolean).map(String))];
+      if (!ids.length) return [];
+      return db.prepare(`SELECT * FROM evidence_spans WHERE chunk_id IN (${ids.map(() => "?").join(",")}) ORDER BY document_id, ordinal`)
+        .all(...ids).map(publicSpan);
+    },
+
+    spansByIds(evidenceIds = []) {
+      const ids = [...new Set(evidenceIds.filter(Boolean).map(String))];
+      if (!ids.length) return [];
+      return db.prepare(`SELECT * FROM evidence_spans WHERE evidence_id IN (${ids.map(() => "?").join(",")})`)
+        .all(...ids).map(publicSpan);
+    },
+
+    neighborSpan(documentId, ordinal) {
+      const row = db.prepare("SELECT * FROM evidence_spans WHERE document_id = ? AND ordinal = ?").get(String(documentId || ""), Number(ordinal));
+      return row ? publicSpan(row) : null;
+    },
+
+    // sourceIds null = every source; factTypes / statuses null = no filter.
+    factsForSources({ sourceIds = null, factTypes = null, statuses = null } = {}) {
+      const conditions = [];
+      const params = [];
+      if (Array.isArray(sourceIds)) {
+        if (!sourceIds.length) return [];
+        conditions.push(`source_id IN (${sourceIds.map(() => "?").join(",")})`);
+        params.push(...sourceIds.map(String));
+      }
+      if (Array.isArray(factTypes)) {
+        if (!factTypes.length) return [];
+        conditions.push(`fact_type IN (${factTypes.map(() => "?").join(",")})`);
+        params.push(...factTypes.map(String));
+      }
+      if (Array.isArray(statuses)) {
+        if (!statuses.length) return [];
+        conditions.push(`status IN (${statuses.map(() => "?").join(",")})`);
+        params.push(...statuses.map(String));
+      }
+      const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+      return db.prepare(`SELECT * FROM facts ${where} ORDER BY source_id, fact_type, valid_from, fact_id`)
+        .all(...params).map((row) => publicFact(row, evidenceIdsFor(row.fact_id)));
+    },
+
+    documentsByIds(documentIds = []) {
+      const ids = [...new Set(documentIds.filter(Boolean).map(String))];
+      if (!ids.length) return [];
+      return db.prepare(`SELECT * FROM documents WHERE document_id IN (${ids.map(() => "?").join(",")})`)
+        .all(...ids).map(publicDocument);
+    },
+
     close() {
       db.close();
     }

@@ -1,5 +1,5 @@
 // Stage 04 contract: index a synthetic contract folder through the API, build evidence and follow
-// fact -> evidence span -> exact preview fragment.
+// fact -> evidence span -> exact preview fragment. Stage 06: /api/chat answers from the evidence packet.
 //
 //   npm run test:evidence-contract
 import assert from "node:assert/strict";
@@ -45,7 +45,7 @@ test("evidence API: documents, amendment graph, fact trace and preview of the ex
     if (!KEEP_TEMP) await fs.rm(runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
   const root = await createTempRuntime({ runDir, label: "head", extraFixtures: ["product-v2"] });
-  api = await startApi({ root, llmEnabled: false });
+  api = await startApi({ root, llmEnabled: false, retrievalV2: true });
 
   const stromynka = await addSource(api.baseUrl, { title: "ЖК Сокольники, Стромынка", folder: path.join(root, "fixtures", "product-v2", "stromynka") });
   await indexSource(api.baseUrl, stromynka.id);
@@ -92,6 +92,26 @@ test("evidence API: documents, amendment graph, fact trace and preview of the ex
   const totalTrace = await requestJson(api.baseUrl, `/api/evidence/facts/${totals.payload.facts[0].factId}/trace`);
   assert.equal(totalTrace.payload.evidence[0].sheetName, "Сводная");
   assert.equal(totalTrace.payload.evidence[0].rowStart, 12);
+
+  // Retrieval 2.0: the chat packet puts the current advance (ДС №1, 10%) first and the replaced 20% right
+  // after it as history; each item cites an exact span that opens in the preview.
+  const chat = await postJson(api.baseUrl, "/api/chat", { question: "Какой размер аванса по договору?", sourceId: stromynka.id });
+  assert.equal(chat.status, 200);
+  assert.equal(chat.payload.metadata.evidencePacket.used, true);
+  assert.equal(chat.payload.metadata.evidencePacket.packetVersion, "evidence/1");
+  const [current, history] = chat.payload.sources;
+  assert.equal(current.retrievalReason, "fact:advance_percent:active");
+  assert.ok(current.text.includes("10%"));
+  assert.equal(history.retrievalReason, "fact:advance_percent:superseded");
+  assert.ok(history.text.includes("20%"));
+  assert.ok(current.evidenceId && current.chunkId, "packet item has no evidence span or chunk");
+  const chatPreview = await requestJson(api.baseUrl, `/api/files/preview?${new URLSearchParams({
+    sourceId: current.sourceId,
+    chunkId: current.chunkId,
+    focusText: current.citationEvidence
+  })}`);
+  assert.equal(chatPreview.status, 200);
+  assert.equal(chatPreview.payload.targetMatched, true);
 
   assert.equal((await postJson(api.baseUrl, "/api/evidence/rebuild", { sourceId: "missing-source" })).status, 404);
   assert.equal((await requestJson(api.baseUrl, "/api/evidence/facts")).status, 400);

@@ -147,7 +147,8 @@ export async function createTempRuntime({ runDir, label, revision = "", extraFix
   return root;
 }
 
-export async function startApi({ root, llmBaseUrl = "", llmEnabled = true }) {
+// retrievalV2 is off by default: the chat contract compares HEAD with a pre-Stage 06 revision.
+export async function startApi({ root, llmBaseUrl = "", llmEnabled = true, retrievalV2 = false }) {
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, [path.join(root, "apps", "rag-api", "src", "server.js")], {
@@ -174,7 +175,8 @@ export async function startApi({ root, llmBaseUrl = "", llmEnabled = true }) {
       RAG_VECTOR_STORE_ENABLED: "false",
       QDRANT_ENABLED: "false",
       RAG_RERANKER_ENABLED: "false",
-      RAG_OCR_ENABLED: "false"
+      RAG_OCR_ENABLED: "false",
+      RAG_RETRIEVAL_V2: retrievalV2 ? "true" : "false"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });

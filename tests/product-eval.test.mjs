@@ -127,3 +127,14 @@ test("product eval --json report inside the eval directory is rejected, repeated
   const report = JSON.parse(await fs.readFile(reportPath, "utf8"));
   assert.deepEqual(report.problems, []);
 });
+
+test("Retrieval 2.0 does not regress recall and fixes citation and current-version metrics", async () => {
+  const v2 = (await runProductEvals({ retrievalMode: "v2" })).metrics.retrieval;
+  const legacy = (await runProductEvals({ retrievalMode: "legacy" })).metrics.retrieval;
+  assert.ok(v2.recallAt5.value >= legacy.recallAt5.value, `R@5 ${v2.recallAt5.value} < legacy ${legacy.recallAt5.value}`);
+  assert.ok(v2.recallAt10.value >= legacy.recallAt10.value);
+  assert.ok(v2.mrr.value >= legacy.mrr.value);
+  assert.equal(v2.citationTargetAccuracy.value, 1);
+  assert.equal(v2.currentVersionAccuracy.value, 1);
+  assert.equal(v2.wrongProjectLeakRateAt5.value, 0);
+});

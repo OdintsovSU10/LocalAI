@@ -49,20 +49,26 @@ async function verifyClaims({ verifier, question, plan, scopeTitles, claims, lab
   if (!claims.length) return { ok: true, parsed: null };
   const requestId = crypto.randomUUID();
   usageTracker?.update(requestId, { phase: "verifying", model: verifier.llm.model, provider: verifier.llm.provider, sourcesCount: labelled.items.length });
-  try {
-    const reply = await chatCompletion({
-      llm: verifier.llm,
-      signal,
-      responseFormat: VERDICT_RESPONSE_FORMAT,
-      messages: buildVerifierMessages({ question, plan, scopeTitles, claims, labelled, profile })
-    });
-    usageTracker?.finish(requestId, "completed");
-    return { ok: true, parsed: parseVerdict(reply.text, claims.map((claim) => claim.claimId)) };
-  } catch (error) {
-    usageTracker?.finish(requestId, signal?.aborted ? "cancelled" : "failed", error.message);
-    if (signal?.aborted) throw error;
-    return { ok: false, parsed: null, error };
+  const messages = buildVerifierMessages({ question, plan, scopeTitles, claims, labelled, profile });
+  let lastError = null;
+  // Same runtime contract as the draft: structured output first; a runtime that rejects response_format,
+  // or an unparsable structured reply, gets one plain attempt.
+  for (const responseFormat of [VERDICT_RESPONSE_FORMAT, null]) {
+    try {
+      const reply = await chatCompletion({ llm: verifier.llm, signal, messages, ...(responseFormat ? { responseFormat } : {}) });
+      const parsed = parseVerdict(reply.text, claims.map((claim) => claim.claimId));
+      usageTracker?.finish(requestId, "completed");
+      return { ok: true, parsed };
+    } catch (error) {
+      lastError = error;
+      if (signal?.aborted) break;
+      const retryPlain = error instanceof DraftParseError || STRUCTURED_OUTPUT_UNSUPPORTED.test(String(error?.message || ""));
+      if (!responseFormat || !retryPlain) break;
+    }
   }
+  usageTracker?.finish(requestId, signal?.aborted ? "cancelled" : "failed", lastError?.message || "");
+  if (signal?.aborted) throw lastError;
+  return { ok: false, parsed: null, error: lastError };
 }
 
 function feedbackFor(claims, checks, verdicts) {

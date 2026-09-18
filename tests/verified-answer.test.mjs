@@ -23,13 +23,18 @@ const claim = (text, kind, evidence_ids) => ({ claim_id: "x", text, kind, eviden
 const draftText = (claims) => JSON.stringify({ claims, summary: "", open_questions: [] });
 
 // Scripted LLM: drafts come from a queue (the last one repeats), the verifier from a function of its claims.
-function scriptedLlm({ drafts, verdict = "supported", verdictFor = null, failVerifier = false, rejectSchemaOnce = false }) {
+// rejectSchema: "once" — the first structured request fails; "always" — every structured request fails.
+function scriptedLlm({ drafts, verdict = "supported", verdictFor = null, failVerifier = false, rejectSchemaOnce = false, rejectSchema = rejectSchemaOnce ? "once" : "" }) {
   const calls = [];
   let draftIndex = 0;
   let schemaRejected = false;
   const chatCompletion = async ({ llm, messages, responseFormat }) => {
     const name = responseFormat?.json_schema?.name || "plain";
     calls.push({ name, model: llm.model, content: messages.at(-1).content });
+    if (responseFormat && (rejectSchema === "always" || (rejectSchema === "once" && !schemaRejected))) {
+      schemaRejected = true;
+      throw new Error("LLM endpoint returned 400: 'response_format' is not supported by this model");
+    }
     if (name === "claim_verdicts" || messages[0].content.startsWith("Ты независимый проверяющий")) {
       if (failVerifier) throw new Error("verifier model is not loaded");
       const claims = [...messages.at(-1).content.matchAll(/^\{"claim_id".*\}$/gm)].map((line) => JSON.parse(line[0]));
@@ -45,10 +50,6 @@ function scriptedLlm({ drafts, verdict = "supported", verdictFor = null, failVer
           conflicts: []
         })
       };
-    }
-    if (rejectSchemaOnce && responseFormat && !schemaRejected) {
-      schemaRejected = true;
-      throw new Error("LLM endpoint returned 400: 'response_format' is not supported by this model");
     }
     const text = drafts[Math.min(draftIndex, drafts.length - 1)];
     draftIndex += 1;
@@ -221,4 +222,21 @@ test("renderVerifiedAnswer cites only shown claims, narrows citations to the ver
   assert.deepEqual(rendered.sources.map((source) => source.evidenceId), ["ev-5.1"]);
   assert.deepEqual(rendered.claims.map((entry) => [entry.status, entry.shown, entry.citations]), [["supported", true, [1]], ["ambiguous", false, []]]);
   assert.deepEqual(rendered.claims[1].issues, ["verifier:ambiguous"]);
+});
+
+test("a runtime without structured output still gets the verifier: plain retry for the verdict too", async () => {
+  const llm = scriptedLlm({ drafts: [draftText([claim("Гарантийное удержание составляет 3% от стоимости выполненных работ.", "percentage", ["E1"])])], rejectSchema: "always" });
+  const { payload } = await run({ llm });
+  assert.equal(payload.verification.level, "model");
+  assert.equal(payload.verification.verifier.status, "ok");
+  assert.equal(payload.answerStatus, "verified");
+  assert.deepEqual(llm.calls.map((call) => call.name), ["answer_draft", "plain", "claim_verdicts", "plain"]);
+});
+
+test("the repair limit is enforced inside the pipeline, whatever the settings say", async () => {
+  const llm = scriptedLlm({ drafts: [draftText([claim("Удержание можно заменить страхованием.", "condition", ["E1"])])], verdict: "unsupported" });
+  const { payload } = await run({ llm, maxRepairs: 9 });
+  assert.equal(payload.verification.repairs, 2);
+  assert.equal(payload.verification.maxRepairs, 2);
+  assert.equal(llm.draftCalls(), 3);
 });

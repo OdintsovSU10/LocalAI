@@ -12,7 +12,8 @@ const execFileAsync = promisify(execFile);
 // Fake OpenAI-compatible LLM. Behaviour is chosen by markers in the user question:
 // "СБОЙ" → HTTP 500, "КОНТЕКСТ" → first call per question/mode fails with a context-size error.
 // Stage 07 structured requests (response_format answer_draft / claim_verdicts):
-// - draft: one claim copied from the first sentence of E1 ("ЛОЖЬ" → a claim with a number E1 does not have);
+// - draft: one claim copied from the first sentence of E1 ("ЛОЖЬ" → a claim with a number E1 does not have;
+//   "СУММА" → the E1 percentage presented as an amount);
 // - verdict: every claim supported ("ОПРОВЕРГНИ" in the question → every claim contradicted).
 export const FAKE_MODEL = "fake-contract-model";
 
@@ -25,9 +26,12 @@ function firstEvidence(content) {
 
 export function fakeStructuredReply(schemaName, question, content) {
   if (schemaName === "answer_draft") {
-    const text = question.includes("ЛОЖЬ") ? "Аванс составляет 99% от цены договора." : firstEvidence(content);
+    const percentAsAmount = question.includes("СУММА");
+    const text = question.includes("ЛОЖЬ")
+      ? "Аванс составляет 99% от цены договора."
+      : percentAsAmount ? "Сумма аванса составляет 10% от цены договора." : firstEvidence(content);
     return JSON.stringify({
-      claims: text ? [{ claim_id: "c1", text, kind: "fact", evidence_ids: ["E1"] }] : [],
+      claims: text ? [{ claim_id: "c1", text, kind: percentAsAmount ? "amount" : "fact", evidence_ids: ["E1"] }] : [],
       summary: "Черновик",
       open_questions: []
     });

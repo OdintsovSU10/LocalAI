@@ -20,7 +20,8 @@ const KIND_UNITS = {
   percentage: (unit) => unit === "percent" || unit === "fraction",
   period: (unit) => DURATION_UNITS.has(unit) || unit === "date" || unit === "calendar_year",
   date: (unit) => unit === "date" || unit === "calendar_year",
-  amount: (unit) => !DURATION_UNITS.has(unit) && unit !== "date"
+  // A sum is money or a plain number: "Сумма аванса — 10% от цены" is a percentage, not an amount.
+  amount: (unit) => unit === "currency" || unit === "number"
 };
 
 // The words right before a quantity, back to the previous quantity or punctuation ("Срок возврата — 3%").

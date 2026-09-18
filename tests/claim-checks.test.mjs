@@ -64,6 +64,13 @@ test("numeric negatives: 3% vs 30 days, 3 years vs 30 days, amount vs percent", 
   assert.equal(amountVsPercent.status, "contradicted");
   assert.ok(codes(amountVsPercent).includes("unit_mismatch"));
   assert.ok(codes(check("Гарантийное удержание составляет 3 000 000 рублей.", "amount", ["E1"])).includes("number_not_in_evidence"));
+
+  // The other direction: a percentage presented as an amount.
+  const percentAsAmount = check("Сумма аванса составляет 10% от цены договора.", "amount", ["E4"]);
+  assert.equal(percentAsAmount.status, "contradicted");
+  assert.ok(codes(percentAsAmount).includes("type_mismatch"));
+  assert.ok(codes(check("Пени составляют 1/300 ключевой ставки.", "amount", ["E1"])).includes("type_mismatch"));
+  assert.equal(check("Цена договора составляет 245 000 000 рублей, в том числе НДС 20%.", "amount", ["E5"]).issues.some((issue) => issue.code === "type_mismatch"), false);
 });
 
 test("a period word that is not the label of the value is not a type mismatch", () => {

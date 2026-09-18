@@ -20,6 +20,9 @@
 | 13 | Codex/MCP QA lane | не начат | |
 | 14 | Release hardening | не начат | |
 
+Открытые пункты вне этапов:
+- Светлая тема UI: интерфейс LocalAI только тёмный (`locus-tokens.css`, `color-scheme: dark`) с до Product V2; исключена из приёмки Stage 07 и требует отдельной задачи.
+
 ## Baseline gates
 
 ```powershell

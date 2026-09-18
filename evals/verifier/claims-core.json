@@ -36,6 +36,8 @@
       "claim": { "text": "Гарантийное удержание возвращается в течение 3 лет после истечения гарантийного срока.", "kind": "period", "evidence": [{ "file": "dogovor-15-p.md", "includes": "5.2. Сумма гарантийного удержания" }] } },
     { "id": "vc-neg-amount-vs-percent", "category": "numeric", "sourceId": "pv2-stromynka", "expected": "unsupported",
       "claim": { "text": "Гарантийное удержание составляет 3 000 000 рублей.", "kind": "amount", "evidence": [{ "file": "dogovor-15-p.md", "includes": "5.1. Из каждого платежа" }] } },
+    { "id": "vc-neg-percent-as-amount", "category": "numeric", "sourceId": "pv2-stromynka", "expected": "contradicted",
+      "claim": { "text": "Сумма аванса составляет 10% от цены договора.", "kind": "amount", "evidence": [{ "file": "ds-01-k-dogovoru-15-p.md", "includes": "аванс в размере 10%" }] } },
     { "id": "vc-neg-advance-amount", "category": "numeric", "sourceId": "pv2-stromynka", "expected": "unsupported",
       "claim": { "text": "Аванс по дополнительному соглашению составляет 10 000 000 рублей.", "kind": "amount", "evidence": [{ "file": "ds-01-k-dogovoru-15-p.md", "includes": "аванс в размере 10%" }] } },
     { "id": "vc-neg-warranty-years", "category": "numeric", "sourceId": "pv2-stromynka", "expected": "unsupported",

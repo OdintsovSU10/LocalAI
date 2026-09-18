@@ -114,3 +114,46 @@ Verifier gate (`evals/verifier`, 28 утверждений):
 ## Ready for next stage?
 NO
 Reason: acceptance подтверждается прогоном на машине владельца.
+
+---
+
+## Revision 1 — после независимой проверки (verdict FAIL)
+
+Проверка подтвердила: все gates PASS (`npm test` 426/426, четыре контракта PASS), метрики совпадают с отчётом, 5 из 6 мутаций ловятся. Также подтверждены все пункты acceptance, кроме находки 1: JSON и SSE одинаковы, черновик не стримится, флаги и env не пишутся в настройки.
+
+### Findings
+1. **[P1] Процент проходил как сумма.**
+   - Причина: правило типа для `amount` принимало любую единицу, кроме срока и даты. Утверждение «Сумма аванса составляет 10% от цены договора» (`kind: amount`) проходило проверки и попадало в ответ.
+   - Исправление: `amount` допускает только рубли или число без единицы. Процент и доля дают `type_mismatch`.
+2. **[P2] Verifier не повторял запрос без `response_format`.**
+   - Исправление: как у черновика — при отказе runtime от схемы или при неразборчивом ответе со схемой один повтор без схемы.
+3. **[P3] Внутренний лимит `maxRepairs` не был защищён тестом.**
+   - Исправление: добавлен тест `runVerifiedAnswer` с `maxRepairs: 9` → 2 исправления, 3 черновика.
+4. **[P2] Светлой темы нет.**
+   - Решение: исключено из приёмки Stage 07. UI LocalAI был только тёмным и до Product V2 (`locus-tokens.css`: `color-scheme: dark`). Stage 07 добавил лишь бейдж на существующих токенах `--status-*`; контраст в тёмной теме 4.97–7.43.
+   - Светлая тема — отдельная задача для всего UI, в ledger отмечена как открытый пункт.
+
+### Регрессионные тесты
+- `tests/claim-checks.test.mjs`:
+  - «Сумма аванса — 10%» и «Пени — 1/300» при `amount` → `type_mismatch`;
+  - «Цена … рублей, в том числе НДС 20%» → без `type_mismatch`.
+- `tests/verified-answer.test.mjs`:
+  - runtime отклоняет любую схему → черновик и вердикт повторяются без схемы, `level: model`;
+  - лимит исправлений при `maxRepairs: 9`.
+- `evals/verifier/claims-core.json`: кейс `vc-neg-percent-as-amount` (numeric).
+- `tests/verified-answer.contract.mjs` (+ маркер «СУММА» в фейковой LLM): процент как сумма по JSON и SSE → `insufficient_evidence`, текста утверждения нет ни в ответе, ни в токенах.
+
+### Changed
+- `apps/rag-api/src/answer-core/claim-checks.js`, `verified-answer.js`
+- тесты выше, `tests/helpers/chat-runtime.mjs`, `evals/verifier/claims-core.json`, этот отчёт, ledger
+
+### Metrics
+Verifier gate (29 утверждений, детерминированные проверки): false-pass 0.176 (3/17, только semantic), false-reject 0.000 (0/12); numeric 9/9. Retrieval без изменений.
+
+### Tests / evidence
+Машина разработки:
+- `npm run check` -> PASS;
+- кейсы claim-checks 7, verified-answer 12, answer-core 20, product-eval 11 прогнаны лёгкой пробой -> все совпали;
+- сквозная проба «СУММА» через `llm.js` и фейковую HTTP-LLM -> `insufficient_evidence`, `type_mismatch`.
+
+`npm test` и контракты здесь не запускались.

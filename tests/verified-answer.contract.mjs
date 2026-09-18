@@ -84,6 +84,17 @@ test("verified answering: claims, checks, verifier, repair and statuses over JSO
   const rejectedStream = await postSse(api.baseUrl, "/api/chat/stream", { question: "ОПРОВЕРГНИ какой аванс по договору?", sourceId: stromynka.id });
   assert.equal(rejectedStream.events.find((event) => event.event === "done").payload.answerStatus, "insufficient_evidence");
 
+  // 4b. A percentage presented as an amount is rejected by the checks, over JSON and SSE, even though
+  //     the fake verifier would support it.
+  const percentAsAmount = await postJson(api.baseUrl, "/api/chat", { question: "СУММА какой аванс по договору?", sourceId: stromynka.id });
+  assert.equal(percentAsAmount.payload.answerStatus, "insufficient_evidence");
+  assert.ok(percentAsAmount.payload.verification.claims[0].issues.includes("type_mismatch"));
+  assert.ok(!percentAsAmount.payload.answer.includes("Сумма аванса"));
+  const percentAsAmountStream = await postSse(api.baseUrl, "/api/chat/stream", { question: "СУММА какой аванс по договору?", sourceId: stromynka.id });
+  const percentAsAmountDone = percentAsAmountStream.events.find((event) => event.event === "done").payload;
+  assert.equal(percentAsAmountDone.answerStatus, "insufficient_evidence");
+  assert.ok(!percentAsAmountStream.events.filter((event) => event.event === "token").some((event) => event.payload.text.includes("Сумма аванса")));
+
   // 5. The status and a text-free verification summary are stored with the conversation turn.
   const conversation = await requestJson(api.baseUrl, "/api/conversations", { method: "POST", body: {} });
   const turn = await postJson(api.baseUrl, "/api/chat", { question: "Какой размер аванса по договору?", sourceId: stromynka.id, conversationId: conversation.payload.id });

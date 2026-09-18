@@ -432,7 +432,8 @@ function qwenNoThinkingOptions(settings, requestModel) {
   };
 }
 
-export function chatCompletionBody(settings, requestModel, messages, stream = false) {
+// responseFormat (optional) is passed as OpenAI response_format, e.g. a JSON schema for structured drafts.
+export function chatCompletionBody(settings, requestModel, messages, stream = false, responseFormat = null) {
   const remoteProvider = isRemoteLlmProvider(settings.provider);
   const maxTokens = remoteProvider
     ? Math.max(Number(settings.maxTokens || 0), remoteMinCompletionTokens)
@@ -443,6 +444,7 @@ export function chatCompletionBody(settings, requestModel, messages, stream = fa
     temperature: settings.temperature,
     max_tokens: maxTokens,
     ...(stream ? { stream: true } : {}),
+    ...(responseFormat ? { response_format: responseFormat } : {}),
     ...(remoteProvider && isLmStudioRuntime(settings) ? {
       ttl: Math.max(300, Number(settings.timeoutSeconds || 300))
     } : {}),
@@ -450,7 +452,7 @@ export function chatCompletionBody(settings, requestModel, messages, stream = fa
   });
 }
 
-async function prepareChatCompletionRequest({ llm, messages, signal, onProgress = () => {}, stream = false }) {
+async function prepareChatCompletionRequest({ llm, messages, signal, onProgress = () => {}, stream = false, responseFormat = null }) {
   const settings = normalizeLlmSettings(llm);
   if (!settings.enabled) throw new Error("LLM is disabled");
 
@@ -465,7 +467,7 @@ async function prepareChatCompletionRequest({ llm, messages, signal, onProgress 
     requestModel,
     controller,
     cleanup,
-    body: chatCompletionBody(settings, requestModel, messages, stream),
+    body: chatCompletionBody(settings, requestModel, messages, stream, responseFormat),
     endpoints: chatCompletionEndpoints(settings)
   };
 }
@@ -481,7 +483,7 @@ function compactLlmResponseError(response, text) {
   return `LLM endpoint returned ${response.status}${message ? `: ${message}` : ""}`;
 }
 
-export async function chatCompletion({ llm, messages, signal, onProgress = () => {} }) {
+export async function chatCompletion({ llm, messages, signal, onProgress = () => {}, responseFormat = null }) {
   const {
     settings,
     requestModel,
@@ -489,7 +491,7 @@ export async function chatCompletion({ llm, messages, signal, onProgress = () =>
     cleanup,
     body,
     endpoints
-  } = await prepareChatCompletionRequest({ llm, messages, signal, onProgress });
+  } = await prepareChatCompletionRequest({ llm, messages, signal, onProgress, responseFormat });
 
   let lastError;
   try {

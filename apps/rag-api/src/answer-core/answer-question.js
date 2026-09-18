@@ -6,6 +6,7 @@ import { chatSearchLimit, runChatLlm } from "./chat-llm.js";
 import { followUpRetrievalQuery, historyMessages } from "./conversation-turns.js";
 import { buildEvidencePacket } from "./evidence-packet.js";
 import { planQuery as defaultPlanQuery } from "./query-planner.js";
+import { runVerifiedAnswer } from "./verified-answer.js";
 import {
   LLM_DISABLED_ANSWER,
   NO_RESULTS_ANSWER,
@@ -76,12 +77,19 @@ export async function answerQuestion({
   const totalStartedAt = now();
   const emitStatus = (phase, payload) => onEvent({ type: "status", phase, payload });
   let plan = null;
-  const canned = (payload) => ({ payload, answerStreamed: false, plan });
+  // Verified answering (Stage 07) adds answerStatus/verification; switched off, payloads stay as before.
+  let verifiedMode = false;
+  const canned = (payload, answerStatus = "") => ({
+    payload: verifiedMode && answerStatus ? { ...payload, answerStatus } : payload,
+    answerStreamed: false,
+    plan
+  });
 
   emitStatus("retrieval", { status: "retrieval_started" });
 
   const sources = await deps.readSources();
   const settings = await deps.readSettings();
+  verifiedMode = settings?.answering?.verified !== false;
   const turns = Array.isArray(conversationContext?.turns) ? conversationContext.turns : [];
   const effectiveContextSourceId = contextSourceId || conversationContext?.pinnedSourceId || "";
   try {
@@ -111,7 +119,7 @@ export async function answerQuestion({
         answer,
         totalMs: now() - totalStartedAt
       })
-    });
+    }, "clarification_required");
   }
 
   // After a clarification reply the original question is answered for the chosen project.
@@ -136,7 +144,7 @@ export async function answerQuestion({
         answer,
         totalMs: now() - totalStartedAt
       })
-    });
+    }, "clarification_required");
   }
 
   const matchedSource = source ? deps.publicMatchedSource(source, {
@@ -197,7 +205,7 @@ export async function answerQuestion({
     if (searchAllSources) {
       const manifest = await deps.readManifest();
       const answer = deps.allSourcesNoResultsAnswer(manifest);
-      return canned({ answer, matchedSource, sources: [], metadata: initialMetadata(answer) });
+      return canned({ answer, matchedSource, sources: [], metadata: initialMetadata(answer) }, "insufficient_evidence");
     }
 
     const [manifest, persistedJobs] = await Promise.all([deps.readManifest(), deps.readJobs()]);
@@ -206,16 +214,16 @@ export async function answerQuestion({
     const latestJob = deps.latestJobForSource(sourceId, persistedJobs);
     if (!indexedChunks) {
       const answer = noIndexAnswer(source.title, deps.publicJobStatus(latestJob));
-      return canned({ answer, matchedSource, sources: [], metadata: initialMetadata(answer) });
+      return canned({ answer, matchedSource, sources: [], metadata: initialMetadata(answer) }, "insufficient_evidence");
     }
 
     const answer = NO_RESULTS_ANSWER;
-    return canned({ answer, matchedSource, sources: [], metadata: initialMetadata(answer) });
+    return canned({ answer, matchedSource, sources: [], metadata: initialMetadata(answer) }, "insufficient_evidence");
   }
 
   if (!llm.enabled) {
     const answer = LLM_DISABLED_ANSWER;
-    return canned({ answer, matchedSource, sources: results, metadata: initialMetadata(answer) });
+    return canned({ answer, matchedSource, sources: results, metadata: initialMetadata(answer) }, "unverified");
   }
 
   emitStatus("llm", {
@@ -224,6 +232,83 @@ export async function answerQuestion({
     providerLabel: providerLabel(llm.provider),
     model: llm.model || ""
   });
+
+  if (verifiedMode) {
+    const allowedSourceIds = searchAllSources ? null : effectiveSearchSourceIds;
+    // Repair retrieval: the verifier's missing-evidence queries, in the same scope and packet form.
+    const retrieveMore = async (queries) => {
+      const extra = [];
+      for (const query of queries) {
+        const found = await deps.searchChunksWithMetadata({ query, sourceId, sourceIds: effectiveSearchSourceIds, limit: 6 });
+        if (!found.results.length) continue;
+        const morePacket = await applyEvidencePacket({ settings, plan, question: query, results: found.results, sourceIds: effectiveSearchSourceIds, sources, limit: 6, deps });
+        extra.push(...morePacket.results);
+      }
+      return extra;
+    };
+    const verified = await runVerifiedAnswer({
+      question,
+      plan,
+      results,
+      settings,
+      llmCandidates,
+      sourceId,
+      broadAnswer,
+      history: historyMessages(turns),
+      allowedSourceIds,
+      scopeTitles: sources.filter((item) => (searchSourceIds || []).includes(item.id)).map((item) => item.title),
+      signal,
+      usageTracker: deps.usageTracker,
+      retrieveMore,
+      onPhase: emitStatus,
+      now,
+      ...(deps.chatCompletion ? { chatCompletion: deps.chatCompletion } : {})
+    });
+    const answerLlm = verified.usedLlm || llmCandidates[0] || llm;
+    if (!verified.payload) {
+      const answer = llmErrorAnswer(verified.error || new Error("LLM response is empty"), results, question);
+      return canned({
+        answer,
+        model: answerLlm?.model || "",
+        provider: answerLlm?.provider,
+        providerLabel: providerLabel(answerLlm?.provider),
+        selectedBy: answerLlm?.selectedBy,
+        fallbackReason: "llm_failed",
+        matchedSource,
+        sources: results,
+        verification: { level: "none", reason: verified.error?.name === "DraftParseError" ? "draft_invalid" : "llm_failed" },
+        metadata: initialMetadata(answer, { promptChars: verified.promptChars, llmMs: verified.llmMs, routeMetadata: llmRouteMetadata(answerLlm) })
+      }, "system_error");
+    }
+    return {
+      payload: {
+        answer: verified.payload.answer,
+        model: answerLlm?.model || "",
+        provider: answerLlm?.provider,
+        providerLabel: providerLabel(answerLlm?.provider),
+        selectedBy: answerLlm?.selectedBy,
+        fallbackReason: answerLlm?.autoFallbackReason || "",
+        matchedSource,
+        sources: verified.payload.sources,
+        answerStatus: verified.payload.answerStatus,
+        verification: verified.payload.verification,
+        metadata: ragDebugMetadata({
+          routeMetadata: llmRouteMetadata(answerLlm, { fallbackUsed: answerLlm?.fallbackUsed }),
+          searchMetadata,
+          matchedSource,
+          finalSourceCount: verified.payload.sources.length,
+          promptChars: verified.promptChars,
+          answer: verified.payload.answer,
+          llmMs: verified.llmMs,
+          verifyMs: verified.verifyMs,
+          totalMs: now() - totalStartedAt
+        })
+      },
+      // The final text goes out as one token after verification: unverified draft text is never streamed.
+      answerStreamed: false,
+      plan
+    };
+  }
 
   let streamedAnswer = "";
   const {

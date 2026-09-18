@@ -9,6 +9,12 @@ const CROSS_DOCUMENT_GROUPS = {
   estimate_total: "total_cost"
 };
 
+// Fact types that can conflict with the given ones across documents (contract price vs estimate total).
+export function crossDocumentCounterparts(factTypes = []) {
+  const groups = new Set(factTypes.map((type) => CROSS_DOCUMENT_GROUPS[type]).filter(Boolean));
+  return Object.keys(CROSS_DOCUMENT_GROUPS).filter((type) => groups.has(CROSS_DOCUMENT_GROUPS[type]) && !factTypes.includes(type));
+}
+
 function parentFor(document, documents) {
   const ref = document.parentRef;
   if (!ref?.numberKey) return { parent: null, reason: "document names no parent contract" };

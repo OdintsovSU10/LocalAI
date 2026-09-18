@@ -3384,3 +3384,43 @@ button.danger-solid:hover:not(:disabled) {
     transition: none;
   }
 }
+
+/* Stage 07 · Статус проверки ответа под сообщением */
+.answer-status {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  margin-top: var(--sp-2);
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--status-neutral-border, var(--line));
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+  color: var(--status-neutral-fg, var(--muted));
+  background: var(--status-neutral-bg, transparent);
+}
+
+.answer-status-ok {
+  color: var(--status-ok-fg);
+  background: var(--status-ok-bg);
+  border-color: var(--status-ok-border);
+}
+
+.answer-status-info {
+  color: var(--status-info-fg);
+  background: var(--status-info-bg);
+  border-color: var(--status-info-border);
+}
+
+.answer-status-warning {
+  color: var(--status-warning-fg);
+  background: var(--status-warning-bg);
+  border-color: var(--status-warning-border);
+}
+
+.answer-status-error {
+  color: var(--status-error-fg);
+  background: var(--status-error-bg);
+  border-color: var(--status-error-border);
+}

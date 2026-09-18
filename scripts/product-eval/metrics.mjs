@@ -5,7 +5,8 @@ import path from "node:path";
 export const METRIC_OK = "ok";
 export const METRIC_NOT_AVAILABLE = "not_available";
 
-const ANSWER_STAGE_REASON = "requires answer/verifier pipeline (Stage 07); retrieval-only runner";
+const ANSWER_STAGE_REASON = "requires a live answer model; the offline runner has no LLM (answer quality is compared in the Stage 11 bakeoff)";
+const VERIFIER_STAGE_REASON = "no verifier claim set (evals/verifier)";
 
 export function metricValue(numerator, denominator, emptyReason) {
   if (!denominator) return { status: METRIC_NOT_AVAILABLE, value: null, numerator, denominator, reason: emptyReason };
@@ -157,9 +158,10 @@ export function computeProductMetrics(rows = []) {
       numericFidelity: notAvailable(ANSWER_STAGE_REASON),
       noAnswerHallucinationRate: notAvailable(ANSWER_STAGE_REASON)
     },
+    // Filled from the labelled claim set by runProductEvals (scripts/product-eval/verifier-eval.mjs).
     verifier: {
-      falsePassRate: notAvailable(ANSWER_STAGE_REASON),
-      falseRejectRate: notAvailable(ANSWER_STAGE_REASON)
+      falsePassRate: notAvailable(VERIFIER_STAGE_REASON),
+      falseRejectRate: notAvailable(VERIFIER_STAGE_REASON)
     }
   };
 }
@@ -213,7 +215,9 @@ export const REQUIRED_RETRIEVAL_METRICS = [
   "retrieval.wrongProjectLeakRateAt5",
   "retrieval.citationTargetAccuracy",
   "retrieval.currentVersionAccuracy",
-  "clarification.recall"
+  "clarification.recall",
+  "verifier.falsePassRate",
+  "verifier.falseRejectRate"
 ];
 
 export function missingRequiredMetrics(metrics) {

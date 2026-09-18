@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { parseSseEventBlock } from "../apps/rag-ui/modules/api-client.js";
 import { citedSourceNumbers, citationEvidenceForNumber, compactSources, displayedSourcesForAnswer, fileName, uniqueSources } from "../apps/rag-ui/modules/citation-helpers.js";
-import { compactRagDebug, formatFileSize, formatMs, formatResponseMeta, formatRouteWait } from "../apps/rag-ui/modules/formatting-helpers.js";
+import { answerStatusBadge, compactRagDebug, formatFileSize, formatMs, formatResponseMeta, formatRouteWait } from "../apps/rag-ui/modules/formatting-helpers.js";
 import { modelOptionLabel, preferredEmbeddingModel, preferredLocalModel, preferredRemoteModel, sortLocalModels } from "../apps/rag-ui/modules/settings-helpers.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -254,4 +254,24 @@ test("settings helpers pick sensible model defaults", () => {
     { id: "qwen3.6-27b-mtp@q6_k" }
   ], "qwen3.6-27b-mtp"), "qwen3.6-27b-mtp@q6_k");
   assert.equal(modelOptionLabel({ id: "qwen", loaded: true, loadedContextLength: 8192 }), "qwen · loaded · ctx 8192");
+});
+
+test("answerStatusBadge names what the verification did, without confidence numbers", () => {
+  assert.deepEqual(answerStatusBadge({ answerStatus: "verified", verification: { level: "model", shownClaims: 2, droppedClaims: 0 } }), { tone: "ok", label: "Проверено по документам", detail: "" });
+  assert.equal(answerStatusBadge({ answerStatus: "verified", verification: { level: "hard_checks" } }).label, "Числа и ссылки сверены с документами");
+  assert.equal(answerStatusBadge({ answerStatus: "verified", verification: { level: "model", shownClaims: 2, droppedClaims: 1 } }).detail, "Показано утверждений: 2, скрыто неподтверждённых: 1");
+  assert.equal(answerStatusBadge({ answerStatus: "verified_with_conflict" }).tone, "warning");
+  assert.equal(answerStatusBadge({ answerStatus: "insufficient_evidence" }).label, "Не подтверждено документами");
+  assert.equal(answerStatusBadge({ answerStatus: "system_error" }).tone, "error");
+  assert.equal(answerStatusBadge({ answerStatus: "clarification_required" }), null);
+  assert.equal(answerStatusBadge({}), null);
+  for (const status of ["verified", "verified_with_conflict", "insufficient_evidence", "system_error", "unverified"]) {
+    assert.doesNotMatch(answerStatusBadge({ answerStatus: status, verification: { level: "model" } }).label, /\d+\s*%/);
+  }
+});
+
+test("chat renders the answer status and the verification phases", () => {
+  assert.match(appJs, /renderAnswerStatus\(pending, payload\)/);
+  assert.match(appJs, /"verifying_started"/);
+  assert.match(redesignCss, /\.answer-status-warning\s*\{/);
 });

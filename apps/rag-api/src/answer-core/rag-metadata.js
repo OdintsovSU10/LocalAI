@@ -12,6 +12,7 @@ export function ragDebugMetadata({
   promptChars = 0,
   answer = "",
   llmMs = 0,
+  verifyMs,
   totalMs = 0
 } = {}) {
   const searchTimings = searchMetadata.timings || {};
@@ -26,6 +27,8 @@ export function ragDebugMetadata({
       retrievalMs: Number(searchTimings.retrievalMs || 0),
       rerankMs: Number(searchTimings.rerankMs || 0),
       llmMs: Number(llmMs || 0),
+      // Only verified answers (Stage 07) have a verification phase.
+      ...(verifyMs === undefined ? {} : { verifyMs: Number(verifyMs || 0) }),
       totalMs: Number(totalMs || 0)
     }
   };

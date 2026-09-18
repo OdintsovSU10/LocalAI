@@ -12,10 +12,26 @@ export class ConversationNotFoundError extends Error {
 
 // Until the verifier exists (Stage 07) an LLM answer is stored as "unverified", never as verified.
 export function turnAnswerStatus(payload = {}) {
+  if (payload.answerStatus) return payload.answerStatus;
   if (Array.isArray(payload.projectCandidates)) return "clarification_required";
   if (payload.fallbackReason === "llm_failed") return "system_error";
   if (!Array.isArray(payload.sources) || !payload.sources.length) return "insufficient_evidence";
   return "unverified";
+}
+
+// Stored with the assistant message: statuses and issue codes only, no claim or evidence text.
+export function verificationSummary(verification) {
+  if (!verification) return null;
+  return {
+    level: verification.level,
+    verifier: verification.verifier || null,
+    overall: verification.overall || "",
+    repairs: verification.repairs || 0,
+    shownClaims: verification.shownClaims || 0,
+    droppedClaims: verification.droppedClaims || 0,
+    reason: verification.reason || "",
+    claims: (verification.claims || []).map(({ claimId, kind, status, shown, issues }) => ({ claimId, kind, status, shown, issues }))
+  };
 }
 
 // Resolves an optional conversationId from a chat request into the store handle and bounded context.
@@ -52,6 +68,7 @@ export function persistChatTurn(chatConversation, input, payload, plan = null) {
         sources: payload.sources,
         scope: { matchedSourceId, plan: planSummary(plan) },
         answerStatus: turnAnswerStatus(payload),
+        verifier: verificationSummary(payload.verification),
         traceId,
         pinnedSourceId: matchedSourceId
       }

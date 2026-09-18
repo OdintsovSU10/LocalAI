@@ -1964,7 +1964,9 @@ app.put("/api/settings", async (req, res, next) => {
       embeddings: req.body.embeddings,
       vectorStore: req.body.vectorStore,
       reranker: req.body.reranker,
-      search: req.body.search
+      search: req.body.search,
+      answering: req.body.answering,
+      verifier: req.body.verifier
     })));
   } catch (error) {
     next(error);

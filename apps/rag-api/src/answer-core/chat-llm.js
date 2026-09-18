@@ -39,6 +39,8 @@ export function chatSearchLimit({ searchAllSources = false, broadAnswer = false 
 }
 
 // Tries each routed LLM candidate; within a candidate, shrinks the RAG context profile on context-size errors.
+// buildMessages(contextProfile) replaces the free-text chat prompt (Stage 07 drafts); responseFormat is
+// passed to non-streaming completions.
 export async function runChatLlm({
   llmCandidates,
   results,
@@ -51,7 +53,9 @@ export async function runChatLlm({
   onToken = () => {},
   usageTracker,
   chatCompletion = defaultChatCompletion,
-  chatCompletionStream = defaultChatCompletionStream
+  chatCompletionStream = defaultChatCompletionStream,
+  buildMessages = null,
+  responseFormat = null
 }) {
   let reply;
   let usedLlm = null;
@@ -90,20 +94,23 @@ export async function runChatLlm({
     try {
       for (let attempt = 0; attempt < contextProfiles.length; attempt += 1) {
         const contextProfile = contextProfiles[attempt];
-        const context = buildRagContext(results, contextProfile);
+        const context = buildMessages ? "" : buildRagContext(results, contextProfile);
+        const messages = buildMessages ? buildMessages(contextProfile) : buildChatMessages(question, context, { broadAnswer, history });
+        const contextChars = buildMessages ? messages.reduce((total, message) => total + String(message.content || "").length, 0) : context.length;
         usageTracker.update(llmRequestId, {
           phase: attempt > 0 ? "compacting_context" : "generating",
-          promptChars: context.length,
+          promptChars: contextChars,
           contextProfile: contextProfile.name
         });
-        promptChars = context.length;
+        promptChars = contextChars;
 
         try {
           const completionArgs = {
             llm: candidateLlm,
             signal,
             onProgress: (progress) => usageTracker.update(llmRequestId, progress),
-            messages: buildChatMessages(question, context, { broadAnswer, history })
+            messages,
+            ...(responseFormat ? { responseFormat } : {})
           };
           reply = stream
             ? await chatCompletionStream({ ...completionArgs, onToken })

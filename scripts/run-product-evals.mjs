@@ -13,6 +13,14 @@ import {
 } from "./product-eval/metrics.mjs";
 import { RETRIEVAL_MODES, runRetrievalCase } from "./product-eval/retrieval.mjs";
 import { loadProductEvalSets, missingCaseClasses, validateProductCase } from "./product-eval/schema.mjs";
+import {
+  computeVerifierMetrics,
+  corpusEvidenceIndex,
+  loadVerifierSets,
+  runVerifierCases,
+  validateVerifierCase,
+  verifierCategoryBreakdown
+} from "./product-eval/verifier-eval.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -43,7 +51,27 @@ function caseLine(row) {
   return `- ${testCase.id} [${testCase.class}] scope=${scope} results=${retrieval.results.length}${ranks.length ? ` ${ranks.join(" ")}` : ""}`;
 }
 
-export async function runProductEvals({ evalsDir = path.join(projectRoot, "evals", "product-v2"), retrievalMode = "v2" } = {}) {
+// Verifier model for --verifier-llm: the local LM Studio route from the environment (no settings.json).
+function verifierLlmFromEnv() {
+  return {
+    enabled: true,
+    provider: "local",
+    baseUrl: process.env.RAG_LLM_BASE_URL || "http://127.0.0.1:1234/v1",
+    apiKey: "lm-studio",
+    model: process.env.RAG_VERIFIER_MODEL || process.env.RAG_LLM_MODEL || "",
+    temperature: 0,
+    maxTokens: 1500,
+    timeoutSeconds: 180
+  };
+}
+
+export async function runProductEvals({
+  evalsDir = path.join(projectRoot, "evals", "product-v2"),
+  verifierDir = path.join(projectRoot, "evals", "verifier"),
+  retrievalMode = "v2",
+  verifierLlm = null,
+  chatCompletion = null
+} = {}) {
   const problems = [];
   if (!RETRIEVAL_MODES.includes(retrievalMode)) problems.push(`unknown retrieval mode "${retrievalMode}" (use ${RETRIEVAL_MODES.join(" | ")})`);
   const sets = await loadProductEvalSets(evalsDir);
@@ -76,9 +104,26 @@ export async function runProductEvals({ evalsDir = path.join(projectRoot, "evals
   }
 
   const metrics = computeProductMetrics(rows);
+
+  // Stage 07: labelled claims through the answer gate (deterministic checks, plus a verifier model if given).
+  const verifierRows = [];
+  for (const set of await loadVerifierSets(verifierDir)) {
+    if (!set.corpus) problems.push(`${set.fileName}: verifier set has no corpus`);
+    set.cases.forEach((testCase) => validateVerifierCase(testCase).forEach((error) => problems.push(`${set.fileName}:${testCase.id}: ${error}`)));
+    if (!set.corpus || problems.length) continue;
+    if (!corpora.has(set.corpus)) corpora.set(set.corpus, await buildProductCorpus({ projectRoot, corpusDir: set.corpus }));
+    const evidenceIndex = corpusEvidenceIndex(corpora.get(set.corpus));
+    const setRows = await runVerifierCases({ cases: set.cases, evidenceIndex, verifierLlm, chatCompletion });
+    setRows.forEach((row) => row.problems.forEach((problem) => problems.push(`${set.fileName}:${row.testCase.id}: ${problem}`)));
+    verifierRows.push(...setRows);
+  }
+  if (verifierRows.length) {
+    metrics.verifier = computeVerifierMetrics(verifierRows, { mode: verifierLlm ? "deterministic checks + verifier model" : "deterministic checks" });
+  }
+
   silentMetricFailures(metrics).forEach((name) => problems.push(`metric ${name} was not computed and has no NOT_AVAILABLE reason`));
   missingRequiredMetrics(metrics).forEach((name) => problems.push(`required metric ${name} is not computable on this eval set`));
-  return { problems, rows, metrics, corpora: [...corpora.keys()], retrievalMode };
+  return { problems, rows, metrics, verifierRows, corpora: [...corpora.keys()], retrievalMode };
 }
 
 async function main() {
@@ -92,11 +137,25 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  const { problems, rows, metrics, corpora = [] } = await runProductEvals({ evalsDir, retrievalMode });
+  // --verifier-llm also asks the local verifier model (RAG_LLM_BASE_URL, RAG_VERIFIER_MODEL or RAG_LLM_MODEL).
+  const useVerifierLlm = args.includes("--verifier-llm");
+  const chatCompletion = useVerifierLlm ? (await import("../apps/rag-api/src/llm.js")).chatCompletion : null;
+  const { problems, rows, metrics, verifierRows = [], corpora = [] } = await runProductEvals({
+    evalsDir,
+    retrievalMode,
+    verifierLlm: useVerifierLlm ? verifierLlmFromEnv() : null,
+    chatCompletion
+  });
 
   if (rows.length) {
     console.log(`Product V2 eval (retrieval-only, ${retrievalMode}): ${rows.length} case(s), corpus ${corpora.join(", ")}`);
     rows.forEach((row) => console.log(caseLine(row)));
+  }
+  if (verifierRows.length) {
+    console.log(`\nVerifier gate (${metrics?.verifier?.falsePassRate?.mode || ""}): ${verifierRows.length} claim(s)`);
+    verifierCategoryBreakdown(verifierRows).forEach(({ category, total, wrong }) => {
+      console.log(`- ${category}: ${total - wrong.length}/${total} correct${wrong.length ? ` (wrong: ${wrong.join(", ")})` : ""}`);
+    });
   }
   if (metrics) {
     console.log("\nMetrics");

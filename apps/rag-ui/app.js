@@ -9,6 +9,7 @@ import {
   formatMs,
   formatResponseMeta,
   formatRouteWait,
+  answerStatusBadge,
   pluralRu
 } from "./modules/formatting-helpers.js";
 import {
@@ -7806,6 +7807,17 @@ function applyMatchedSource(match) {
 // Query planner clarification (Stage 05): one button per candidate project. The reply is the project
 // name, exactly what a user would type (and what a Telegram inline button sends), so the server resumes
 // the original question for the chosen project.
+function renderAnswerStatus(message, payload) {
+  const badge = answerStatusBadge(payload);
+  message?.querySelector(".answer-status")?.remove();
+  if (!message || !badge) return;
+  const element = document.createElement("div");
+  element.className = `answer-status answer-status-${badge.tone}`;
+  element.textContent = badge.label;
+  if (badge.detail) element.title = badge.detail;
+  message.append(element);
+}
+
 function renderClarificationOptions(message, clarification) {
   const options = Array.isArray(clarification?.options) ? clarification.options : [];
   if (!message || clarification?.kind !== "project" || !options.length) return;
@@ -8506,6 +8518,12 @@ async function chat(event) {
           const provider = payload.providerLabel || payload.provider || "LM Studio";
           const model = payload.model ? ` (${payload.model})` : "";
           setMessageText(pending, `${provider} генерирует ответ${model}...`);
+        } else if (payload?.status === "verifying_started") {
+          setMessageText(pending, "Проверяю ответ по документам...");
+        } else if (payload?.status === "repair_started") {
+          setMessageText(pending, "Уточняю ответ по найденным документам...");
+        } else if (payload?.status === "finalizing") {
+          setMessageText(pending, "Собираю проверенный ответ...");
         }
         return;
       }
@@ -8569,6 +8587,7 @@ async function chat(event) {
     setMessageMeta(pending, formatResponseMeta(payload, { linkedTenderCount: linkedTenderCountForResponse(payload) }));
     renderMessageSources(pending, finalSources, finalAnswer);
     renderClarificationOptions(pending, payload.clarification);
+    renderAnswerStatus(pending, payload);
     setMessageRagDebug(pending, { ...payload, answer: finalAnswer, sources: finalSources }, finalSources);
     generateChatTitleForSession(sessionId, question, finalAnswer, payload.matchedSource).catch(() => {});
     refreshRemoteDiagnostics();

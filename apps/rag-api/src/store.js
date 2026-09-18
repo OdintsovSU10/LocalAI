@@ -83,6 +83,23 @@ export const defaultSearchSettings = {
   retrievalV2: true
 };
 
+// Verified answering (Product V2, Stage 07): claims draft -> checks -> verifier -> bounded repair.
+export const defaultAnsweringSettings = {
+  verified: true,
+  maxRepairs: 1
+};
+
+// Independent verifier: a separate model is the target; "same_model" (isolated run of the answer model)
+// only when chosen explicitly; without a model the answer is gated by deterministic checks only.
+export const defaultVerifierSettings = {
+  mode: "separate_model",
+  model: "",
+  maxTokens: 1500,
+  timeoutSeconds: 120
+};
+
+const VERIFIER_MODES = ["separate_model", "same_model", "off"];
+
 export const defaultStorageSettings = {
   metadataProvider: "json",
   sqlite: {
@@ -100,7 +117,9 @@ export async function ensureStorage() {
     vectorStore: defaultVectorStoreSettings,
     reranker: defaultRerankerSettings,
     storage: defaultStorageSettings,
-    search: defaultSearchSettings
+    search: defaultSearchSettings,
+    answering: defaultAnsweringSettings,
+    verifier: defaultVerifierSettings
   });
   await fs.mkdir(stateDir(), { recursive: true });
   await fs.mkdir(markdownCacheDir(), { recursive: true });
@@ -645,6 +664,47 @@ function applySearchEnvOverrides(search) {
   return { ...search, retrievalV2: envBoolean("RAG_RETRIEVAL_V2") ?? search.retrievalV2 };
 }
 
+function normalizeStoredAnsweringSettings(answering = {}) {
+  return {
+    verified: answering.verified !== false,
+    maxRepairs: Math.min(2, Math.max(0, Math.round(Number(answering.maxRepairs ?? defaultAnsweringSettings.maxRepairs)) || 0))
+  };
+}
+
+function normalizeStoredVerifierSettings(verifier = {}) {
+  return {
+    mode: VERIFIER_MODES.includes(verifier.mode) ? verifier.mode : defaultVerifierSettings.mode,
+    model: String(verifier.model || "").trim(),
+    maxTokens: Math.min(8000, Math.max(400, Number(verifier.maxTokens || defaultVerifierSettings.maxTokens))),
+    timeoutSeconds: Math.min(1800, Math.max(10, Number(verifier.timeoutSeconds || defaultVerifierSettings.timeoutSeconds)))
+  };
+}
+
+// Env values apply at read time only; writeSettings ignores the same fields while the env sets them.
+const ANSWERING_ENV = { verified: () => envBoolean("RAG_VERIFIED_ANSWERING") };
+const VERIFIER_ENV = {
+  mode: () => (VERIFIER_MODES.includes(envString("RAG_VERIFIER_MODE")) ? envString("RAG_VERIFIER_MODE") : null),
+  model: () => envString("RAG_VERIFIER_MODEL") || null
+};
+
+function applyEnvOverrides(section, overrides) {
+  const next = { ...section };
+  for (const [key, read] of Object.entries(overrides)) {
+    const value = read();
+    if (value !== null && value !== undefined) next[key] = value;
+  }
+  return next;
+}
+
+function withoutEnvLockedFields(incoming, overrides) {
+  const next = { ...(incoming || {}) };
+  for (const [key, read] of Object.entries(overrides)) {
+    const value = read();
+    if (value !== null && value !== undefined) delete next[key];
+  }
+  return next;
+}
+
 export async function readSettings() {
   const settings = await readJson(settingsPath, {
     dataDir: defaultDataDir(),
@@ -653,7 +713,9 @@ export async function readSettings() {
     vectorStore: defaultVectorStoreSettings,
     reranker: defaultRerankerSettings,
     storage: defaultStorageSettings,
-    search: defaultSearchSettings
+    search: defaultSearchSettings,
+    answering: defaultAnsweringSettings,
+    verifier: defaultVerifierSettings
   });
   const llm = normalizeStoredLlmSettings(applyLlmEnvOverrides(normalizeStoredLlmSettings(settings.llm || {})));
   const embeddings = normalizeStoredEmbeddingSettings(applyEmbeddingEnvOverrides(normalizeStoredEmbeddingSettings(settings.embeddings || {})));
@@ -661,6 +723,8 @@ export async function readSettings() {
   const reranker = normalizeStoredRerankerSettings(applyRerankerEnvOverrides(normalizeStoredRerankerSettings(settings.reranker || {})));
   const storage = applyStorageEnvOverrides(normalizeStoredStorageSettings(settings.storage || {}));
   const search = applySearchEnvOverrides(normalizeStoredSearchSettings(settings.search || {}));
+  const answering = applyEnvOverrides(normalizeStoredAnsweringSettings(settings.answering || {}), ANSWERING_ENV);
+  const verifier = applyEnvOverrides(normalizeStoredVerifierSettings(settings.verifier || {}), VERIFIER_ENV);
 
   return {
     dataDir: dataDir(),
@@ -678,7 +742,9 @@ export async function readSettings() {
         effectiveDatabasePath: storage.sqlite.databasePath || metadataSqlitePath()
       }
     },
-    search
+    search,
+    answering,
+    verifier
   };
 }
 
@@ -690,7 +756,9 @@ export async function writeSettings(settings) {
     vectorStore: defaultVectorStoreSettings,
     reranker: defaultRerankerSettings,
     storage: defaultStorageSettings,
-    search: defaultSearchSettings
+    search: defaultSearchSettings,
+    answering: defaultAnsweringSettings,
+    verifier: defaultVerifierSettings
   });
   const next = {
     dataDir: resolveDataDirSetting(current.dataDir),
@@ -699,7 +767,9 @@ export async function writeSettings(settings) {
     vectorStore: normalizeStoredVectorStoreSettings(current.vectorStore || {}),
     reranker: normalizeStoredRerankerSettings(current.reranker || {}),
     storage: normalizeStoredStorageSettings(current.storage || {}),
-    search: normalizeStoredSearchSettings(current.search || {})
+    search: normalizeStoredSearchSettings(current.search || {}),
+    answering: normalizeStoredAnsweringSettings(current.answering || {}),
+    verifier: normalizeStoredVerifierSettings(current.verifier || {})
   };
 
   if (settings.dataDir !== undefined && process.env.RAG_DATA_DIR) {
@@ -838,6 +908,13 @@ export async function writeSettings(settings) {
       ...next.search,
       ...incomingSearch
     });
+  }
+
+  if (settings.answering !== undefined) {
+    next.answering = normalizeStoredAnsweringSettings({ ...next.answering, ...withoutEnvLockedFields(settings.answering, ANSWERING_ENV) });
+  }
+  if (settings.verifier !== undefined) {
+    next.verifier = normalizeStoredVerifierSettings({ ...next.verifier, ...withoutEnvLockedFields(settings.verifier, VERIFIER_ENV) });
   }
 
   await writeJsonAtomic(settingsPath, next);

@@ -133,3 +133,23 @@ export function formatMs(value) {
   if (number < 1000) return `${Math.round(number)} ms`;
   return `${(number / 1000).toFixed(number < 10000 ? 1 : 0)} s`;
 }
+
+// Stage 07: short answer status under an assistant message. No confidence percentages: only what the
+// verification actually did. Returns null when there is nothing to show (clarification, legacy answers).
+export function answerStatusBadge(payload = {}) {
+  const status = payload.answerStatus || "";
+  const verification = payload.verification || {};
+  const shown = Number(verification.shownClaims || 0);
+  const dropped = Number(verification.droppedClaims || 0);
+  const detail = dropped ? `Показано утверждений: ${shown}, скрыто неподтверждённых: ${dropped}` : "";
+  if (status === "verified") {
+    return verification.level === "model"
+      ? { tone: "ok", label: "Проверено по документам", detail }
+      : { tone: "info", label: "Числа и ссылки сверены с документами", detail: detail || "Модель-проверяющий не настроена" };
+  }
+  if (status === "verified_with_conflict") return { tone: "warning", label: "В документах есть расхождение", detail };
+  if (status === "insufficient_evidence") return { tone: "warning", label: "Не подтверждено документами", detail };
+  if (status === "system_error") return { tone: "error", label: "Ответ не проверен: ошибка модели", detail: "" };
+  if (status === "unverified") return { tone: "neutral", label: "Фрагменты без проверки", detail: "" };
+  return null;
+}

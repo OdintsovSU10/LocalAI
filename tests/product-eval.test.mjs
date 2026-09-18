@@ -138,3 +138,30 @@ test("Retrieval 2.0 does not regress recall and fixes citation and current-versi
   assert.equal(v2.currentVersionAccuracy.value, 1);
   assert.equal(v2.wrongProjectLeakRateAt5.value, 0);
 });
+
+test("the verifier gate rejects every deterministic adversarial claim and keeps every supported one", async () => {
+  const { problems, metrics, verifierRows } = await runProductEvals();
+  assert.deepEqual(problems, []);
+  assert.equal(metrics.verifier.falseRejectRate.value, 0);
+  assert.equal(metrics.verifier.falsePassRate.mode, "deterministic checks");
+  for (const row of verifierRows.filter((entry) => ["numeric", "version", "scope", "citation"].includes(entry.testCase.category))) {
+    assert.equal(row.passed, false, `${row.testCase.id} passed the deterministic checks`);
+  }
+  // Semantic errors (wrong party, invented condition) need the verifier model: counted, not hidden.
+  const semantic = verifierRows.filter((entry) => entry.testCase.category === "semantic");
+  assert.ok(semantic.length >= 3);
+  assert.equal(metrics.verifier.falsePassRate.numerator, semantic.filter((entry) => entry.passed).length);
+});
+
+test("the verifier gate counts the verifier model when one is given", async () => {
+  const chatCompletion = async ({ messages }) => {
+    const claims = [...messages.at(-1).content.matchAll(/^\{"claim_id".*\}$/gm)].map((line) => JSON.parse(line[0]));
+    // A strict fake verifier: rejects claims about who pays or terminates and invented conditions.
+    const status = /Генподрядчик Заказчику|Генподрядчик вправе|страхования/.test(claims[0].text) ? "contradicted" : "supported";
+    return { model: "judge", text: JSON.stringify({ overall: "pass", claims: [{ claim_id: "c1", status, supported_by: [], issues: [] }], missing_evidence_queries: [], conflicts: [] }) };
+  };
+  const { metrics } = await runProductEvals({ verifierLlm: { model: "judge" }, chatCompletion });
+  assert.equal(metrics.verifier.falsePassRate.value, 0);
+  assert.equal(metrics.verifier.falseRejectRate.value, 0);
+  assert.equal(metrics.verifier.falsePassRate.mode, "deterministic checks + verifier model");
+});

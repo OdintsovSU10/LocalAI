@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { openAppStateDatabase } from "../apps/rag-api/src/conversation/app-state-db.js";
 import { createConversationStore, safeCitations } from "../apps/rag-api/src/conversation/conversation-store.js";
+import { persistChatTurn, turnAnswerStatus } from "../apps/rag-api/src/conversation/chat-turn.js";
 
 // Stores are closed before the temp dir is removed: an open SQLite file cannot be deleted on Windows.
 async function tempDatabase(t) {
@@ -186,4 +187,39 @@ test("pending clarification is stored per conversation and can be cleared", asyn
   store.setPendingClarification(first.id, clarification);
   store.deleteConversation(first.id);
   assert.equal(store.getPendingClarification(first.id), null);
+});
+
+test("a verified turn stores its answer status and a text-free verification summary", async (t) => {
+  const { open } = await tempDatabase(t);
+  const store = await open();
+  const conversation = store.createConversation({ channel: "web" });
+  const payload = {
+    answer: "Аванс составляет 10% от цены договора. [1]",
+    sources: [{ id: "chunk-1", sourceId: "p1", fileId: "f1", chunkId: "chunk-1", citationLabel: "ds.md" }],
+    matchedSource: { id: "p1" },
+    answerStatus: "verified",
+    verification: {
+      level: "model",
+      verifier: { mode: "separate_model", status: "ok", independent: true, model: "judge" },
+      overall: "pass",
+      repairs: 1,
+      shownClaims: 1,
+      droppedClaims: 1,
+      claims: [
+        { claimId: "c1", kind: "percentage", status: "supported", shown: true, issues: [], citations: [1], text: "Аванс 10%" },
+        { claimId: "c2", kind: "amount", status: "unsupported", shown: false, issues: ["number_not_in_evidence"], citations: [] }
+      ]
+    }
+  };
+  const saved = persistChatTurn({ store, conversation, context: null }, { question: "Какой аванс?" }, payload, null);
+  assert.ok(saved.turn);
+  const assistant = store.listMessages(conversation.id).find((message) => message.role === "assistant");
+  assert.equal(assistant.answerStatus, "verified");
+  assert.equal(assistant.verifier.level, "model");
+  assert.equal(assistant.verifier.droppedClaims, 1);
+  assert.deepEqual(assistant.verifier.claims[1], { claimId: "c2", kind: "amount", status: "unsupported", shown: false, issues: ["number_not_in_evidence"] });
+  assert.ok(!JSON.stringify(assistant.verifier).includes("Аванс"), "no claim text in the stored summary");
+
+  assert.equal(turnAnswerStatus({ answerStatus: "verified_with_conflict", sources: [] }), "verified_with_conflict");
+  assert.equal(turnAnswerStatus({ sources: [{ id: "x" }] }), "unverified");
 });

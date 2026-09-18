@@ -8,8 +8,10 @@ import { createMemoryEvidenceProvider } from "../apps/rag-api/src/evidence/memor
 const demoSource = { id: "demo", title: "Demo Project", path: "fixtures/demo-project", sourceType: "contract" };
 const secondSource = { id: "second", title: "Second Object", path: "fixtures/second-object", sourceType: "contract" };
 
-function settings(llm = {}) {
+// Pre-Stage 07 behaviour (free-text answer) unless a test switches verified answering on.
+function settings(llm = {}, answering = { verified: false }) {
   return {
+    answering,
     llm: {
       enabled: true,
       provider: "local",
@@ -383,4 +385,81 @@ test("Retrieval 2.0 falls back to legacy chunks when evidence is missing or unav
   assert.equal(brokenResult.payload.metadata.evidencePacket.reason, "error");
   assert.equal("error" in brokenResult.payload.metadata.evidencePacket, false, "provider error text leaked into metadata");
   assert.equal(brokenResult.payload.answer, "Сумма договора 12 450 000 рублей [1].\n\nИсточники: [1].");
+});
+
+// Stage 07: verified answering through answerQuestion (JSON and stream use the same pipeline).
+
+function verifiedDeps(draftClaims, overrides = {}) {
+  const provider = evidenceProvider();
+  const structured = [];
+  return {
+    structured,
+    ...deps({
+      planQuery: pricePlan,
+      getEvidenceProvider: async () => provider,
+      readSettings: async () => settings({}, { verified: true, maxRepairs: 1 }),
+      chatCompletion: async (args) => {
+        const name = args.responseFormat?.json_schema?.name || "plain";
+        structured.push(name);
+        if (name === "claim_verdicts") {
+          const claims = [...args.messages.at(-1).content.matchAll(/^\{"claim_id".*\}$/gm)].map((line) => JSON.parse(line[0]));
+          return { model: "local-model", text: JSON.stringify({ overall: "pass", claims: claims.map((claim) => ({ claim_id: claim.claim_id, status: "supported", supported_by: claim.evidence_ids, issues: [] })), missing_evidence_queries: [], conflicts: [] }) };
+        }
+        return { model: "local-model", text: JSON.stringify({ claims: draftClaims, summary: "", open_questions: [] }) };
+      },
+      chatCompletionStream: async () => {
+        throw new Error("verified answering must not stream draft tokens");
+      },
+      ...overrides
+    })
+  };
+}
+
+test("verified answering: JSON payload carries status, verification and only the cited sources", async () => {
+  const { deps: answerDeps, structured } = verifiedDeps([{ claim_id: "a", text: "Цена договора составляет 12 450 000 рублей.", kind: "amount", evidence_ids: ["E1"] }]);
+  const { payload, answerStreamed } = await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo" }, answerDeps);
+  assert.equal(payload.answerStatus, "verified");
+  assert.equal(payload.answer, "Цена договора составляет 12 450 000 рублей. [1]");
+  assert.deepEqual(payload.sources.map((source) => source.evidenceId), ["ev-1"]);
+  assert.equal(payload.verification.level, "hard_checks", "settings() has no verifier model");
+  assert.equal(payload.metadata.finalSourceCount, 1);
+  assert.equal(typeof payload.metadata.timings.verifyMs, "number");
+  assert.equal(answerStreamed, false);
+  assert.deepEqual(structured, ["answer_draft"]);
+});
+
+test("verified answering: stream mode emits verification phases and no draft tokens", async () => {
+  const { deps: answerDeps } = verifiedDeps([{ claim_id: "a", text: "Цена договора составляет 99 рублей.", kind: "amount", evidence_ids: ["E1"] }]);
+  const { events, onEvent } = collectEvents();
+  const { payload, answerStreamed } = await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo", stream: true, onEvent }, answerDeps);
+  assert.equal(payload.answerStatus, "insufficient_evidence");
+  assert.equal(answerStreamed, false, "the server sends the final answer as one token");
+  assert.deepEqual(events.filter((event) => event.type === "token"), []);
+  assert.deepEqual(events.map((event) => event.payload?.status), [
+    "retrieval_started", "retrieval_done", "llm_started",
+    "verifying_started", "repair_started", "verifying_started", "finalizing"
+  ]);
+});
+
+test("verified answering: canned answers carry a status, legacy mode leaves payloads unchanged", async () => {
+  const noResults = verifiedDeps([], { searchChunksWithMetadata: async () => ({ results: [], metadata: {} }) });
+  const empty = await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo" }, noResults.deps);
+  assert.equal(empty.payload.answerStatus, "insufficient_evidence");
+
+  const disabled = verifiedDeps([], { readSettings: async () => settings({ enabled: false }, { verified: true }) });
+  assert.equal((await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo" }, disabled.deps)).payload.answerStatus, "unverified");
+
+  const broken = verifiedDeps([], {
+    chatCompletion: async () => ({ model: "local-model", text: "Сумма 12 450 000 рублей [1]." })
+  });
+  const failed = await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo" }, broken.deps);
+  assert.equal(failed.payload.answerStatus, "system_error");
+  assert.equal(failed.payload.fallbackReason, "llm_failed");
+  assert.equal(failed.payload.verification.reason, "draft_invalid");
+
+  const { deps: legacyDeps } = deps();
+  const { payload } = await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo" }, legacyDeps);
+  assert.equal("answerStatus" in payload, false);
+  assert.equal("verification" in payload, false);
+  assert.equal("verifyMs" in payload.metadata.timings, false);
 });

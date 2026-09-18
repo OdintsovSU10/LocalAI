@@ -1,6 +1,7 @@
 import { buildCitationTarget, formatCitationLabel } from "../citations.js";
 import { prepareSearchQuery } from "../search-query.js";
 import { tokenize } from "../text.js";
+import { crossDocumentCounterparts } from "../evidence/version-graph.js";
 
 // Retrieval 2.0 (Product V2, Stage 06): turns ranked index chunks into a bounded evidence packet of
 // Stage 04 evidence spans. BM25 + vectors + RRF + reranker stay the candidate generator; this layer adds
@@ -32,6 +33,8 @@ const MAX_SPANS_PER_CHUNK = 3;
 const SPAN_SCORE_RATIO = 0.6;
 const NEIGHBOUR_MAX_CHARS = 400;
 const NEIGHBOUR_TOP_ITEMS = 3;
+// Conflict counterparts go after the first items, so they never push the direct answer down.
+const COUNTERPART_POSITION = 3;
 const NUMBER_TOKEN = /^\d+(?:[.,]\d+)?$/;
 
 function stem(token) {
@@ -87,6 +90,14 @@ function factsForPlan(plan, provider, sourceIds) {
       ordered.push(...superseded.filter((old) => old.supersededByFactId === fact.factId));
     }
     ordered.push(...superseded.filter((old) => !ordered.includes(old)));
+  }
+  // The other side of a cross-document conflict (e.g. the estimate total for a contract price question),
+  // so the answer can show the discrepancy instead of one value.
+  // Only for questions that name the value; a broad overview keeps its fixed order of conditions.
+  const counterpartTypes = plan.entities?.length ? crossDocumentCounterparts(factTypes) : [];
+  if (counterpartTypes.length) {
+    ordered.push(...provider.factsForSources({ sourceIds, factTypes: counterpartTypes, statuses: ["conflict"] })
+      .map((fact) => ({ ...fact, counterpart: true })));
   }
   return ordered;
 }
@@ -214,7 +225,9 @@ export function buildEvidencePacket({ plan = {}, question = "", chunkResults = [
   const seenTexts = new Set();
   const merged = [];
   let demoted = 0;
-  const ordered = [...factItems, ...chunkItems.filter((item) => !isStale(item))];
+  const main = [...factItems.filter((item) => !item.fact.counterpart), ...chunkItems.filter((item) => !isStale(item))];
+  const counterparts = factItems.filter((item) => item.fact.counterpart);
+  const ordered = [...main.slice(0, COUNTERPART_POSITION), ...counterparts, ...main.slice(COUNTERPART_POSITION)];
   const stale = chunkItems.filter(isStale);
   demoted = stale.length;
   for (const item of [...ordered, ...stale]) {

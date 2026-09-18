@@ -11,7 +11,41 @@ const execFileAsync = promisify(execFile);
 
 // Fake OpenAI-compatible LLM. Behaviour is chosen by markers in the user question:
 // "СБОЙ" → HTTP 500, "КОНТЕКСТ" → first call per question/mode fails with a context-size error.
+// Stage 07 structured requests (response_format answer_draft / claim_verdicts):
+// - draft: one claim copied from the first sentence of E1 ("ЛОЖЬ" → a claim with a number E1 does not have);
+// - verdict: every claim supported ("ОПРОВЕРГНИ" in the question → every claim contradicted).
 export const FAKE_MODEL = "fake-contract-model";
+
+function firstEvidence(content) {
+  const match = String(content).match(/^\[E1\][^\n]*\n([\s\S]*?)(?:\n\n\[E\d+\]|\n\nПредыдущий черновик|$)/m);
+  const text = (match?.[1] || "").replace(/^\d+(?:\.\d+)*\.\s*/, "").replace(/\s+/g, " ").trim();
+  const sentence = text.split(/(?<=[.!?])\s+(?=[А-ЯЁA-Z«])/u)[0] || text;
+  return sentence.slice(0, 300);
+}
+
+export function fakeStructuredReply(schemaName, question, content) {
+  if (schemaName === "answer_draft") {
+    const text = question.includes("ЛОЖЬ") ? "Аванс составляет 99% от цены договора." : firstEvidence(content);
+    return JSON.stringify({
+      claims: text ? [{ claim_id: "c1", text, kind: "fact", evidence_ids: ["E1"] }] : [],
+      summary: "Черновик",
+      open_questions: []
+    });
+  }
+  const claims = [...String(content).matchAll(/^\{"claim_id".*\}$/gm)].map((line) => JSON.parse(line[0]));
+  const contradicted = question.includes("ОПРОВЕРГНИ");
+  return JSON.stringify({
+    overall: contradicted ? "repair" : "pass",
+    claims: claims.map((claim) => ({
+      claim_id: claim.claim_id,
+      status: contradicted ? "contradicted" : "supported",
+      supported_by: contradicted ? [] : claim.evidence_ids,
+      issues: contradicted ? ["fake verifier rejects the claim"] : []
+    })),
+    missing_evidence_queries: [],
+    conflicts: []
+  });
+}
 
 function userMessage(messages = []) {
   return String(messages.find((message) => message.role === "user")?.content || "");
@@ -69,9 +103,12 @@ export async function startFakeLlm() {
         return;
       }
 
+      const schemaName = payload.response_format?.json_schema?.name || "";
       const text = title
         ? "Сумма договора"
-        : `Ответ по документам: сумма договора 12 450 000 рублей [1]. Источников в контексте: ${contextSourceCount(payload.messages)}.`;
+        : schemaName
+          ? fakeStructuredReply(schemaName, question, userMessage(payload.messages))
+          : `Ответ по документам: сумма договора 12 450 000 рублей [1]. Источников в контексте: ${contextSourceCount(payload.messages)}.`;
       const usage = { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 };
       if (!payload.stream) {
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -147,8 +184,9 @@ export async function createTempRuntime({ runDir, label, revision = "", extraFix
   return root;
 }
 
-// retrievalV2 is off by default: the chat contract compares HEAD with a pre-Stage 06 revision.
-export async function startApi({ root, llmBaseUrl = "", llmEnabled = true, retrievalV2 = false }) {
+// retrievalV2 and verifiedAnswering are off by default: the chat contract compares HEAD with a
+// pre-Stage 06 revision. verifierMode applies with verifiedAnswering (same_model: the fake model verifies).
+export async function startApi({ root, llmBaseUrl = "", llmEnabled = true, retrievalV2 = false, verifiedAnswering = false, verifierMode = "same_model" }) {
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, [path.join(root, "apps", "rag-api", "src", "server.js")], {
@@ -176,7 +214,10 @@ export async function startApi({ root, llmBaseUrl = "", llmEnabled = true, retri
       QDRANT_ENABLED: "false",
       RAG_RERANKER_ENABLED: "false",
       RAG_OCR_ENABLED: "false",
-      RAG_RETRIEVAL_V2: retrievalV2 ? "true" : "false"
+      RAG_RETRIEVAL_V2: retrievalV2 ? "true" : "false",
+      RAG_VERIFIED_ANSWERING: verifiedAnswering ? "true" : "false",
+      RAG_VERIFIER_MODE: verifierMode,
+      RAG_VERIFIER_MODEL: ""
     },
     stdio: ["ignore", "pipe", "pipe"]
   });

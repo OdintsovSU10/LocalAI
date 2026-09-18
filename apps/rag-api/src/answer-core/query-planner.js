@@ -16,6 +16,12 @@ const MIN_CANDIDATE_SCORE = 5;
 const CANDIDATE_SCORE_SPREAD = 1.5;
 const MAX_CLARIFICATION_OPTIONS = 5;
 const MAX_REPLY_WORDS = 6;
+// Words that may surround a project name in a choice ("проект Стромынка", "по Стромынке", "вариант 2").
+const CHOICE_FILLER = new Set([
+  "проект", "проекта", "проекту", "проектом", "объект", "объекта", "жк", "по", "для", "в", "во", "на", "про",
+  "это", "да", "вариант", "номер", "выбираю", "нужен", "нужно"
+]);
+const NUMBER_REPLY = /^(?:(?:вариант|номер|пункт)\s*)?№?\s*(\d{1,2})\s*[).]?$/iu;
 
 const ENTITY_PATTERNS = [
   ["contract_price", /цен\p{L}*\s+договор|стоимост\p{L}*\s+(?:договор|работ)|сумм\p{L}*\s+договор/iu],
@@ -32,12 +38,13 @@ const ENTITY_PATTERNS = [
   ["estimate_total", /смет/iu]
 ];
 
-const HISTORICAL_VERSION = /первоначальн|изначальн|исходн\p{L}*\s+редакци|до\s+(?:подписания\s+)?(?:доп\p{L}*\s+соглашени|дс\b)|в\s+редакции\s+договора|старая\s+редакция|прежн\p{L}*\s+(?:редакци|услови)/iu;
-const ALL_VERSIONS = /истори\p{L}*\s+изменени|все\s+редакции|как\s+менял|изменени\p{L}*\s+(?:по|всех)\s+(?:доп\p{L}*\s+соглашени|дс)/iu;
+// JavaScript \b is ASCII-only even with the u flag, so Cyrillic word edges use Unicode lookarounds.
+const HISTORICAL_VERSION = /первоначальн|изначальн|исходн\p{L}*\s+редакци|до\s+(?:подписания\s+)?(?:доп\p{L}*\s+соглашени|дс(?![\p{L}\p{N}]))|в\s+редакции\s+договора|старая\s+редакция|прежн\p{L}*\s+(?:редакци|услови)/iu;
+const ALL_VERSIONS = /истори\p{L}*\s+изменени|все\s+редакции|как\s+менял|изменени\p{L}*\s+(?:по|всех)\s+(?:доп\p{L}*\s+соглашени|дс(?![\p{L}\p{N}]))/iu;
 const COMPARE = /сравн|разниц|отлича|чем\s+отлича/iu;
 const FIND_DOCUMENT = /(?:найди|покажи|где)\s+(?:документ|файл|договор|акт|письм|смет)|какой\s+документ|в\s+каком\s+(?:документе|файле)/iu;
-const TENDER_WORDS = /\bкп\b|коммерческ\p{L}*\s+предложени|тендер/iu;
-const CONTRACT_WORDS = /договор|\bдс\b|доп\p{L}*\s+соглашени|аванс|удержани|неустойк|гарант/iu;
+const TENDER_WORDS = /(?<![\p{L}\p{N}])кп(?![\p{L}\p{N}])|коммерческ\p{L}*\s+предложени|тендер/iu;
+const CONTRACT_WORDS = /договор|(?<![\p{L}\p{N}])дс(?![\p{L}\p{N}])|доп\p{L}*\s+соглашени|аванс|удержани|неустойк|гарант/iu;
 const DATE = /\b\d{2}\.\d{2}\.\d{4}\b/g;
 
 function detectEntities(question) {
@@ -89,10 +96,16 @@ export function projectClarification(originalQuestion, candidates) {
   };
 }
 
+function replyWords(text) {
+  return String(text || "").toLowerCase().replaceAll("ё", "е").match(/[\p{L}\p{N}]+/gu) || [];
+}
+
 /**
- * Resolves a reply to a pending project clarification: an explicit project, the option number, or a name
- * that matches exactly one option. Returns null when the reply does not choose an option (then it is
- * treated as a new question and the pending clarification is dropped).
+ * Resolves a reply to a pending project clarification.
+ * - { sourceId, question }: the reply picks an option (explicit project, option number, or a reply that is
+ *   the project name alone — besides the name only filler words like "проект", "по", "ЖК" are allowed);
+ * - { invalid: true, number }: an option number that does not exist — the clarification is asked again;
+ * - null: the reply is a new question ("Назови цену по Стромынке" names a project but asks something else).
  */
 export function resolveClarificationReply(pending, { question = "", requestedSourceId = "", sources = [] } = {}) {
   const options = Array.isArray(pending?.options) ? pending.options : [];
@@ -100,37 +113,48 @@ export function resolveClarificationReply(pending, { question = "", requestedSou
   const chosen = (sourceId) => (options.some((option) => option.sourceId === sourceId) ? { sourceId, question: pending.originalQuestion } : null);
 
   if (requestedSourceId) return chosen(requestedSourceId);
-  const number = String(question).trim().match(/^(\d{1,2})\s*[).]?$/);
+  const text = String(question).trim();
+  const number = text.match(NUMBER_REPLY);
   if (number) {
     const option = options.find((item) => item.index === Number(number[1]));
-    return option ? chosen(option.sourceId) : null;
+    return option ? chosen(option.sourceId) : { invalid: true, number: Number(number[1]) };
   }
-  // A project name answers the clarification only as a short reply; a full new question that happens to
-  // name a project ("Какая цена по Стромынке?") is a new question, not a choice.
-  const text = String(question).trim();
-  if (text.includes("?") || text.split(/\s+/).length > MAX_REPLY_WORDS) return null;
+
+  const words = replyWords(text);
+  if (!words.length || words.length > MAX_REPLY_WORDS) return null;
   const optionSources = sources.filter((source) => options.some((option) => option.sourceId === source.id));
   const match = matchSourceForQuestion(text, optionSources);
-  return match.source && match.confident ? chosen(match.source.id) : null;
+  if (!match.source || !match.confident) return null;
+  const nameWords = new Set(match.matchedTokens.flatMap((token) => replyWords(token)));
+  const otherWords = words.filter((word) => !nameWords.has(word) && !CHOICE_FILLER.has(word));
+  return otherWords.length ? null : chosen(match.source.id);
+}
+
+function repeatedClarification(pending, number) {
+  const again = projectClarification(pending.originalQuestion, pending.options.map((option) => ({ id: option.sourceId, title: option.title })));
+  return { ...again, question: `Варианта ${number} нет. ${again.question}` };
 }
 
 /**
  * Builds a query plan. `needsClarification` is set only when the question names several projects that
- * match equally well and neither an explicit project nor the conversation's pinned project decides it.
+ * match equally well and neither an explicit project nor the conversation's pinned project decides it,
+ * or when a reply to a pending clarification names an option number that does not exist.
  */
 export function planQuery({ question = "", requestedSourceId = "", contextSourceId = "", conversationContext = null, sources = [] } = {}) {
   const pending = conversationContext?.pendingClarification || null;
-  const resume = pending ? resolveClarificationReply(pending, { question, requestedSourceId, sources }) : null;
-  const effectiveQuestion = resume?.question || question;
+  const reply = pending ? resolveClarificationReply(pending, { question, requestedSourceId, sources }) : null;
+  const resume = reply?.sourceId ? reply : null;
+  const effectiveQuestion = reply?.invalid ? pending.originalQuestion : (resume?.question || question);
   const effectiveSourceId = resume?.sourceId || requestedSourceId;
   const turns = Array.isArray(conversationContext?.turns) ? conversationContext.turns : [];
   const allSources = hasAllSourcesIntent(effectiveQuestion);
   const followUp = turns.length > 0 && isFollowUpQuestion(effectiveQuestion);
   const pinnedSourceId = contextSourceId || conversationContext?.pinnedSourceId || "";
 
-  let clarification = null;
+  // A wrong option number keeps the pending clarification and asks it again instead of answering "9".
+  let clarification = reply?.invalid ? repeatedClarification(pending, reply.number) : null;
   let sourceScope = effectiveSourceId ? [effectiveSourceId] : [];
-  if (!effectiveSourceId && !allSources) {
+  if (!clarification && !effectiveSourceId && !allSources) {
     const autoMatch = matchSourceForQuestion(effectiveQuestion, contractSources(sources));
     if (autoMatch.source) {
       sourceScope = [autoMatch.source.id];

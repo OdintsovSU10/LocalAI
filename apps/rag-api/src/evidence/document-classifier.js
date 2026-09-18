@@ -66,7 +66,8 @@ export function classifyDocument({ markdown = "", fileLabel = "" } = {}) {
   }
 
   const contract = title.match(CONTRACT);
-  if (contract && !/^\s*(?:письм|акт\b|исх)/iu.test(title)) {
+  // \b is ASCII-only in JavaScript; a Cyrillic word end needs a Unicode lookahead.
+  if (contract && !/^\s*(?:письм|акт(?![\p{L}\p{N}])|исх)/iu.test(title)) {
     return { kind: "contract", title, number: contract[1], documentDate: isoDate(contract[2]), parentRef: null, method: "title:contract" };
   }
 

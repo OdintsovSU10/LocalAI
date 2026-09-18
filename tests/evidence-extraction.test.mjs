@@ -27,6 +27,8 @@ test("classifyDocument recognises contracts, amendments with parent reference, e
   assert.equal(classifyDocument({ markdown: "# smeta.xlsx\n\n## Лист: Сводная\n\n| 1 | a |" }).kind, "estimate");
   assert.equal(classifyDocument({ markdown: "# scan.pdf\n\n## OCR page 1\n\nИсх. № 5 от 01.02.2026" }).kind, "letter");
   assert.equal(classifyDocument({ markdown: "# Заметки\n\nТекст без реквизитов" }).kind, "other");
+  // An act that mentions a contract number is an act, not a contract (Cyrillic word edge after «Акт»).
+  assert.equal(classifyDocument({ markdown: "# Акт сверки по договору № 5 от 01.01.2026\n\nТекст" }).kind, "act");
 });
 
 test("front matter with the absolute source path never reaches evidence spans", () => {

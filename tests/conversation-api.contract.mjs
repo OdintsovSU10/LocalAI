@@ -168,6 +168,25 @@ test("server conversations: follow-up, isolation, persistence across restart", {
   const chosen = donePayload(ambiguousSse).clarification.options.find((option) => option.index === 2).sourceId;
   assert.equal(donePayload(replySse)?.matchedSource?.id, chosen);
 
+  // Revision 1: a wrong option number asks again and keeps the pending clarification.
+  const conversationE = (await requestJson(api.baseUrl, "/api/conversations", { method: "POST", body: {} })).payload.id;
+  await postJson(api.baseUrl, "/api/chat", { question: "Какая сумма договора в Project?", conversationId: conversationE });
+  const requestsBeforeWrongNumber = llm.chatRequests.length;
+  const wrongNumber = await postJson(api.baseUrl, "/api/chat", { question: "9", conversationId: conversationE });
+  assert.match(wrongNumber.payload.answer, /^Варианта 9 нет\./);
+  assert.equal(wrongNumber.payload.clarification?.originalQuestion, "Какая сумма договора в Project?");
+  assert.equal(llm.chatRequests.length, requestsBeforeWrongNumber, "a wrong number must not reach the LLM");
+  const afterWrongNumber = await postJson(api.baseUrl, "/api/chat", { question: "1", conversationId: conversationE });
+  assert.ok(lastChatRequest(llm).messages.at(-1).content.includes("Вопрос:\nКакая сумма договора в Project?"), "the original question was lost after a wrong number");
+  assert.equal(afterWrongNumber.payload.clarification, undefined);
+
+  // Revision 1: a new request that names a project (no question mark) is answered as a new question.
+  const conversationF = (await requestJson(api.baseUrl, "/api/conversations", { method: "POST", body: {} })).payload.id;
+  await postJson(api.baseUrl, "/api/chat", { question: "Какая сумма договора в Project?", conversationId: conversationF });
+  const newRequest = await postJson(api.baseUrl, "/api/chat", { question: "Назови гарантийный срок по Second Project", conversationId: conversationF });
+  assert.equal(newRequest.payload.matchedSource?.id, second.id);
+  assert.ok(lastChatRequest(llm).messages.at(-1).content.includes("Вопрос:\nНазови гарантийный срок по Second Project"), "a new request was replaced by the pending question");
+
   // Without a conversation the clarification is still returned (a stateless client answers with sourceId).
   const stateless = await postJson(api.baseUrl, "/api/chat", { question: "Какая сумма договора в Project?" });
   assert.equal(stateless.payload.clarification?.kind, "project");

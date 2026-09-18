@@ -70,7 +70,7 @@ test("a clarification reply picks an option by number, explicit project or short
   assert.deepEqual(resolve("ЖК Сокольники, Стромынка"), { sourceId: "pv2-stromynka", question: "Какой аванс по Сокольникам?" });
   assert.deepEqual(resolve("", "pv2-stromynka"), { sourceId: "pv2-stromynka", question: "Какой аванс по Сокольникам?" });
 
-  assert.equal(resolve("3"), null, "number outside the options");
+  assert.deepEqual(resolve("3"), { invalid: true, number: 3 }, "number outside the options is not a new question");
   assert.equal(resolve("Балчуг"), null, "a project that was not offered");
   assert.equal(resolve("", "pv2-balchug"), null);
   assert.equal(resolve("Какая цена договора по Стромынке?"), null, "a full new question is not a choice");
@@ -87,6 +87,58 @@ test("a resolved reply resumes the original question for the chosen project", ()
   const unrelated = planQuery({ question: "Какая цена договора по Балчугу?", conversationContext: { pendingClarification: pending, turns: [] }, sources });
   assert.equal(unrelated.resumedFromClarification, false);
   assert.equal(unrelated.question, "Какая цена договора по Балчугу?");
+});
+
+// Revision 1 regressions (independent verification findings).
+
+test("a new request that names a project is not a choice, even without a question mark", () => {
+  const pending = planQuery({ question: "Какой аванс по Сокольникам?", sources }).clarification;
+  const resolve = (question) => resolveClarificationReply(pending, { question, sources });
+  for (const newRequest of ["Назови цену по Стромынке", "Сроки по Русаковской", "Стромынка, какая цена"]) {
+    assert.equal(resolve(newRequest), null, newRequest);
+  }
+  for (const [reply, sourceId] of [
+    ["по Стромынке", "pv2-stromynka"],
+    ["проект Стромынка", "pv2-stromynka"],
+    ["Стромынка?", "pv2-stromynka"],
+    ["вариант 1", "pv2-stromynka"],
+    ["№2", "pv2-rusakovskaya"]
+  ]) {
+    assert.deepEqual(resolve(reply), { sourceId, question: "Какой аванс по Сокольникам?" }, reply);
+  }
+
+  const plan = planQuery({ question: "Назови цену по Стромынке", conversationContext: { pendingClarification: pending, turns: [] }, sources });
+  assert.equal(plan.resumedFromClarification, false);
+  assert.equal(plan.question, "Назови цену по Стромынке");
+  assert.deepEqual(plan.sourceScope, ["pv2-stromynka"]);
+});
+
+test("a wrong option number asks the same clarification again and keeps the original question", () => {
+  const pending = planQuery({ question: "Какой аванс по Сокольникам?", sources }).clarification;
+  const invalid = planQuery({ question: "9", conversationContext: { pendingClarification: pending, turns: [] }, sources });
+  assert.equal(invalid.needsClarification, true);
+  assert.equal(invalid.resumedFromClarification, false);
+  assert.equal(invalid.clarification.originalQuestion, "Какой аванс по Сокольникам?");
+  assert.deepEqual(invalid.clarification.options, pending.options);
+  assert.match(invalid.clarification.question, /^Варианта 9 нет\. Вопрос подходит к нескольким проектам/);
+
+  const again = planQuery({ question: "8", conversationContext: { pendingClarification: invalid.clarification, turns: [] }, sources });
+  assert.match(again.clarification.question, /^Варианта 8 нет\. Вопрос подходит/, "the prefix is not stacked");
+
+  const chosen = planQuery({ question: "2", conversationContext: { pendingClarification: invalid.clarification, turns: [] }, sources });
+  assert.equal(chosen.resumedFromClarification, true);
+  assert.equal(chosen.question, "Какой аванс по Сокольникам?");
+  assert.equal(chosen.requestedSourceId, "pv2-rusakovskaya");
+});
+
+test("Cyrillic abbreviations are matched as whole words (ДС, КП)", () => {
+  assert.equal(planQuery({ question: "Какой аванс был до ДС?", sources }).versionPolicy, "historical");
+  assert.equal(planQuery({ question: "Какой аванс был до ДС №1 по Стромынке?", sources }).versionPolicy, "historical");
+  assert.equal(planQuery({ question: "Какой аванс по ДСК-1?", sources }).versionPolicy, "current");
+  assert.equal(planQuery({ question: "Как менялся аванс, изменения по ДС", sources }).versionPolicy, "all");
+  assert.equal(planQuery({ question: "Какая цена в КП?", sources }).domain, "tender");
+  assert.notEqual(planQuery({ question: "Какой КПП у заказчика?", sources }).domain, "tender");
+  assert.equal(planQuery({ question: "Что изменил ДС?", sources }).domain, "contract");
 });
 
 test("planSummary keeps only safe plan fields", () => {

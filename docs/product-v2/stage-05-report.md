@@ -1,6 +1,6 @@
 # Stage 05 report
 
-Status: PARTIAL — код и тесты написаны, прогон выполняется на машине владельца
+Status: PASS — независимая проверка после Revision 1: npm test 379/379, контракты chat/conversation/evidence PASS, мутационная проверка PASS
 
 ## Baseline
 - Stage 04 PASS (`ac5e4e5`). Проект определялся только авто-подбором (`resolveChatSourceScope`): при двух одинаково подходящих проектах («Какой аванс по Сокольникам?») вопрос уходил в поиск по всем проектам без уточнения. `01-eval-baseline.md`: clarification recall 0.000, precision NOT_AVAILABLE.

@@ -128,3 +128,61 @@ test("without evidence the original chunk results are kept as they are", async (
   assert.equal(diagnostics.fallbackChunks, 3);
   assert.equal(diagnostics.candidates.facts, 0);
 });
+
+function syntheticProvider({ spans, facts = [] }) {
+  return createMemoryEvidenceProvider([{ spans, facts, documents: [] }]);
+}
+
+function syntheticSpan(evidenceId, { sourceId = "p1", chunkId = "c1", ordinal = 0, text }) {
+  return { evidenceId, documentId: `doc-${sourceId}`, sourceId, fileId: `file-${sourceId}`, chunkId, kind: "paragraph", ordinal, sectionTitle: `s${ordinal}`, text };
+}
+
+test("a span already cited as a fact does not raise the bar for the other spans of its chunk", () => {
+  // The fact span scores far above the next clause; without excluding it the 0.6 threshold drops 3.2.
+  const provider = syntheticProvider({
+    spans: [
+      syntheticSpan("ev-fact", { ordinal: 0, text: "3.1. Заказчик перечисляет аванс в размере 20% от цены договора, аванс засчитывается в платежи." }),
+      syntheticSpan("ev-other", { ordinal: 1, text: "3.2. Аванс возвращается при расторжении." }),
+      syntheticSpan("ev-noise", { ordinal: 2, text: "9.1. Прочие условия." })
+    ],
+    facts: [{ factId: "fact-1", documentId: "doc-p1", sourceId: "p1", factType: "advance_percent", status: "active", validFrom: "2026-01-01", evidenceIds: ["ev-fact"] }]
+  });
+  const { results } = buildEvidencePacket({
+    plan: { intent: "fact", entities: ["advance_percent"], versionPolicy: "current" },
+    question: "Какой размер аванса по договору?",
+    chunkResults: [{ id: "c1", chunkId: "c1", sourceId: "p1", title: "dogovor.md", text: "..." }],
+    sourceIds: ["p1"],
+    provider,
+    limit: 5
+  });
+  assert.deepEqual(results.map((result) => [result.evidenceId, result.retrievalReason]), [
+    ["ev-fact", "fact:advance_percent:active"],
+    ["ev-other", "chunk:1"]
+  ]);
+});
+
+test("identical clauses of different projects stay separate evidence in an aggregate packet", () => {
+  const text = "3.1. Аванс составляет 20% от цены договора.";
+  const projects = ["p1", "p2", "p3"];
+  const provider = syntheticProvider({
+    spans: projects.map((sourceId) => syntheticSpan(`ev-${sourceId}`, { sourceId, chunkId: `c-${sourceId}`, text })),
+    facts: projects.map((sourceId) => ({
+      factId: `fact-${sourceId}`,
+      documentId: `doc-${sourceId}`,
+      sourceId,
+      factType: "advance_percent",
+      status: "active",
+      validFrom: "2026-01-01",
+      evidenceIds: [`ev-${sourceId}`]
+    }))
+  });
+  const { results } = buildEvidencePacket({
+    plan: { intent: "aggregate", entities: ["advance_percent"], versionPolicy: "current" },
+    question: "Какой аванс по всем проектам?",
+    chunkResults: projects.map((sourceId) => ({ id: `c-${sourceId}`, chunkId: `c-${sourceId}`, sourceId, title: "dogovor.md", text })),
+    sourceIds: null,
+    provider,
+    limit: 10
+  });
+  assert.deepEqual(results.map((result) => result.sourceId), projects);
+});

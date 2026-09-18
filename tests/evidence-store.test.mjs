@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createEvidenceStore } from "../apps/rag-api/src/evidence/evidence-store.js";
+import { createMemoryEvidenceProvider } from "../apps/rag-api/src/evidence/memory-evidence-provider.js";
 import { buildFixtureSourceEvidence } from "./helpers/evidence-fixtures.mjs";
 
 // The store is closed before the temp dir is removed: an open SQLite file cannot be deleted on Windows.
@@ -138,4 +139,37 @@ test("evidence migrations are idempotent across reopen", async (t) => {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   assert.equal(second.getSourceSummary("pv2-balchug").documentCount, 1);
+});
+
+test("the store's evidence provider interface matches the in-memory provider", async (t) => {
+  const { store } = await openTempStore(t);
+  const builds = [await buildFixtureSourceEvidence("pv2-stromynka"), await buildFixtureSourceEvidence("pv2-balchug")];
+  for (const build of builds) store.replaceSourceEvidence(build);
+  const memory = createMemoryEvidenceProvider(builds);
+  const facts = (provider, query) => provider.factsForSources(query)
+    .map((fact) => `${fact.factId}|${fact.status}|${fact.evidenceIds.join(",")}`)
+    .sort();
+
+  for (const query of [
+    {},
+    { sourceIds: ["pv2-balchug"] },
+    { factTypes: ["advance_percent"] },
+    { statuses: ["superseded"] },
+    { sourceIds: ["pv2-stromynka"], factTypes: ["advance_percent"], statuses: ["active"] }
+  ]) {
+    const stored = facts(store, query);
+    assert.ok(stored.length > 0, `no facts for ${JSON.stringify(query)}`);
+    assert.ok(stored.every((row) => !row.endsWith("|")), "a fact lost its evidence ids");
+    assert.deepEqual(stored, facts(memory, query), JSON.stringify(query));
+  }
+  assert.deepEqual(store.factsForSources({ sourceIds: [] }), []);
+  assert.deepEqual(store.factsForSources({ statuses: [] }), []);
+
+  const chunkIds = [...new Set(builds[0].spans.map((span) => span.chunkId).filter(Boolean))].slice(0, 2);
+  const spanIds = (spans) => spans.map((span) => span.evidenceId).sort();
+  assert.deepEqual(spanIds(store.spansForChunks(chunkIds)), spanIds(memory.spansForChunks(chunkIds)));
+  const [first] = builds[0].spans;
+  assert.equal(store.spansByIds([first.evidenceId])[0].evidenceId, first.evidenceId);
+  assert.equal(store.neighborSpan(first.documentId, first.ordinal + 1)?.evidenceId, memory.neighborSpan(first.documentId, first.ordinal + 1)?.evidenceId);
+  assert.equal(store.documentsByIds([first.documentId])[0].documentId, first.documentId);
 });

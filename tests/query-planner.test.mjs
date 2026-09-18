@@ -141,6 +141,16 @@ test("Cyrillic abbreviations are matched as whole words (ДС, КП)", () => {
   assert.equal(planQuery({ question: "Что изменил ДС?", sources }).domain, "contract");
 });
 
+test("the supplementary agreement is recognised written apart, with a dot or as one word", () => {
+  assert.equal(planQuery({ question: "Какой аванс был до допсоглашения?", sources }).versionPolicy, "historical");
+  assert.equal(planQuery({ question: "Какой аванс до доп. соглашения?", sources }).versionPolicy, "historical");
+  assert.equal(planQuery({ question: "Какой аванс до доп соглашения?", sources }).versionPolicy, "historical");
+  assert.equal(planQuery({ question: "Какой аванс был до заключения ДС №1?", sources }).versionPolicy, "historical");
+  assert.equal(planQuery({ question: "Какой аванс по допсоглашению?", sources }).versionPolicy, "current");
+  assert.equal(planQuery({ question: "Изменения по допсоглашению", sources }).versionPolicy, "all");
+  assert.equal(planQuery({ question: "Что изменило допсоглашение?", sources }).domain, "contract");
+});
+
 test("planSummary keeps only safe plan fields", () => {
   const summary = planSummary(planQuery({ question: "Какой аванс по Сокольникам?", sources }));
   assert.deepEqual(Object.keys(summary).sort(), [

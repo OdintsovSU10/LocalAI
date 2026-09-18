@@ -208,7 +208,8 @@ export function buildEvidencePacket({ plan = {}, question = "", chunkResults = [
   const currentSpanIds = new Set(facts.filter((fact) => fact.status !== "superseded").flatMap((fact) => fact.evidenceIds));
   const isStale = (item) => versionPolicy === "current" && supersededSpanIds.has(item.span.evidenceId) && !currentSpanIds.has(item.span.evidenceId);
 
-  // 4. Merge, dedup (same span or same text), stale evidence last.
+  // 4. Merge, dedup (same span, or same text within one project), stale evidence last. Identical clauses
+  // of different projects are separate evidence: an aggregate answer must see every project.
   const seenSpans = new Set();
   const seenTexts = new Set();
   const merged = [];
@@ -217,7 +218,7 @@ export function buildEvidencePacket({ plan = {}, question = "", chunkResults = [
   const stale = chunkItems.filter(isStale);
   demoted = stale.length;
   for (const item of [...ordered, ...stale]) {
-    const textKey = item.span.text.replace(/\s+/g, " ").trim().toLowerCase();
+    const textKey = `${item.span.sourceId}|${item.span.text.replace(/\s+/g, " ").trim().toLowerCase()}`;
     if (seenSpans.has(item.span.evidenceId) || seenTexts.has(textKey)) continue;
     seenSpans.add(item.span.evidenceId);
     seenTexts.add(textKey);

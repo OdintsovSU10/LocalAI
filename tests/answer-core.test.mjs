@@ -381,5 +381,6 @@ test("Retrieval 2.0 falls back to legacy chunks when evidence is missing or unav
   const brokenResult = await answerQuestion({ question: "Какая сумма договора?", requestedSourceId: "demo" }, broken.deps);
   assert.deepEqual(brokenResult.payload.sources.map((source) => source.id), ["chunk-1", "chunk-2"]);
   assert.equal(brokenResult.payload.metadata.evidencePacket.reason, "error");
+  assert.equal("error" in brokenResult.payload.metadata.evidencePacket, false, "provider error text leaked into metadata");
   assert.equal(brokenResult.payload.answer, "Сумма договора 12 450 000 рублей [1].\n\nИсточники: [1].");
 });

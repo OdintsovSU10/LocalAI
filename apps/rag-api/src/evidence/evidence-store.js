@@ -292,27 +292,33 @@ export async function createEvidenceStore({ databasePath, now = () => new Date()
     },
 
     // sourceIds null = every source; factTypes / statuses null = no filter.
+    // Two queries whatever the number of facts: the facts, then all their evidence ids at once.
     factsForSources({ sourceIds = null, factTypes = null, statuses = null } = {}) {
       const conditions = [];
       const params = [];
       if (Array.isArray(sourceIds)) {
         if (!sourceIds.length) return [];
-        conditions.push(`source_id IN (${sourceIds.map(() => "?").join(",")})`);
+        conditions.push(`f.source_id IN (${sourceIds.map(() => "?").join(",")})`);
         params.push(...sourceIds.map(String));
       }
       if (Array.isArray(factTypes)) {
         if (!factTypes.length) return [];
-        conditions.push(`fact_type IN (${factTypes.map(() => "?").join(",")})`);
+        conditions.push(`f.fact_type IN (${factTypes.map(() => "?").join(",")})`);
         params.push(...factTypes.map(String));
       }
       if (Array.isArray(statuses)) {
         if (!statuses.length) return [];
-        conditions.push(`status IN (${statuses.map(() => "?").join(",")})`);
+        conditions.push(`f.status IN (${statuses.map(() => "?").join(",")})`);
         params.push(...statuses.map(String));
       }
       const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-      return db.prepare(`SELECT * FROM facts ${where} ORDER BY source_id, fact_type, valid_from, fact_id`)
-        .all(...params).map((row) => publicFact(row, evidenceIdsFor(row.fact_id)));
+      const rows = db.prepare(`SELECT f.* FROM facts f ${where} ORDER BY f.source_id, f.fact_type, f.valid_from, f.fact_id`).all(...params);
+      const evidenceByFact = new Map();
+      for (const link of db.prepare(`SELECT fe.fact_id, fe.evidence_id FROM fact_evidence fe JOIN facts f ON f.fact_id = fe.fact_id ${where} ORDER BY fe.evidence_id`).all(...params)) {
+        if (!evidenceByFact.has(link.fact_id)) evidenceByFact.set(link.fact_id, []);
+        evidenceByFact.get(link.fact_id).push(link.evidence_id);
+      }
+      return rows.map((row) => publicFact(row, evidenceByFact.get(row.fact_id) || []));
     },
 
     documentsByIds(documentIds = []) {

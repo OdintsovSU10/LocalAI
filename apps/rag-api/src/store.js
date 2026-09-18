@@ -640,7 +640,7 @@ function normalizeStoredSearchSettings(search = {}) {
   };
 }
 
-// RAG_RETRIEVAL_V2 overrides the stored flag at read time only, so saving settings never persists it.
+// RAG_RETRIEVAL_V2 overrides the stored flag at read time only; writeSettings ignores the flag while it is set.
 function applySearchEnvOverrides(search) {
   return { ...search, retrievalV2: envBoolean("RAG_RETRIEVAL_V2") ?? search.retrievalV2 };
 }
@@ -830,9 +830,13 @@ export async function writeSettings(settings) {
   }
 
   if (settings.search !== undefined) {
+    const incomingSearch = { ...(settings.search || {}) };
+    // GET /api/settings returns the env value; while RAG_RETRIEVAL_V2 is set, a GET -> PUT round trip
+    // must keep the stored flag instead of writing the env value into settings.json.
+    if (envBoolean("RAG_RETRIEVAL_V2") !== null) delete incomingSearch.retrievalV2;
     next.search = normalizeStoredSearchSettings({
       ...next.search,
-      ...(settings.search || {})
+      ...incomingSearch
     });
   }
 

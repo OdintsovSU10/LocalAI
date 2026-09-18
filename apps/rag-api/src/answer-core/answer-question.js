@@ -43,8 +43,9 @@ async function applyEvidencePacket({ settings, plan, question, results, sourceId
       return { results, diagnostics: { enabled: true, used: false, reason: "no_evidence" } };
     }
     return { results: packet.results, diagnostics: { enabled: true, used: true, reason: "", ...packet.diagnostics } };
-  } catch (error) {
-    return { results, diagnostics: { enabled: true, used: false, reason: "error", error: String(error?.message || error).slice(0, 200) } };
+  } catch {
+    // The error text can carry local paths, so the response only says that evidence was unavailable.
+    return { results, diagnostics: { enabled: true, used: false, reason: "error" } };
   }
 }
 

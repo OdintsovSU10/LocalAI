@@ -113,6 +113,25 @@ test("evidence API: documents, amendment graph, fact trace and preview of the ex
   assert.equal(chatPreview.status, 200);
   assert.equal(chatPreview.payload.targetMatched, true);
 
+  // RAG_RETRIEVAL_V2 is set for this server: a settings GET -> PUT round trip (and an explicit change)
+  // must not write the env value into settings.json.
+  const currentSettings = await requestJson(api.baseUrl, "/api/settings");
+  const saved = await requestJson(api.baseUrl, "/api/settings", {
+    method: "PUT",
+    body: { search: { ...currentSettings.payload.search, retrievalV2: false } }
+  });
+  assert.equal(saved.status, 200);
+  const storedSettings = JSON.parse(await fs.readFile(path.join(root, "config", "settings.json"), "utf8"));
+  assert.notEqual(storedSettings.search.retrievalV2, false);
+  const afterSave = await postJson(api.baseUrl, "/api/chat", { question: "Какой размер аванса по договору?", sourceId: stromynka.id });
+  assert.equal(afterSave.payload.metadata.evidencePacket.used, true);
+
+  // A question about the version before the amendment gets the replaced value first.
+  const historical = await postJson(api.baseUrl, "/api/chat", { question: "Какой аванс был до допсоглашения?", sourceId: stromynka.id });
+  assert.equal(historical.payload.metadata.evidencePacket.versionPolicy, "historical");
+  assert.equal(historical.payload.sources[0].retrievalReason, "fact:advance_percent:superseded");
+  assert.ok(historical.payload.sources[0].text.includes("20%"));
+
   assert.equal((await postJson(api.baseUrl, "/api/evidence/rebuild", { sourceId: "missing-source" })).status, 404);
   assert.equal((await requestJson(api.baseUrl, "/api/evidence/facts")).status, 400);
   assert.equal((await requestJson(api.baseUrl, "/api/evidence/facts/fact_missing/trace")).status, 404);

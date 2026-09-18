@@ -1,6 +1,7 @@
 import { buildCitationTarget, formatCitationLabel } from "../../apps/rag-api/src/citations.js";
 import { expandedChatRetrievalQuery } from "../../apps/rag-api/src/chat-intent.js";
 import { resolveChatSourceScope } from "../../apps/rag-api/src/chat-scope.js";
+import { planQuery } from "../../apps/rag-api/src/answer-core/query-planner.js";
 import { prepareSearchQuery } from "../../apps/rag-api/src/search-query.js";
 import {
   buildLexicalCandidates,
@@ -68,8 +69,15 @@ export function runRetrievalCase(testCase, { sources, chunks }) {
     sources
   });
 
-  // /api/chat answers with a clarification text and does not search when the requested project is missing.
-  const clarificationPredicted = Boolean(scope.requestedSourceMissing);
+  // /api/chat answers with a clarification and does not search when the requested project is missing
+  // or when the query planner finds several equally matching projects (Stage 05).
+  const plan = planQuery({
+    question: testCase.question,
+    requestedSourceId: testCase.request.sourceId,
+    contextSourceId,
+    sources
+  });
+  const clarificationPredicted = Boolean(scope.requestedSourceMissing || plan.needsClarification);
   const results = clarificationPredicted
     ? []
     : searchChunks({

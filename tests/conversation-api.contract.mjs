@@ -131,6 +131,48 @@ test("server conversations: follow-up, isolation, persistence across restart", {
   const restartedFollowUp = await postJson(api.baseUrl, "/api/chat", { question: "а кто ответственный контакт?", conversationId: conversationA });
   assert.equal(restartedFollowUp.payload.matchedSource?.id, demo.id);
 
+  // Stage 05: an ambiguous project is clarified once; the reply resumes the original question.
+  const conversationC = (await requestJson(api.baseUrl, "/api/conversations", { method: "POST", body: {} })).payload.id;
+  const ambiguous = await postJson(api.baseUrl, "/api/chat", { question: "Какая сумма договора в Project?", conversationId: conversationC });
+  assert.equal(ambiguous.status, 200);
+  assert.equal(ambiguous.payload.clarification?.kind, "project");
+  assert.deepEqual(ambiguous.payload.clarification.options.map((option) => option.sourceId).sort(), [demo.id, second.id].sort());
+  assert.deepEqual(ambiguous.payload.sources, []);
+  const requestsBeforeReply = llm.chatRequests.length;
+
+  const reply = await postJson(api.baseUrl, "/api/chat", { question: "Second Project", conversationId: conversationC });
+  assert.equal(reply.status, 200);
+  assert.equal(reply.payload.clarification, undefined);
+  assert.equal(reply.payload.matchedSource?.id, second.id);
+  assert.match(reply.payload.answer, /^Ответ по документам/);
+  assert.equal(llm.chatRequests.length, requestsBeforeReply + 1, "the clarification itself must not call the LLM");
+  assert.ok(lastChatRequest(llm).messages.at(-1).content.includes("Вопрос:\nКакая сумма договора в Project?"), "the original question was not resumed");
+
+  const clarified = await requestJson(api.baseUrl, `/api/conversations/${conversationC}`);
+  assert.deepEqual(
+    clarified.payload.messages.filter((message) => message.role === "assistant").map((message) => message.answerStatus),
+    ["clarification_required", "unverified"]
+  );
+  assert.equal(clarified.payload.conversation.pinnedSourceId, second.id);
+
+  // The clarification is resolved: a later "1" is an ordinary question, not a second resume.
+  const later = await postJson(api.baseUrl, "/api/chat", { question: "1", conversationId: conversationC });
+  assert.equal(later.payload.clarification, undefined);
+  assert.ok(!lastChatRequest(llm).messages.at(-1).content.includes("Вопрос:\nКакая сумма договора в Project?"));
+
+  // Same flow over SSE; the clarification is carried in the done payload.
+  const conversationD = (await requestJson(api.baseUrl, "/api/conversations", { method: "POST", body: {} })).payload.id;
+  const ambiguousSse = await postSse(api.baseUrl, "/api/chat/stream", { question: "Какая сумма договора в Project?", conversationId: conversationD });
+  assert.equal(donePayload(ambiguousSse)?.clarification?.kind, "project");
+  const replySse = await postSse(api.baseUrl, "/api/chat/stream", { question: "2", conversationId: conversationD });
+  const chosen = donePayload(ambiguousSse).clarification.options.find((option) => option.index === 2).sourceId;
+  assert.equal(donePayload(replySse)?.matchedSource?.id, chosen);
+
+  // Without a conversation the clarification is still returned (a stateless client answers with sourceId).
+  const stateless = await postJson(api.baseUrl, "/api/chat", { question: "Какая сумма договора в Project?" });
+  assert.equal(stateless.payload.clarification?.kind, "project");
+  assert.equal("conversationId" in stateless.payload, false);
+
   // Archive and delete.
   const archived = await requestJson(api.baseUrl, `/api/conversations/${conversationB}`, { method: "PATCH", body: { archived: true } });
   assert.equal(archived.payload.archived, true);

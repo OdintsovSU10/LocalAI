@@ -7803,6 +7803,35 @@ function applyMatchedSource(match) {
 
 // Баннер авто-определения проекта в потоке чата: показывает определённый проект
 // и даёт явное действие «Закрепить» (фиксирует выбор в селекторе).
+// Query planner clarification (Stage 05): one button per candidate project. The reply is the project
+// name, exactly what a user would type (and what a Telegram inline button sends), so the server resumes
+// the original question for the chosen project.
+function renderClarificationOptions(message, clarification) {
+  const options = Array.isArray(clarification?.options) ? clarification.options : [];
+  if (!message || clarification?.kind !== "project" || !options.length) return;
+  message.querySelector(".clarification-options")?.remove();
+
+  const list = document.createElement("div");
+  list.className = "clarification-options";
+  for (const option of options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "clarification-option btn-small";
+    button.textContent = option.title;
+    button.addEventListener("click", () => {
+      if (state.chatRequest.controller) return;
+      list.querySelectorAll("button").forEach((item) => {
+        item.disabled = true;
+      });
+      button.classList.add("is-chosen");
+      $("#question").value = option.title;
+      $("#chat-form").requestSubmit();
+    });
+    list.append(button);
+  }
+  message.append(list);
+}
+
 function renderAutoProjectBanner(referenceMessage, match) {
   const thread = $("#chat-thread");
   if (!thread || !match?.id || !match?.title) return;
@@ -8539,6 +8568,7 @@ async function chat(event) {
     setMessageText(pending, finalAnswer, { sources: finalSources });
     setMessageMeta(pending, formatResponseMeta(payload, { linkedTenderCount: linkedTenderCountForResponse(payload) }));
     renderMessageSources(pending, finalSources, finalAnswer);
+    renderClarificationOptions(pending, payload.clarification);
     setMessageRagDebug(pending, { ...payload, answer: finalAnswer, sources: finalSources }, finalSources);
     generateChatTitleForSession(sessionId, question, finalAnswer, payload.matchedSource).catch(() => {});
     refreshRemoteDiagnostics();

@@ -233,3 +233,64 @@ test("an explicit project in the request wins over the conversation pin", async 
   assert.equal(payload.matchedSource.id, "demo");
   assert.equal(calls.search[0].sourceId, "demo");
 });
+
+// Stage 05: query planner and controlled clarification.
+
+const sokolnikiSources = [
+  { id: "stromynka", title: "ЖК Сокольники, Стромынка", path: "fixtures/stromynka", sourceType: "contract" },
+  { id: "rusakovskaya", title: "Сокольники Парк, Русаковская", path: "fixtures/rusakovskaya", sourceType: "contract" }
+];
+
+test("an ambiguous project returns one clarification without searching or calling the LLM", async () => {
+  const { deps: answerDeps, calls } = deps({ readSources: async () => sokolnikiSources });
+  const { events, onEvent } = collectEvents();
+  const { payload, plan, answerStreamed } = await answerQuestion({ question: "Какой аванс по Сокольникам?", onEvent }, answerDeps);
+
+  assert.equal(payload.clarification.kind, "project");
+  assert.equal(payload.answer, payload.clarification.question);
+  assert.deepEqual(payload.projectCandidates, [
+    { id: "stromynka", title: "ЖК Сокольники, Стромынка" },
+    { id: "rusakovskaya", title: "Сокольники Парк, Русаковская" }
+  ]);
+  assert.deepEqual(payload.sources, []);
+  assert.equal(payload.matchedSource, null);
+  assert.equal(answerStreamed, false);
+  assert.equal(plan.needsClarification, true);
+  assert.equal(calls.search.length, 0);
+  assert.equal(calls.completions.length, 0);
+  assert.deepEqual(events.map((event) => event.payload), [
+    { status: "retrieval_started" },
+    { status: "retrieval_done", matched: false }
+  ]);
+});
+
+test("a reply to a pending clarification answers the original question for the chosen project", async () => {
+  const { deps: answerDeps, calls } = deps({ readSources: async () => sokolnikiSources });
+  const first = await answerQuestion({ question: "Какой аванс по Сокольникам?" }, answerDeps);
+  const conversationContext = { pinnedSourceId: "", turns: [], pendingClarification: first.payload.clarification };
+
+  const { payload, plan } = await answerQuestion({ question: "2", conversationContext }, answerDeps);
+  assert.equal(plan.resumedFromClarification, true);
+  assert.equal(payload.clarification, undefined);
+  assert.equal(payload.matchedSource.id, "rusakovskaya");
+  assert.equal(payload.matchedSource.autoSelected, false);
+  assert.equal(calls.search[0].sourceId, "rusakovskaya");
+  assert.equal(calls.search[0].query, "Какой аванс по Сокольникам?");
+  assert.ok(calls.completions[0].args.messages.at(-1).content.includes("Вопрос:\nКакой аванс по Сокольникам?"));
+});
+
+test("a failing planner falls back to the legacy scope resolution", async () => {
+  const { deps: answerDeps, calls } = deps({
+    readSources: async () => sokolnikiSources,
+    planQuery: () => {
+      throw new Error("planner crashed");
+    }
+  });
+  const { payload, plan } = await answerQuestion({ question: "Какой аванс по Сокольникам?" }, answerDeps);
+  assert.equal(plan.fallback, true);
+  assert.equal(payload.clarification, undefined);
+  // Legacy behaviour for an ambiguous project: search across all projects.
+  assert.equal(calls.search.length, 1);
+  assert.equal(calls.search[0].sourceIds, null);
+  assert.equal(payload.sources.length, 2);
+});

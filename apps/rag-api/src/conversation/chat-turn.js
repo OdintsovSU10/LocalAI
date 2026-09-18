@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import { buildConversationContext, MAX_CONTEXT_TURNS } from "../answer-core/conversation-turns.js";
+import { planSummary } from "../answer-core/query-planner.js";
 
 export class ConversationNotFoundError extends Error {
   constructor() {
@@ -25,12 +26,17 @@ export async function loadChatConversation(conversationId, { getStore, channel =
   const conversation = store.getConversation(id, { channel });
   if (!conversation) throw new ConversationNotFoundError();
   const recentMessages = store.listMessages(conversation.id, { limit: MAX_CONTEXT_TURNS * 2 + 2 });
-  return { store, conversation, context: buildConversationContext(conversation, recentMessages) };
+  const context = {
+    ...buildConversationContext(conversation, recentMessages),
+    pendingClarification: store.getPendingClarification(conversation.id)
+  };
+  return { store, conversation, context };
 }
 
-// Saves the question/answer pair after a completed answer. A storage failure must not lose the answer.
-export function persistChatTurn(chatConversation, input, payload) {
-  const { store, conversation } = chatConversation;
+// Saves the question/answer pair after a completed answer and keeps (or clears) the pending clarification.
+// A storage failure must not lose the answer.
+export function persistChatTurn(chatConversation, input, payload, plan = null) {
+  const { store, conversation, context } = chatConversation;
   const traceId = crypto.randomUUID();
   const matchedSourceId = payload.matchedSource?.id || "";
   try {
@@ -44,12 +50,16 @@ export function persistChatTurn(chatConversation, input, payload) {
       },
       assistant: {
         sources: payload.sources,
-        scope: { matchedSourceId },
+        scope: { matchedSourceId, plan: planSummary(plan) },
         answerStatus: turnAnswerStatus(payload),
         traceId,
         pinnedSourceId: matchedSourceId
       }
     });
+    // At most one clarification per turn: a new one replaces the pending state, any other answer clears it.
+    if (payload.clarification || context?.pendingClarification) {
+      store.setPendingClarification(conversation.id, payload.clarification || null);
+    }
     return { ...payload, conversationId: conversation.id, turn: { traceId, ...ids } };
   } catch (error) {
     console.error(`Conversation turn was not saved: ${error.message}`);

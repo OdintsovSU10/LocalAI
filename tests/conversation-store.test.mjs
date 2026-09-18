@@ -168,3 +168,22 @@ test("safeCitations keeps ids and locations only", () => {
     pageEnd: 3
   });
 });
+
+test("pending clarification is stored per conversation and can be cleared", async (t) => {
+  const store = await (await tempDatabase(t)).open();
+  const first = store.createConversation({});
+  const second = store.createConversation({});
+  const clarification = { kind: "project", originalQuestion: "Какой аванс по Сокольникам?", options: [{ index: 1, sourceId: "a", title: "A" }] };
+
+  assert.equal(store.getPendingClarification(first.id), null);
+  store.setPendingClarification(first.id, clarification);
+  assert.deepEqual(store.getPendingClarification(first.id), clarification);
+  assert.equal(store.getPendingClarification(second.id), null);
+  store.setPendingClarification(first.id, null);
+  assert.equal(store.getPendingClarification(first.id), null);
+  assert.throws(() => store.setPendingClarification("missing", clarification), /conversation not found/);
+
+  store.setPendingClarification(first.id, clarification);
+  store.deleteConversation(first.id);
+  assert.equal(store.getPendingClarification(first.id), null);
+});

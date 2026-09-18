@@ -216,6 +216,21 @@ export async function createConversationStore({ databasePath, now = () => new Da
       });
     },
 
+    // Unresolved clarification of the last turn (Stage 05); null when there is none.
+    getPendingClarification(conversationId) {
+      const row = db.prepare("SELECT pending_clarification_json FROM turn_state WHERE conversation_id = ?").get(String(conversationId || ""));
+      return parseJson(row?.pending_clarification_json, null);
+    },
+
+    setPendingClarification(conversationId, clarification) {
+      const row = getRow(conversationId);
+      if (!row) throw new Error("conversation not found");
+      db.prepare(`
+        INSERT INTO turn_state (conversation_id, pending_clarification_json, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET pending_clarification_json = excluded.pending_clarification_json, updated_at = excluded.updated_at
+      `).run(row.id, clarification ? JSON.stringify(clarification) : null, now());
+    },
+
     listMessages(conversationId, { limit = 0 } = {}) {
       const rows = limit
         ? db.prepare("SELECT * FROM (SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT ?) ORDER BY seq ASC")

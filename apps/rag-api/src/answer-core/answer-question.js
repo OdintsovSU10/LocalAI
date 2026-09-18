@@ -4,6 +4,7 @@ import { indexedSnapshotForSource, indexSourceIdsForSources } from "../index-sta
 import { chatLlmCandidates, llmRouteMetadata, providerLabel } from "../llm-routing.js";
 import { chatSearchLimit, runChatLlm } from "./chat-llm.js";
 import { followUpRetrievalQuery, historyMessages } from "./conversation-turns.js";
+import { planQuery as defaultPlanQuery } from "./query-planner.js";
 import {
   LLM_DISABLED_ANSWER,
   NO_RESULTS_ANSWER,
@@ -22,6 +23,7 @@ import { emptyRouteMetadata, ragDebugMetadata } from "./rag-metadata.js";
  * @typedef {object} AnswerResult
  * @property {object} payload        response body of /api/chat (answer, sources, matchedSource, metadata, ...)
  * @property {boolean} answerStreamed true when the answer text already went out as token events
+ * @property {object} plan            query plan used for the turn (kept out of the payload; stored with the turn)
  */
 
 /**
@@ -32,11 +34,15 @@ import { emptyRouteMetadata, ragDebugMetadata } from "./rag-metadata.js";
  * conversationContext ({ pinnedSourceId, turns }) is optional: without it the request behaves exactly
  * like a single-turn /api/chat call. The pinned project only applies when the question names none.
  *
+ * The query planner runs before retrieval. When several projects match the question equally well it
+ * returns a clarification instead of an answer; a later reply that picks an option resumes the original
+ * question. If planning throws, the legacy scope resolution answers as before (deterministic fallback).
+ *
  * @returns {Promise<AnswerResult>}
  */
 export async function answerQuestion({
-  question = "",
-  requestedSourceId = "",
+  question: rawQuestion = "",
+  requestedSourceId: rawRequestedSourceId = "",
   contextSourceId = "",
   conversationContext = null,
   stream = false,
@@ -46,7 +52,8 @@ export async function answerQuestion({
   const now = deps.now || Date.now;
   const totalStartedAt = now();
   const emitStatus = (phase, payload) => onEvent({ type: "status", phase, payload });
-  const canned = (payload) => ({ payload, answerStreamed: false });
+  let plan = null;
+  const canned = (payload) => ({ payload, answerStreamed: false, plan });
 
   emitStatus("retrieval", { status: "retrieval_started" });
 
@@ -54,6 +61,39 @@ export async function answerQuestion({
   const settings = await deps.readSettings();
   const turns = Array.isArray(conversationContext?.turns) ? conversationContext.turns : [];
   const effectiveContextSourceId = contextSourceId || conversationContext?.pinnedSourceId || "";
+  try {
+    plan = (deps.planQuery || defaultPlanQuery)({
+      question: rawQuestion,
+      requestedSourceId: rawRequestedSourceId,
+      contextSourceId: effectiveContextSourceId,
+      conversationContext,
+      sources
+    });
+  } catch (error) {
+    plan = { question: rawQuestion, requestedSourceId: rawRequestedSourceId, needsClarification: false, fallback: true, fallbackReason: error.message };
+  }
+
+  if (plan.needsClarification) {
+    const { clarification } = plan;
+    const answer = clarification.question;
+    emitStatus("retrieval", { status: "retrieval_done", matched: false });
+    return canned({
+      answer,
+      sources: [],
+      matchedSource: null,
+      projectCandidates: clarification.options.map((option) => ({ id: option.sourceId, title: option.title })),
+      clarification,
+      metadata: ragDebugMetadata({
+        routeMetadata: emptyRouteMetadata(settings),
+        answer,
+        totalMs: now() - totalStartedAt
+      })
+    });
+  }
+
+  // After a clarification reply the original question is answered for the chosen project.
+  const question = plan.question;
+  const requestedSourceId = plan.requestedSourceId;
   const chatScope = resolveChatSourceScope({ question, requestedSourceId, contextSourceId: effectiveContextSourceId, sources });
   const { source, sourceId, searchSourceIds, autoMatch, searchAllSources } = chatScope;
   const broadAnswer = hasBroadAnswerIntent(question);
@@ -197,7 +237,8 @@ export async function answerQuestion({
           totalMs: now() - totalStartedAt
         })
       },
-      answerStreamed: Boolean(streamedAnswer)
+      answerStreamed: Boolean(streamedAnswer),
+      plan
     };
   }
 
@@ -229,6 +270,7 @@ export async function answerQuestion({
         totalMs: now() - totalStartedAt
       })
     },
-    answerStreamed: stream
+    answerStreamed: stream,
+    plan
   };
 }

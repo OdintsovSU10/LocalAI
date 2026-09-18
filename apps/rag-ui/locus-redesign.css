@@ -3347,3 +3347,40 @@ button.danger-solid:hover:not(:disabled) {
   align-items: start;
   padding-top: 2px;
 }
+
+/* Stage 05 · Кнопки выбора проекта при уточнении вопроса */
+.clarification-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.clarification-option {
+  min-height: 44px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: left;
+  border-color: var(--accent-dim-border);
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.15s ease-out, opacity 0.15s ease-out;
+}
+
+.clarification-option:disabled {
+  opacity: 0.55;
+}
+
+.clarification-option.is-chosen {
+  opacity: 1;
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clarification-option {
+    transition: none;
+  }
+}

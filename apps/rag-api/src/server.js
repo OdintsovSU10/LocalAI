@@ -3519,12 +3519,12 @@ app.post("/api/chat", async (req, res, next) => {
   try {
     const input = chatAnswerInput(req.body);
     const conversation = await loadChatConversation(req.body?.conversationId, { getStore: conversationStore, channel: "web" });
-    const { payload } = await answerQuestion({
+    const { payload, plan } = await answerQuestion({
       ...input,
       conversationContext: conversation?.context || null,
       signal: requestController.signal
     }, chatAnswerDeps());
-    res.json(conversation ? persistChatTurn(conversation, input, payload) : payload);
+    res.json(conversation ? persistChatTurn(conversation, input, payload, plan) : payload);
   } catch (error) {
     if (clientAborted || (error.name === "AbortError" && requestController.signal.aborted)) {
       if (!res.headersSent) res.status(499).json({ error: "request cancelled" });
@@ -3576,7 +3576,7 @@ app.post("/api/chat/stream", async (req, res) => {
 
   try {
     const input = chatAnswerInput(req.body);
-    const { payload, answerStreamed } = await answerQuestion({
+    const { payload, answerStreamed, plan } = await answerQuestion({
       ...input,
       conversationContext: conversation?.context || null,
       stream: true,
@@ -3586,7 +3586,7 @@ app.post("/api/chat/stream", async (req, res) => {
         else if (event.type === "status") writeSseEvent(res, "status", event.payload);
       }
     }, chatAnswerDeps());
-    const finalPayload = conversation ? persistChatTurn(conversation, input, payload) : payload;
+    const finalPayload = conversation ? persistChatTurn(conversation, input, payload, plan) : payload;
     return streamChatPayload(res, finalPayload, { emitAnswerToken: !answerStreamed });
   } catch (error) {
     if (clientAborted || (error.name === "AbortError" && requestController.signal.aborted)) {

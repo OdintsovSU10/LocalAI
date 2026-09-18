@@ -1,6 +1,6 @@
 # Stage 04 report
 
-Status: PARTIAL — код и тесты написаны, прогон выполняется на машине владельца
+Status: PASS — независимая проверка после Revision 6: npm test 365/365, контракты chat/conversation/evidence PASS, маскировка по закрытому списку ADR-003 PASS
 
 ## Baseline
 - Stage 03 PASS (`4b73838`). Цитаты указывают на чанки индекса; `01-eval-baseline.md`: citation target accuracy 0.400 (раздел = последний заголовок чанка, несколько листов в одном чанке), current version accuracy 0.000 (базовый договор выше ДС). Документы и факты не моделируются.

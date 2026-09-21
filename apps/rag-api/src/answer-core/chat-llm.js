@@ -33,6 +33,14 @@ export function chatContextProfilesForRequest({ sourceId = "", broadAnswer = fal
   return broadAnswer ? allSourcesBroadChatContextProfiles : allSourcesChatContextProfiles;
 }
 
+// Verified drafting (Stage 07) sends evidence spans, not raw chunks, and pays for every output token
+// twice (draft + verification). Fewer and shorter items keep a broad answer inside a usable wait.
+export function draftContextProfiles({ broadAnswer = false } = {}) {
+  return broadAnswer
+    ? [{ name: "draft-broad", maxSources: 10, maxCharsPerSource: 900 }, { name: "draft-broad-tight", maxSources: 8, maxCharsPerSource: 700 }]
+    : [{ name: "draft", maxSources: 8, maxCharsPerSource: 1100 }, { name: "draft-tight", maxSources: 6, maxCharsPerSource: 800 }];
+}
+
 export function chatSearchLimit({ searchAllSources = false, broadAnswer = false } = {}) {
   if (searchAllSources) return broadAnswer ? 36 : 24;
   return broadAnswer ? 20 : 12;
@@ -55,14 +63,15 @@ export async function runChatLlm({
   chatCompletion = defaultChatCompletion,
   chatCompletionStream = defaultChatCompletionStream,
   buildMessages = null,
-  responseFormat = null
+  responseFormat = null,
+  profiles = null
 }) {
   let reply;
   let usedLlm = null;
   let lastLlmError = null;
   let promptChars = 0;
   const llmStartedAt = Date.now();
-  const contextProfiles = chatContextProfilesForRequest({ sourceId, broadAnswer });
+  const contextProfiles = profiles || chatContextProfilesForRequest({ sourceId, broadAnswer });
 
   for (let candidateIndex = 0; candidateIndex < llmCandidates.length; candidateIndex += 1) {
     const candidateLlm = llmCandidates[candidateIndex];

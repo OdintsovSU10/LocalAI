@@ -317,3 +317,22 @@ test("a schema rejected with any wording still falls back to the plain prompt", 
     assert.deepEqual(llm.calls.map((call) => call.name), ["answer_draft", "plain", "claim_verdicts", "plain"], message);
   }
 });
+
+test("drafting a broad answer sends a bounded evidence block", async () => {
+  const many = Array.from({ length: 14 }, (_, index) => item(`x${index}`, `Пункт ${index + 1}. Условие договора номер ${index + 1}.`));
+  const llm = scriptedLlm({ drafts: [draftText([claim("Условие договора номер 1.", "condition", ["E1"])])] });
+  await runVerifiedAnswer({
+    question: "Какие основные условия договора?",
+    plan: { intent: "overview", versionPolicy: "current" },
+    results: many,
+    settings: { answering: { verified: true, maxRepairs: 0 }, verifier: { mode: "off" } },
+    llmCandidates: [LLM],
+    broadAnswer: true,
+    allowedSourceIds: ["p1"],
+    usageTracker: createLlmUsageTracker(),
+    chatCompletion: llm.chatCompletion
+  });
+  const draftPrompt = llm.calls[0].content;
+  assert.equal([...draftPrompt.matchAll(/^\[E\d+\]/gm)].length, 10, "broad drafting is capped at 10 evidence items");
+  assert.match(llm.calls[0].content, /Пункт 1\./);
+});

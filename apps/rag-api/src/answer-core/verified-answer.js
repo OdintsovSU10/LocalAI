@@ -4,7 +4,7 @@ import { chatCompletion as defaultChatCompletion } from "../llm.js";
 import { DRAFT_RESPONSE_FORMAT, DraftParseError, buildDraftMessages, labelEvidence, parseDraft } from "./answer-draft.js";
 import { renderVerifiedAnswer } from "./answer-renderer.js";
 import { VERDICT_RESPONSE_FORMAT, buildVerifierMessages, parseVerdict, resolveVerifier } from "./answer-verifier.js";
-import { chatContextProfilesForRequest, runChatLlm } from "./chat-llm.js";
+import { draftContextProfiles, runChatLlm } from "./chat-llm.js";
 import { checkClaims } from "./claim-checks.js";
 
 // Verified answering (Product V2, Stage 07):
@@ -14,6 +14,7 @@ import { checkClaims } from "./claim-checks.js";
 export const MAX_REPAIRS_LIMIT = 2;
 
 async function draftOnce({ question, plan, labelled, feedback, llmCandidates, sourceId, broadAnswer, history, signal, usageTracker, chatCompletion }) {
+  const profiles = draftContextProfiles({ broadAnswer });
   let lastRun = null;
   // Structured output first; a runtime that rejects response_format gets the same prompt without it,
   // and an unparsable reply gets one more plain attempt.
@@ -28,6 +29,7 @@ async function draftOnce({ question, plan, labelled, feedback, llmCandidates, so
       usageTracker,
       chatCompletion,
       responseFormat,
+      profiles,
       buildMessages: (profile) => buildDraftMessages({ question, plan, labelled, profile, history, feedback })
     });
     lastRun = run;
@@ -107,7 +109,7 @@ export async function runVerifiedAnswer({
 }) {
   const startedAt = now();
   const maxRepairs = Math.min(MAX_REPAIRS_LIMIT, Math.max(0, Number(settings.answering?.maxRepairs ?? 1)));
-  const profile = chatContextProfilesForRequest({ sourceId, broadAnswer })[0];
+  const profile = draftContextProfiles({ broadAnswer })[0];
   let labelled = labelEvidence(results);
   const common = { question, plan, llmCandidates, sourceId, broadAnswer, history, signal, usageTracker, chatCompletion };
 

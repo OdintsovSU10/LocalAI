@@ -5,6 +5,8 @@ import { CLAIM_KINDS } from "./claim-checks.js";
 // instead of free text. Evidence items of the packet are labelled E1..En for the whole turn.
 
 export const MAX_DRAFT_CLAIMS = 20;
+// A broad answer stays readable and fast at this many claims; each one costs tokens twice (draft + verifier).
+export const MAX_BROAD_CLAIMS = 8;
 const MAX_CLAIM_CHARS = 600;
 
 export class DraftParseError extends Error {
@@ -92,7 +94,7 @@ export function buildDraftMessages({ question, plan = {}, labelled, profile, his
   // every condition present in the evidence gets its own claim.
   const broad = plan.intent === "overview" || plan.intent === "aggregate";
   const breadthRule = broad
-    ? "Вопрос обзорный: пройди по доказательствам подряд и дай отдельное утверждение на каждое найденное условие (цена, аванс, сроки работ, оплата, гарантийный срок, удержание, ответственность, стороны). Не ограничивайся одним-двумя утверждениями, если условий в доказательствах больше."
+    ? `Вопрос обзорный: пройди по доказательствам подряд и дай отдельное утверждение на каждое найденное условие (цена, аванс, сроки работ, оплата, гарантийный срок, удержание, ответственность, стороны). Не ограничивайся одним-двумя утверждениями, но и не больше ${MAX_BROAD_CLAIMS}: если условий больше, возьми самые существенные.`
     : "Дай утверждение на каждый факт доказательств, который прямо отвечает на вопрос.";
   const versionRule = plan.versionPolicy === "historical"
     ? "Спрашивают о прежней редакции: называй значение из заменённой редакции и укажи, что оно было изменено."

@@ -155,8 +155,10 @@ export async function runVerifiedAnswer({
     });
     // A repair costs another draft and verification, so it runs only when nothing survived: with at
     // least one confirmed claim the answer is shown and the rejected ones are reported as hidden.
-    const anyShown = failing.length < draft.claims.length;
-    if (!failing.length || anyShown || repairs >= maxRepairs) break;
+    // An empty draft is also repaired once: a weak model sometimes returns no claims for a broad question.
+    const emptyDraft = draft.claims.length === 0;
+    const anyShown = !emptyDraft && failing.length < draft.claims.length;
+    if ((!failing.length && !emptyDraft) || anyShown || repairs >= maxRepairs) break;
 
     repairs += 1;
     onPhase("llm", { status: "repair_started", attempt: repairs });
@@ -167,7 +169,10 @@ export async function runVerifiedAnswer({
         if (signal?.aborted) throw retrieveError;
       }
     }
-    const redraft = await draftOnce({ ...common, labelled, feedback: feedbackFor(draft.claims, checks, verdicts) });
+    const feedback = draft.claims.length
+      ? feedbackFor(draft.claims, checks, verdicts)
+      : [{ text: "(черновик без утверждений)", reasons: ["в доказательствах есть факты по вопросу — перечисли их утверждениями со ссылками"] }];
+    const redraft = await draftOnce({ ...common, labelled, feedback });
     llmMs += redraft.run?.llmMs || 0;
     // A failed redraft keeps the checked first draft: its failing claims are simply not shown.
     if (!redraft.draft) break;

@@ -37,6 +37,12 @@ test("evidence block marks replaced and conflicting clauses and respects the con
   assert.match(messages.at(-1).content, /Вопрос:\nКакой аванс\?/);
   assert.match(messages.at(-1).content, /«Аванс 99%»: number_not_in_evidence \(99%\)/);
   assert.match(messages[0].content, /только JSON/);
+
+  const overview = buildDraftMessages({ question: "Какие основные условия договора?", plan: { intent: "overview", versionPolicy: "current" }, labelled, profile: {} });
+  assert.match(overview[0].content, /Вопрос обзорный/);
+  assert.match(overview[0].content, /отдельное утверждение на каждое найденное условие/);
+  assert.doesNotMatch(messages[0].content, /Вопрос обзорный/);
+  assert.match(messages[0].content, /Пустой список claims допустим только тогда/);
 });
 
 test("parseDraft accepts fenced or thinking output and normalises labels, kinds and duplicates", () => {

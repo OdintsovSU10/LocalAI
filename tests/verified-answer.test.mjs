@@ -288,3 +288,17 @@ test("a repair runs only when no claim survived verification", async () => {
   assert.equal(repaired.payload.answerStatus, "insufficient_evidence");
   assert.equal(repaired.payload.verification.repairs, 2);
 });
+
+test("an empty draft is repaired once before the answer gives up", async () => {
+  const llm = scriptedLlm({
+    drafts: [
+      JSON.stringify({ claims: [], summary: "", open_questions: ["Нет данных"] }),
+      draftText([claim("Гарантийное удержание составляет 3% от стоимости выполненных работ.", "percentage", ["E1"])])
+    ]
+  });
+  const { payload } = await run({ llm });
+  assert.equal(payload.answerStatus, "verified");
+  assert.equal(payload.verification.repairs, 1);
+  assert.equal(llm.draftCalls(), 2);
+  assert.match(llm.calls[1].content, /черновик без утверждений/);
+});

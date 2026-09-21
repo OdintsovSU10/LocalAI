@@ -89,6 +89,12 @@ function feedbackText(feedback = []) {
 }
 
 export function buildDraftMessages({ question, plan = {}, labelled, profile, history = [], feedback = [] }) {
+  // A broad question ("основные условия", "по всем проектам") must not collapse into one or two claims:
+  // every condition present in the evidence gets its own claim.
+  const broad = plan.intent === "overview" || plan.intent === "aggregate";
+  const breadthRule = broad
+    ? "Вопрос обзорный: пройди по доказательствам подряд и дай отдельное утверждение на каждое найденное условие (цена, аванс, сроки работ, оплата, гарантийный срок, удержание, ответственность, стороны). Не ограничивайся одним-двумя утверждениями, если условий в доказательствах больше."
+    : "Дай утверждение на каждый факт доказательств, который прямо отвечает на вопрос.";
   const versionRule = plan.versionPolicy === "historical"
     ? "Спрашивают о прежней редакции: называй значение из заменённой редакции и укажи, что оно было изменено."
     : "Называй действующее значение. Значение из заменённой редакции можно дать только отдельным утверждением со словом «ранее» или «до изменения».";
@@ -104,7 +110,8 @@ export function buildDraftMessages({ question, plan = {}, labelled, profile, his
         "kind: amount — сумма, percentage — процент, date — дата, period — срок или период, condition — условие, comparison — сравнение, fact — прочий факт.",
         versionRule,
         "Если значения в документах расходятся, дай отдельное утверждение для каждого документа.",
-        "Если в доказательствах нет ответа, верни пустой список claims и сформулируй, чего не хватает, в open_questions.",
+        breadthRule,
+        "Пустой список claims допустим только тогда, когда ни одно доказательство не относится к вопросу; тогда напиши в open_questions, чего не хватает.",
         "summary — одна короткая фраза о сути ответа."
       ].join(" ")
     },

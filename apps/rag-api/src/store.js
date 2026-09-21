@@ -94,7 +94,8 @@ export const defaultAnsweringSettings = {
 export const defaultVerifierSettings = {
   mode: "separate_model",
   model: "",
-  maxTokens: 1500,
+  // Verdicts are short JSON; a smaller budget keeps a local model from padding the answer.
+  maxTokens: 800,
   timeoutSeconds: 120
 };
 

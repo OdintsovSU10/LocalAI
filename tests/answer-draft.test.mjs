@@ -41,6 +41,8 @@ test("evidence block marks replaced and conflicting clauses and respects the con
   const overview = buildDraftMessages({ question: "Какие основные условия договора?", plan: { intent: "overview", versionPolicy: "current" }, labelled, profile: {} });
   assert.match(overview[0].content, /Вопрос обзорный/);
   assert.match(overview[0].content, /отдельное утверждение на каждое найденное условие/);
+  assert.match(overview[0].content, /не больше 6/);
+  assert.match(messages[0].content, /до 25 слов/);
   assert.doesNotMatch(messages[0].content, /Вопрос обзорный/);
   assert.match(messages[0].content, /Пустой список claims допустим только тогда/);
 });

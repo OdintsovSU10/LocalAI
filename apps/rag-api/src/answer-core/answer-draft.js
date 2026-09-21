@@ -6,7 +6,7 @@ import { CLAIM_KINDS } from "./claim-checks.js";
 
 export const MAX_DRAFT_CLAIMS = 20;
 // A broad answer stays readable and fast at this many claims; each one costs tokens twice (draft + verifier).
-export const MAX_BROAD_CLAIMS = 8;
+export const MAX_BROAD_CLAIMS = 6;
 const MAX_CLAIM_CHARS = 600;
 
 export class DraftParseError extends Error {
@@ -105,6 +105,7 @@ export function buildDraftMessages({ question, plan = {}, labelled, profile, his
       content: [
         "Ты готовишь черновик ответа по рабочим документам. Верни только JSON по заданной схеме, без markdown и пояснений.",
         "claims — атомарные утверждения на русском: одно утверждение = один факт (одно число, срок, сумма, дата или условие).",
+        "Пиши коротко: одно предложение до 25 слов, без вводных слов и пересказа пункта целиком.",
         "Каждое утверждение обязано ссылаться на доказательства полем evidence_ids (метки вида E1, E2) и опираться только на их текст.",
         "Числа, проценты, суммы, даты и сроки переписывай точно как в доказательстве, вместе с единицами (%, рублей, календарных дней, лет).",
         "Не путай типы значений: процент — это размер, дни/месяцы/годы — срок или период, рубли — сумма.",

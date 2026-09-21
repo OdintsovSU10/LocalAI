@@ -10,7 +10,9 @@ export const CLAIM_VERDICTS = ["supported", "unsupported", "contradicted", "ambi
 export const VERIFIER_OVERALL = ["pass", "repair", "clarify", "insufficient"];
 const MAX_QUERIES = 2;
 // Evidence the verifier sees beyond what the claims cite (to spot a contradicting fragment nearby).
-export const VERIFIER_EXTRA_EVIDENCE = 4;
+export const VERIFIER_EXTRA_EVIDENCE = 2;
+// The verifier reads fragments to check numbers and wording, not to retell them.
+const VERIFIER_EVIDENCE_CHARS = 700;
 
 /**
  * @returns {{ mode: string, status: "ready"|"disabled"|"not_configured", llm: object|null, independent: boolean, model: string }}
@@ -119,12 +121,13 @@ export function buildVerifierMessages({ question, plan, scopeTitles = [], claims
         "Если доказательств не хватает, предложи до двух коротких поисковых запросов в missing_evidence_queries.",
         "Если доказательства разных документов противоречат друг другу по сути вопроса, опиши это в conflicts с метками доказательств.",
         "overall: pass — все утверждения supported; repair — есть неподтверждённые, но их можно исправить; clarify — вопрос неоднозначен; insufficient — доказательств нет.",
+        "issues — до пяти слов на утверждение, без пересказа; текста вне JSON не пиши.",
         "Верни только JSON по заданной схеме."
       ].join(" ")
     },
     {
       role: "user",
-      content: `/no_think\n\nВопрос:\n${question}\n\n${planLine(plan)}\nПроекты в области ответа: ${scopeTitles.join(", ") || "все проекты"}.\n\nУтверждения:\n${claimLines}\n\nДоказательства:\n${evidenceBlock(evidence, { ...profile, maxSources: evidence.items.length })}`
+      content: `/no_think\n\nВопрос:\n${question}\n\n${planLine(plan)}\nПроекты в области ответа: ${scopeTitles.join(", ") || "все проекты"}.\n\nУтверждения:\n${claimLines}\n\nДоказательства:\n${evidenceBlock(evidence, { maxCharsPerSource: VERIFIER_EVIDENCE_CHARS, maxSources: evidence.items.length })}`
     }
   ];
 }

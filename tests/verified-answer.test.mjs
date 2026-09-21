@@ -267,7 +267,7 @@ test("the verifier reads the cited evidence plus a few neighbours, not the whole
   const verifierPrompt = llm.calls.find((call) => call.name === "claim_verdicts").content;
   const labels = [...verifierPrompt.matchAll(/^\[(E\d+)\]/gm)].map((match) => match[1]);
   assert.equal(labels[0], "E1", "the cited evidence comes first");
-  assert.equal(labels.length, 5, "cited + VERIFIER_EXTRA_EVIDENCE neighbours");
+  assert.equal(labels.length, 3, "cited + VERIFIER_EXTRA_EVIDENCE neighbours");
   assert.ok(!labels.includes("E7"));
 });
 

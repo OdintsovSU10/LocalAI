@@ -89,6 +89,16 @@ test("telegram flow: clarification, resume, follow-up, /new and an unauthorized 
   assert.match(ctx.telegram.lastText(), /Портал: доступен/);
   assert.match(ctx.telegram.lastText(), /Проектов: 2/);
 
+  // The whitelist itself is asserted against the live portal: a source object must never pass through whole.
+  const liveSources = await ctx.api.sources();
+  assert.equal(liveSources.length, 2);
+  for (const source of liveSources) {
+    assert.deepEqual(Object.keys(source).sort(), ["id", "indexStatus", "indexedFiles", "sourceType", "title"]);
+  }
+  const serializedSources = JSON.stringify(liveSources);
+  assert.equal(serializedSources.includes(root), false);
+  assert.equal(serializedSources.includes("path"), false);
+
   await handleUpdate(ctx, message("/project"));
   assert.equal(ctx.telegram.lastKeyboard().length, 2, "the project keyboard is built from the real list");
 

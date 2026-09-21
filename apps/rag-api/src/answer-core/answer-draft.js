@@ -151,6 +151,26 @@ export function parseJsonObject(text) {
   }
 }
 
+// Models like to repeat the evidence labels inside the sentence ("… является ООО «Х». E1, E3, E5.").
+// The labels are internal: they are moved into evidenceIds and cut from the text the user will read.
+// Bracketed labels anywhere, and a run of labels at the very end. A bare label in the middle of a
+// sentence is left alone: "корпус Е5" is a building, not a citation.
+const BRACKETED_LABELS = /[[(]\s*[EeЕе]\s?\d{1,2}(?:\s*[,;]\s*[EeЕе]?\s?\d{1,2})*\s*[\])]/gu;
+const TRAILING_LABELS = /[\s.,;:—–-]*[EeЕе]\s?\d{1,2}(?:\s*[,;]\s*[EeЕе]?\s?\d{1,2})*\s*[.;:]?\s*$/u;
+
+export function stripInlineEvidenceLabels(text = "") {
+  const found = [];
+  const collect = (match) => {
+    for (const label of match.match(/[EeЕе]?\s?\d{1,2}/gu) || []) found.push(normalizeEvidenceLabel(label.replace(/\s/g, "")));
+    return "";
+  };
+  const cleaned = String(text).replace(BRACKETED_LABELS, collect).replace(TRAILING_LABELS, collect);
+  return {
+    text: cleaned.replace(/\s{2,}/g, " ").replace(/\s+([.,;:!?»)])/g, "$1").replace(/[\s.,;:]+$/u, "").trim(),
+    labels: [...new Set(found.filter(Boolean))]
+  };
+}
+
 /** @returns {{ claims: Array<{ claimId, text, kind, evidenceIds }>, summary: string, openQuestions: string[] }} */
 export function parseDraft(text) {
   const payload = parseJsonObject(text);
@@ -158,10 +178,11 @@ export function parseDraft(text) {
   const seen = new Set();
   const claims = [];
   for (const raw of payload.claims.slice(0, MAX_DRAFT_CLAIMS)) {
-    const claimText = String(raw?.text || "").replace(/\s+/g, " ").trim().slice(0, MAX_CLAIM_CHARS);
+    const stripped = stripInlineEvidenceLabels(String(raw?.text || "").replace(/\s+/g, " ").trim());
+    const claimText = stripped.text.slice(0, MAX_CLAIM_CHARS);
     if (!claimText || seen.has(claimText.toLowerCase())) continue;
     seen.add(claimText.toLowerCase());
-    const evidenceIds = [...new Set((Array.isArray(raw.evidence_ids) ? raw.evidence_ids : [])
+    const evidenceIds = [...new Set([...(Array.isArray(raw.evidence_ids) ? raw.evidence_ids : []), ...stripped.labels]
       .map(normalizeEvidenceLabel)
       .filter(Boolean))];
     claims.push({

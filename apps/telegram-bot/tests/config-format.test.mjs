@@ -46,22 +46,26 @@ test("the portal address must stay on loopback", () => {
 });
 
 test("the status line states what the verification actually did", () => {
-  assert.equal(statusLine({ answerStatus: "verified", verification: { level: "model" } }), "Проверено по документам");
-  assert.equal(statusLine({ answerStatus: "verified", verification: { level: "hard_checks" } }), "Числа и ссылки сверены с документами");
-  assert.equal(statusLine({ answerStatus: "verified", verification: { level: "model", droppedClaims: 2 } }), "Проверено по документам · скрыто неподтверждённых: 2");
-  assert.equal(statusLine({ answerStatus: "insufficient_evidence" }), "Не подтверждено документами");
+  assert.equal(statusLine({ answerStatus: "verified", verification: { level: "model" } }), "✓ Проверено по документам");
+  assert.equal(statusLine({ answerStatus: "verified", verification: { level: "hard_checks" } }), "✓ Числа и ссылки сверены с документами");
+  assert.equal(statusLine({ answerStatus: "verified", verification: { level: "model", droppedClaims: 2 } }), "✓ Проверено по документам · скрыто неподтверждённых: 2");
+  assert.equal(statusLine({ answerStatus: "insufficient_evidence" }), "✕ Не подтверждено документами");
+  assert.equal(statusLine({ answerStatus: "verified_with_conflict" }), "⚠ В документах есть расхождение");
   assert.equal(statusLine({}), "");
 });
 
-test("a message never carries a local path: only citation labels", () => {
+test("a message never carries a local path: only short citation labels", () => {
   const sources = [
-    { citationLabel: "dogovor-15-p.md, п. 3.1", path: "D:\\LOCAL_RAG\\data\\dogovor.md", text: "3.1 …" },
-    { title: "smeta.xlsx", path: "/home/user/smeta.xlsx" }
+    { fileLabel: "1. Договор_ГП_Садовническая_76_Балчуг_Эстейт_сжат.pdf", path: "D:\\LOCAL_RAG\\data\\dogovor.pdf", citationTarget: { pageStart: 1 } },
+    { title: "smeta.xlsx", path: "/home/user/smeta.xlsx", citationTarget: { sheetName: "Материалы", rowStart: 4 } },
+    { citationLabel: "dogovor-15-p.md, п. 3.1" }
   ];
   const message = answerMessage({ answer: "Аванс 10%. [1]", sources, answerStatus: "verified", verification: { level: "model" } });
-  assert.match(message, /Аванс 10%\. \[1\]/);
-  assert.match(message, /\[1\] dogovor-15-p\.md, п\. 3\.1/);
-  assert.match(message, /\[2\] smeta\.xlsx/);
+  assert.match(message, /^✓ Проверено по документам\n\nАванс 10%\. \[1\]\n\nИсточники\n/);
+  // The numbering, the doubled dots and the extension are dropped; a long name is cut with an ellipsis.
+  assert.match(message, /\[1\] Договор_ГП_Садовническая_76_Балчуг_Эстейт_с… · стр\. 1/);
+  assert.match(message, /\[2\] smeta · лист Материалы, строка 4/);
+  assert.match(message, /\[3\] dogovor-15-p\.md, п\. 3\.1/, "a source without a file name keeps the portal label");
   assert.equal(message.includes("LOCAL_RAG"), false);
   assert.equal(message.includes("/home/user"), false);
   assert.equal(sourceLabel({}), "документ");

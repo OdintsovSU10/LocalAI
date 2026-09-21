@@ -113,8 +113,8 @@ test("telegram flow: clarification, resume, follow-up, /new and an unauthorized 
   const answer = ctx.telegram.lastText();
   assert.match(answer, /10%/, "the current advance from the amendment");
   assert.match(answer, /\[1\]/);
-  assert.match(answer, /Источники:\n\[1\] /);
-  assert.match(answer, /Проверено по документам/);
+  assert.match(answer, /Источники\n\[1\] /);
+  assert.match(answer, /^✓ Проверено по документам/, "the status comes first");
   assert.equal(answer.includes(root), false, "no local paths reach Telegram");
   assert.equal(answer.includes("\\"), false);
 

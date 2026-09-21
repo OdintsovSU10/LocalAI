@@ -14,30 +14,63 @@ const STATUS_LINE = {
 
 export const MAX_EXCERPT_CHARS = 700;
 const MAX_SOURCES = 8;
+const MAX_FILE_LABEL_CHARS = 44;
+const STATUS_MARK = {
+  verified: "✓",
+  verified_with_conflict: "⚠",
+  insufficient_evidence: "✕",
+  clarification_required: "?",
+  system_error: "✕",
+  unverified: "·"
+};
 
 export function statusLine(payload = {}) {
   const status = payload.answerStatus || "";
   const label = STATUS_LINE[status];
   if (!label) return "";
-  if (status === "verified" && payload.verification?.level !== "model") return "Числа и ссылки сверены с документами";
+  const text = status === "verified" && payload.verification?.level !== "model"
+    ? "Числа и ссылки сверены с документами"
+    : label;
   const dropped = Number(payload.verification?.droppedClaims || 0);
-  return dropped ? `${label} · скрыто неподтверждённых: ${dropped}` : label;
+  return `${STATUS_MARK[status] || "·"} ${text}${dropped ? ` · скрыто неподтверждённых: ${dropped}` : ""}`;
 }
 
-/** Source label for a citation: file, section, sheet/row or page — never a local path. */
+// File names come from the disk: numbering, doubled dots and an extension only add noise in a chat.
+function prettyFileName(name = "") {
+  const cleaned = String(name)
+    .trim()
+    .replace(/^\d+[.)]\s*/, "")
+    .replace(/\.+(pdf|docx?|xlsx?|pptx?|md|txt|rtf|csv)$/i, "")
+    .replace(/[.\s]+$/u, "")
+    .trim();
+  return cleaned.length > MAX_FILE_LABEL_CHARS ? `${cleaned.slice(0, MAX_FILE_LABEL_CHARS - 1).trimEnd()}…` : cleaned;
+}
+
+function placeInFile(target = {}) {
+  if (target.sheetName) return `лист ${target.sheetName}${target.rowStart ? `, строка ${target.rowStart}` : ""}`;
+  if (target.pageStart) return `стр. ${target.pageStart}`;
+  const section = String(target.sectionTitle || "").trim();
+  return section ? prettyFileName(section) : "";
+}
+
+/** Source label for a citation: short file name and the place inside it — never a local path. */
 export function sourceLabel(source = {}) {
-  const label = String(source.citationLabel || source.fileLabel || source.title || "").trim();
-  return label || "документ";
+  const target = source.citationTarget || {};
+  const name = prettyFileName(source.fileLabel || source.title || target.fileLabel || "");
+  const place = placeInFile({ ...target, sheetName: target.sheetName || source.sheetName, pageStart: target.pageStart || source.pageStart });
+  if (!name) return String(source.citationLabel || "").trim() || "документ";
+  return place ? `${name} · ${place}` : name;
 }
 
 export function sourcesBlock(sources = []) {
   const lines = sources.slice(0, MAX_SOURCES).map((source, index) => `[${index + 1}] ${sourceLabel(source)}`);
   if (sources.length > MAX_SOURCES) lines.push(`… и ещё ${sources.length - MAX_SOURCES}`);
-  return lines.length ? `Источники:\n${lines.join("\n")}` : "";
+  return lines.length ? `Источники\n${lines.join("\n")}` : "";
 }
 
+// The status comes first: whether the answer is confirmed matters before the answer itself.
 export function answerMessage(payload = {}) {
-  return [String(payload.answer || "").trim(), sourcesBlock(payload.sources), statusLine(payload)]
+  return [statusLine(payload), String(payload.answer || "").trim(), sourcesBlock(payload.sources)]
     .filter(Boolean)
     .join("\n\n");
 }

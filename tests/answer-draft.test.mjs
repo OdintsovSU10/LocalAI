@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   DraftParseError,
+  stripInlineEvidenceLabels,
   buildDraftMessages,
   evidenceBlock,
   labelEvidence,
@@ -111,4 +112,26 @@ test("resolveVerifier uses the same model only when chosen explicitly", () => {
   assert.equal(same.independent, false);
   assert.equal(same.llm.model, "answer-model");
   assert.equal(resolveVerifier({ verifier: { mode: "separate_model", model: "answer-model" } }, answerLlm).independent, false);
+});
+
+test("evidence labels the model wrote into the sentence are moved to the citations", () => {
+  // Seen with a live model: "… является ООО «СЗ Балчуг эстейт». E1, E3, E5, E7, E8."
+  assert.deepEqual(stripInlineEvidenceLabels("ГУ проекта является ООО «СЗ Балчуг эстейт». E1, E3, E5."), {
+    text: "ГУ проекта является ООО «СЗ Балчуг эстейт»",
+    labels: ["E1", "E3", "E5"]
+  });
+  assert.deepEqual(stripInlineEvidenceLabels("Аванс составляет 10% от цены договора (E2)."), { text: "Аванс составляет 10% от цены договора", labels: ["E2"] });
+  assert.deepEqual(stripInlineEvidenceLabels("Срок 30 дней [E1][E4]"), { text: "Срок 30 дней", labels: ["E1", "E4"] });
+  // A number that is part of the fact is never treated as a label.
+  for (const text of ["Гарантийный срок 5 лет", "Аванс 20% от цены договора.", "Объект Е5 корпус 2 сдан", "Бетон B30 W8 F150"]) {
+    assert.deepEqual(stripInlineEvidenceLabels(text).labels, [], text);
+  }
+  assert.equal(stripInlineEvidenceLabels("Гарантийный срок 5 лет").text, "Гарантийный срок 5 лет");
+
+  const draft = parseDraft(JSON.stringify({
+    claims: [{ claim_id: "a", text: "ГУ — ООО «СЗ». E1, E3.", kind: "fact", evidence_ids: ["E1"] }],
+    summary: "",
+    open_questions: []
+  }));
+  assert.deepEqual(draft.claims, [{ claimId: "c1", text: "ГУ — ООО «СЗ»", kind: "fact", evidenceIds: ["E1", "E3"] }]);
 });

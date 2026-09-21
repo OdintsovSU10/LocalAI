@@ -12,7 +12,7 @@
 | 05 | Query planner & clarification | PASS (независимая проверка после revision 1) | [stage-05-report.md](stage-05-report.md) |
 | 06 | Retrieval 2.0 | PASS (независимая проверка после revision 1) | [stage-06-report.md](stage-06-report.md) |
 | 07 | Verified answering | PASS (независимая проверка после revision 3) | [stage-07-report.md](stage-07-report.md) |
-| 08 | Telegram | не начат | |
+| 08 | Telegram | реализован, ждёт запуска и независимой проверки | [stage-08-report.md](stage-08-report.md) |
 | 09 | Security/observability/ops | не начат | |
 | 10 | Real eval & feedback dataset | не начат | |
 | 11 | Model bakeoff | не начат | |
@@ -38,4 +38,7 @@ npm run test:chat-contract
 npm run test:conversation-contract
 npm run test:evidence-contract
 npm run test:verified-contract
+npm run tg:check
+npm run tg:test
+npm run tg:contract
 ```

@@ -99,10 +99,10 @@ long polling, поэтому входящий порт на компьютере
 
 ```
 TELEGRAM_BOT_TOKEN=<токен от @BotFather>
-TELEGRAM_ALLOWED_USER_IDS=<ваш числовой id, через запятую можно несколько>
+TELEGRAM_ALLOWED_USER_IDS=123456789
 ```
 
-Запуск при работающем портале: `npm run tg:start`. Без токена или списка
+Числовой id (не @username) покажет @userinfobot. Запуск при работающем портале: `npm run tg:start`. Без токена или списка
 разрешённых пользователей бот не стартует. Необязательные переменные:
 `LOCALAI_API_URL` (по умолчанию `http://127.0.0.1:8787`, только loopback),
 `TELEGRAM_RATE_LIMIT_PER_MINUTE`, `TELEGRAM_POLL_TIMEOUT_SECONDS`.

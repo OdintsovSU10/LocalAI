@@ -27,6 +27,9 @@ test("the bot refuses to start without a token or an allowlist", () => {
   assert.match(readBotConfig(env({ TELEGRAM_BOT_TOKEN: "" })).problems.join(" "), /TELEGRAM_BOT_TOKEN/);
   assert.deepEqual(readBotConfig(env({ TELEGRAM_ALLOWED_USER_IDS: "" })).config, null);
   assert.match(readBotConfig(env({ TELEGRAM_ALLOWED_USER_IDS: " " })).problems.join(" "), /answer anyone/);
+  // A username in the allowlist is a configuration mistake, and the message says which value is needed.
+  assert.match(readBotConfig(env({ TELEGRAM_ALLOWED_USER_IDS: "@baldmaxim" })).problems.join(" "), /numeric id/);
+  assert.match(readBotConfig(env({ TELEGRAM_ALLOWED_USER_IDS: "@baldmaxim" })).problems.join(" "), /@userinfobot/);
 
   const { config } = readBotConfig(env({ TELEGRAM_ALLOWED_USER_IDS: "42, 7;-100500 42 x" }));
   assert.deepEqual(config.allowedUserIds, ["42", "7", "-100500"]);

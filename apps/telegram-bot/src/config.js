@@ -41,8 +41,14 @@ export function readBotConfig(env = process.env) {
   const problems = [];
   const token = String(env.TELEGRAM_BOT_TOKEN || "").trim();
   if (!token) problems.push("TELEGRAM_BOT_TOKEN is not set");
-  const allowedUserIds = parseAllowlist(env.TELEGRAM_ALLOWED_USER_IDS);
-  if (!allowedUserIds.length) problems.push("TELEGRAM_ALLOWED_USER_IDS is empty: the bot would answer anyone");
+  const rawAllowlist = String(env.TELEGRAM_ALLOWED_USER_IDS || "").trim();
+  const allowedUserIds = parseAllowlist(rawAllowlist);
+  if (!allowedUserIds.length) {
+    // A username can be changed or released and taken by someone else; the numeric id cannot.
+    problems.push(rawAllowlist
+      ? "TELEGRAM_ALLOWED_USER_IDS has no numeric id: it must be a number like 123456789 (ask @userinfobot), not a @username"
+      : "TELEGRAM_ALLOWED_USER_IDS is empty: the bot would answer anyone");
+  }
 
   let apiBaseUrl = "";
   try {

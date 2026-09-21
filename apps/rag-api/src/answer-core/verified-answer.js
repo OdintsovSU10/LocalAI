@@ -153,7 +153,10 @@ export async function runVerifiedAnswer({
       const check = checks.get(claim.claimId);
       return !check.passed || (level === "model" && verdicts.get(claim.claimId)?.status !== "supported");
     });
-    if (!failing.length || repairs >= maxRepairs) break;
+    // A repair costs another draft and verification, so it runs only when nothing survived: with at
+    // least one confirmed claim the answer is shown and the rejected ones are reported as hidden.
+    const anyShown = failing.length < draft.claims.length;
+    if (!failing.length || anyShown || repairs >= maxRepairs) break;
 
     repairs += 1;
     onPhase("llm", { status: "repair_started", attempt: repairs });

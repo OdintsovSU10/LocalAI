@@ -104,6 +104,7 @@ export function compactRagDebug(payload = {}) {
   const metadata = payload.metadata || {};
   if (!metadata || !Object.keys(metadata).length) return null;
   return {
+    verification: verificationDebug(payload.verification),
     matchedSource: metadata.matchedSource || payload.matchedSource || null,
     selectedProvider: metadata.selectedProvider || payload.provider || "",
     selectedBaseUrlKind: metadata.selectedBaseUrlKind || "",
@@ -122,8 +123,24 @@ export function compactRagDebug(payload = {}) {
       retrievalMs: Number(metadata.timings?.retrievalMs || 0),
       rerankMs: Number(metadata.timings?.rerankMs || 0),
       llmMs: Number(metadata.timings?.llmMs || 0),
+      verifyMs: Number(metadata.timings?.verifyMs || 0),
       totalMs: Number(metadata.timings?.totalMs || 0)
     }
+  };
+}
+
+// Why a verified answer looks like it does: who rejected what, by code — no claim text.
+export function verificationDebug(verification = null) {
+  if (!verification) return null;
+  const claims = Array.isArray(verification.claims) ? verification.claims : [];
+  return {
+    level: verification.level || "",
+    verifier: [verification.verifier?.mode, verification.verifier?.status].filter(Boolean).join(" · "),
+    repairs: Number(verification.repairs || 0),
+    shown: claims.filter((claim) => claim.shown).length,
+    rejected: claims
+      .filter((claim) => !claim.shown)
+      .map((claim) => `${claim.kind || "fact"}: ${claim.status}${claim.issues?.length ? ` (${claim.issues.join(", ")})` : ""}`)
   };
 }
 

@@ -7738,7 +7738,17 @@ function renderRagDebugPanel(message, debug = null, sources = []) {
   appendDebugRow(grid, "Candidates", `vector ${debug.vectorCandidateCount} · lexical ${debug.lexicalCandidateCount} · merged ${debug.mergedCandidateCount}`);
   appendDebugRow(grid, "Sources", debug.finalSourceCount);
   appendDebugRow(grid, "Chars", `prompt ${debug.promptChars} · answer ${debug.answerChars}`);
-  appendDebugRow(grid, "Timings", `retrieval ${formatMs(debug.timings?.retrievalMs)} · rerank ${formatMs(debug.timings?.rerankMs)} · llm ${formatMs(debug.timings?.llmMs)} · total ${formatMs(debug.timings?.totalMs)}`);
+  appendDebugRow(grid, "Timings", [
+    `retrieval ${formatMs(debug.timings?.retrievalMs)}`,
+    `rerank ${formatMs(debug.timings?.rerankMs)}`,
+    `llm ${formatMs(debug.timings?.llmMs)}`,
+    debug.timings?.verifyMs ? `проверка ${formatMs(debug.timings.verifyMs)}` : "",
+    `total ${formatMs(debug.timings?.totalMs)}`
+  ].filter(Boolean).join(" · "));
+  if (debug.verification) {
+    appendDebugRow(grid, "Проверка", `${debug.verification.level} · ${debug.verification.verifier} · показано ${debug.verification.shown} · повторов ${debug.verification.repairs}`);
+    if (debug.verification.rejected.length) appendDebugRow(grid, "Отклонено", debug.verification.rejected.join("; "));
+  }
   details.append(grid);
 
   const topSources = sources.slice(0, 5);

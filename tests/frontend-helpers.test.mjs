@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { parseSseEventBlock } from "../apps/rag-ui/modules/api-client.js";
 import { citedSourceNumbers, citationEvidenceForNumber, compactSources, displayedSourcesForAnswer, fileName, uniqueSources } from "../apps/rag-ui/modules/citation-helpers.js";
-import { answerStatusBadge, compactRagDebug, formatFileSize, formatMs, formatResponseMeta, formatRouteWait } from "../apps/rag-ui/modules/formatting-helpers.js";
+import { answerStatusBadge, compactRagDebug, formatFileSize, formatMs, formatResponseMeta, formatRouteWait, verificationDebug } from "../apps/rag-ui/modules/formatting-helpers.js";
 import { modelOptionLabel, preferredEmbeddingModel, preferredLocalModel, preferredRemoteModel, sortLocalModels } from "../apps/rag-ui/modules/settings-helpers.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -274,4 +274,30 @@ test("chat renders the answer status and the verification phases", () => {
   assert.match(appJs, /renderAnswerStatus\(pending, payload\)/);
   assert.match(appJs, /"verifying_started"/);
   assert.match(redesignCss, /\.answer-status-warning\s*\{/);
+});
+
+test("the debug panel explains a verified answer by codes, without claim text", () => {
+  const verification = {
+    level: "model",
+    verifier: { mode: "same_model", status: "ok" },
+    repairs: 1,
+    claims: [
+      { claimId: "c1", kind: "amount", status: "supported", shown: true, issues: [] },
+      { claimId: "c2", kind: "period", status: "contradicted", shown: false, issues: ["type_mismatch"] },
+      { claimId: "c3", kind: "fact", status: "ambiguous", shown: false, issues: ["verifier:ambiguous"] }
+    ]
+  };
+  assert.deepEqual(verificationDebug(verification), {
+    level: "model",
+    verifier: "same_model · ok",
+    repairs: 1,
+    shown: 1,
+    rejected: ["period: contradicted (type_mismatch)", "fact: ambiguous (verifier:ambiguous)"]
+  });
+  assert.equal(verificationDebug(null), null);
+
+  const debug = compactRagDebug({ metadata: { timings: { llmMs: 10, verifyMs: 20, totalMs: 40 } }, verification });
+  assert.equal(debug.timings.verifyMs, 20);
+  assert.equal(debug.verification.shown, 1);
+  assert.match(appJs, /appendDebugRow\(grid, "Отклонено"/);
 });

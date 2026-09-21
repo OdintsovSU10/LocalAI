@@ -9,6 +9,8 @@ export const VERIFIER_MODES = ["separate_model", "same_model", "off"];
 export const CLAIM_VERDICTS = ["supported", "unsupported", "contradicted", "ambiguous"];
 export const VERIFIER_OVERALL = ["pass", "repair", "clarify", "insufficient"];
 const MAX_QUERIES = 2;
+// Evidence the verifier sees beyond what the claims cite (to spot a contradicting fragment nearby).
+export const VERIFIER_EXTRA_EVIDENCE = 4;
 
 /**
  * @returns {{ mode: string, status: "ready"|"disabled"|"not_configured", llm: object|null, independent: boolean, model: string }}
@@ -79,6 +81,15 @@ export const VERDICT_RESPONSE_FORMAT = {
   }
 };
 
+export function verifierEvidence(labelled, claims = [], extra = VERIFIER_EXTRA_EVIDENCE) {
+  const cited = new Set(claims.flatMap((claim) => claim.evidenceIds || []));
+  const items = [
+    ...labelled.items.filter(({ label }) => cited.has(label)),
+    ...labelled.items.filter(({ label }) => !cited.has(label)).slice(0, Math.max(0, extra))
+  ];
+  return { items, byLabel: new Map(items.map(({ label, item }) => [label, item])) };
+}
+
 function planLine(plan = {}) {
   const policy = { current: "действующая редакция", historical: "прежняя редакция", all: "все редакции" }[plan.versionPolicy] || "действующая редакция";
   return `Тип вопроса: ${plan.intent || "fact"}; нужна ${policy}.`;
@@ -91,6 +102,7 @@ export function buildVerifierMessages({ question, plan, scopeTitles = [], claims
     kind: claim.kind,
     evidence_ids: claim.evidenceIds
   })).join("\n");
+  const evidence = verifierEvidence(labelled, claims);
   return [
     {
       role: "system",
@@ -100,6 +112,9 @@ export function buildVerifierMessages({ question, plan, scopeTitles = [], claims
         "contradicted — доказательства говорят иное (другое число, единица, тип значения, сторона, условие) или утверждение опирается на заменённую редакцию, когда нужна действующая;",
         "ambiguous — доказательства допускают разные прочтения.",
         "Проверяй: числа, проценты, суммы, даты, сроки и единицы; не выдан ли процент за срок или сумму; относится ли документ к нужному проекту; не изменено ли условие более поздним документом; нет ли противоречащего доказательства среди остальных.",
+        "Пометка «заменённая редакция» у доказательства сама по себе не делает утверждение неверным: если утверждение прямо говорит о прошлом («ранее», «до изменения», «изменено на»), это supported; contradicted — только когда заменённое значение подано как действующее.",
+        "Пометка «значение расходится с другим документом» тоже не делает утверждение неверным: если процитированный документ говорит именно это, статус supported, а расхождение укажи в conflicts.",
+        "Не требуй, чтобы утверждение пересказывало пункт целиком или повторяло формулировку: достаточно, чтобы его смысл, числа и единицы следовали из процитированного фрагмента. Другая форма записи того же значения (245 млн и 245 000 000 рублей, 5 лет и 60 месяцев) — это одно и то же.",
         "supported_by — метки доказательств, которые действительно подтверждают утверждение.",
         "Если доказательств не хватает, предложи до двух коротких поисковых запросов в missing_evidence_queries.",
         "Если доказательства разных документов противоречат друг другу по сути вопроса, опиши это в conflicts с метками доказательств.",
@@ -109,7 +124,7 @@ export function buildVerifierMessages({ question, plan, scopeTitles = [], claims
     },
     {
       role: "user",
-      content: `/no_think\n\nВопрос:\n${question}\n\n${planLine(plan)}\nПроекты в области ответа: ${scopeTitles.join(", ") || "все проекты"}.\n\nУтверждения:\n${claimLines}\n\nДоказательства:\n${evidenceBlock(labelled, profile)}`
+      content: `/no_think\n\nВопрос:\n${question}\n\n${planLine(plan)}\nПроекты в области ответа: ${scopeTitles.join(", ") || "все проекты"}.\n\nУтверждения:\n${claimLines}\n\nДоказательства:\n${evidenceBlock(evidence, { ...profile, maxSources: evidence.items.length })}`
     }
   ];
 }

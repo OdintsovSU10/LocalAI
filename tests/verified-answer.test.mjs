@@ -259,3 +259,32 @@ test("acceptance: a bare number the evidence states both as a percentage and as 
   assert.equal(payload.answerStatus, "insufficient_evidence");
   assert.deepEqual(payload.verification.claims[0].issues, ["ambiguous_number"]);
 });
+
+test("the verifier reads the cited evidence plus a few neighbours, not the whole packet", async () => {
+  const many = [RETENTION, RETURN_TERM, NEW_ADVANCE, OLD_ADVANCE, PRICE, ESTIMATE, EXTRA];
+  const llm = scriptedLlm({ drafts: [draftText([claim("Гарантийное удержание составляет 3% от стоимости выполненных работ.", "percentage", ["E1"])])] });
+  await run({ llm, results: many });
+  const verifierPrompt = llm.calls.find((call) => call.name === "claim_verdicts").content;
+  const labels = [...verifierPrompt.matchAll(/^\[(E\d+)\]/gm)].map((match) => match[1]);
+  assert.equal(labels[0], "E1", "the cited evidence comes first");
+  assert.equal(labels.length, 5, "cited + VERIFIER_EXTRA_EVIDENCE neighbours");
+  assert.ok(!labels.includes("E7"));
+});
+
+test("a repair runs only when no claim survived verification", async () => {
+  // One claim is confirmed, another is not: the answer is shown at once, without a second LLM round.
+  const partial = scriptedLlm({ drafts: [draftText([
+    claim("Гарантийное удержание составляет 3% от стоимости выполненных работ.", "percentage", ["E1"]),
+    claim("Удержание возвращается в течение 3 лет.", "period", ["E2"])
+  ])] });
+  const shown = await run({ llm: partial, maxRepairs: 2 });
+  assert.equal(shown.payload.answerStatus, "verified");
+  assert.equal(shown.payload.verification.repairs, 0);
+  assert.equal(shown.payload.verification.droppedClaims, 1);
+  assert.equal(partial.draftCalls(), 1);
+
+  const nothing = scriptedLlm({ drafts: [draftText([claim("Удержание возвращается в течение 3 лет.", "period", ["E2"])])] });
+  const repaired = await run({ llm: nothing, maxRepairs: 2 });
+  assert.equal(repaired.payload.answerStatus, "insufficient_evidence");
+  assert.equal(repaired.payload.verification.repairs, 2);
+});

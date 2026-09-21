@@ -53,8 +53,10 @@ export function fakeStructuredReply(schemaName, question, content) {
   });
 }
 
+// The LAST user message is the current prompt: with conversation history the earlier user messages
+// are previous turns, and the draft prompt with its [E1] evidence is always the last one.
 function userMessage(messages = []) {
-  return String(messages.find((message) => message.role === "user")?.content || "");
+  return String([...messages].reverse().find((message) => message.role === "user")?.content || "");
 }
 
 function contextSourceCount(messages = []) {

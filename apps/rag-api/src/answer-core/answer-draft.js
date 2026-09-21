@@ -61,7 +61,6 @@ export const DRAFT_RESPONSE_FORMAT = {
       properties: {
         claims: {
           type: "array",
-          maxItems: MAX_DRAFT_CLAIMS,
           items: {
             type: "object",
             additionalProperties: false,

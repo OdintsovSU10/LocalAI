@@ -135,6 +135,7 @@ export function verificationDebug(verification = null) {
   const claims = Array.isArray(verification.claims) ? verification.claims : [];
   return {
     level: verification.level || "",
+    reason: verification.reason || "",
     verifier: [verification.verifier?.mode, verification.verifier?.status].filter(Boolean).join(" · "),
     repairs: Number(verification.repairs || 0),
     shown: claims.filter((claim) => claim.shown).length,

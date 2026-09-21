@@ -12,7 +12,6 @@ import { checkClaims } from "./claim-checks.js";
 // -> at most maxRepairs bounded repairs (extra retrieval + redraft) -> final renderer.
 
 export const MAX_REPAIRS_LIMIT = 2;
-const STRUCTURED_OUTPUT_UNSUPPORTED = /response_format|json_schema|grammar|structured/i;
 
 async function draftOnce({ question, plan, labelled, feedback, llmCandidates, sourceId, broadAnswer, history, signal, usageTracker, chatCompletion }) {
   let lastRun = null;
@@ -33,7 +32,8 @@ async function draftOnce({ question, plan, labelled, feedback, llmCandidates, so
     });
     lastRun = run;
     if (!run.reply) {
-      if (responseFormat && STRUCTURED_OUTPUT_UNSUPPORTED.test(String(run.lastLlmError?.message || ""))) continue;
+      // The runtime may reject the schema with any wording, so the plain prompt is always tried next.
+      if (responseFormat && !signal?.aborted) continue;
       return { run, draft: null, error: run.lastLlmError || new Error("LLM response is empty") };
     }
     try {
@@ -61,13 +61,12 @@ async function verifyClaims({ verifier, question, plan, scopeTitles, claims, lab
       return { ok: true, parsed };
     } catch (error) {
       lastError = error;
-      if (signal?.aborted) break;
-      const retryPlain = error instanceof DraftParseError || STRUCTURED_OUTPUT_UNSUPPORTED.test(String(error?.message || ""));
-      if (!responseFormat || !retryPlain) break;
+      if (signal?.aborted || !responseFormat) break;
     }
   }
   usageTracker?.finish(requestId, signal?.aborted ? "cancelled" : "failed", lastError?.message || "");
   if (signal?.aborted) throw lastError;
+  console.warn(`verified answering: verifier failed (${lastError?.name || "Error"}): ${String(lastError?.message || lastError).slice(0, 300)}`);
   return { ok: false, parsed: null, error: lastError };
 }
 
@@ -114,7 +113,11 @@ export async function runVerifiedAnswer({
 
   let { run, draft, error } = await draftOnce({ ...common, labelled, feedback: [] });
   let llmMs = run?.llmMs || 0;
-  if (!draft) return { usedLlm: run?.usedLlm || null, promptChars: run?.promptChars || 0, llmMs, verifyMs: 0, error };
+  if (!draft) {
+    // The turn falls back to extractive fragments; the reason belongs in the server log, not in the answer.
+    console.warn(`verified answering: draft failed (${error?.name || "Error"}): ${String(error?.message || error).slice(0, 300)}`);
+    return { usedLlm: run?.usedLlm || null, promptChars: run?.promptChars || 0, llmMs, verifyMs: 0, error };
+  }
 
   const verifier = resolveVerifier(settings, run.usedLlm);
   let verifyMs = 0;

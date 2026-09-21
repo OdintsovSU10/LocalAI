@@ -289,12 +289,15 @@ test("the debug panel explains a verified answer by codes, without claim text", 
   };
   assert.deepEqual(verificationDebug(verification), {
     level: "model",
+    reason: "",
     verifier: "same_model · ok",
     repairs: 1,
     shown: 1,
     rejected: ["period: contradicted (type_mismatch)", "fact: ambiguous (verifier:ambiguous)"]
   });
   assert.equal(verificationDebug(null), null);
+  // A turn that failed before verification shows why: draft_invalid / llm_failed.
+  assert.equal(verificationDebug({ level: "none", reason: "draft_invalid" }).reason, "draft_invalid");
 
   const debug = compactRagDebug({ metadata: { timings: { llmMs: 10, verifyMs: 20, totalMs: 40 } }, verification });
   assert.equal(debug.timings.verifyMs, 20);

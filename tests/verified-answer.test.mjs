@@ -24,7 +24,7 @@ const draftText = (claims) => JSON.stringify({ claims, summary: "", open_questio
 
 // Scripted LLM: drafts come from a queue (the last one repeats), the verifier from a function of its claims.
 // rejectSchema: "once" — the first structured request fails; "always" — every structured request fails.
-function scriptedLlm({ drafts, verdict = "supported", verdictFor = null, failVerifier = false, rejectSchemaOnce = false, rejectSchema = rejectSchemaOnce ? "once" : "" }) {
+function scriptedLlm({ drafts, verdict = "supported", verdictFor = null, failVerifier = false, rejectSchemaOnce = false, rejectSchema = rejectSchemaOnce ? "once" : "", schemaError = "LLM endpoint returned 400: 'response_format' is not supported by this model" }) {
   const calls = [];
   let draftIndex = 0;
   let schemaRejected = false;
@@ -33,7 +33,7 @@ function scriptedLlm({ drafts, verdict = "supported", verdictFor = null, failVer
     calls.push({ name, model: llm.model, content: messages.at(-1).content });
     if (responseFormat && (rejectSchema === "always" || (rejectSchema === "once" && !schemaRejected))) {
       schemaRejected = true;
-      throw new Error("LLM endpoint returned 400: 'response_format' is not supported by this model");
+      throw new Error(schemaError);
     }
     if (name === "claim_verdicts" || messages[0].content.startsWith("Ты независимый проверяющий")) {
       if (failVerifier) throw new Error("verifier model is not loaded");
@@ -301,4 +301,19 @@ test("an empty draft is repaired once before the answer gives up", async () => {
   assert.equal(payload.verification.repairs, 1);
   assert.equal(llm.draftCalls(), 2);
   assert.match(llm.calls[1].content, /черновик без утверждений/);
+});
+
+test("a schema rejected with any wording still falls back to the plain prompt", async () => {
+  // Runtimes word this differently ("failed to compile grammar", "unsupported parameter", 400 …).
+  for (const message of ["Failed to compile grammar for structured output", "LLM endpoint returned 400: unsupported parameter", "boom"]) {
+    const llm = scriptedLlm({
+      drafts: [draftText([claim("Гарантийное удержание составляет 3% от стоимости выполненных работ.", "percentage", ["E1"])])],
+      rejectSchema: "always",
+      schemaError: message
+    });
+    const { payload } = await run({ llm });
+    assert.equal(payload?.answerStatus, "verified", message);
+    assert.equal(payload.verification.level, "model", message);
+    assert.deepEqual(llm.calls.map((call) => call.name), ["answer_draft", "plain", "claim_verdicts", "plain"], message);
+  }
 });

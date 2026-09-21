@@ -7746,7 +7746,13 @@ function renderRagDebugPanel(message, debug = null, sources = []) {
     `total ${formatMs(debug.timings?.totalMs)}`
   ].filter(Boolean).join(" · "));
   if (debug.verification) {
-    appendDebugRow(grid, "Проверка", `${debug.verification.level} · ${debug.verification.verifier} · показано ${debug.verification.shown} · повторов ${debug.verification.repairs}`);
+    appendDebugRow(grid, "Проверка", [
+      debug.verification.level,
+      debug.verification.reason,
+      debug.verification.verifier,
+      `показано ${debug.verification.shown}`,
+      `повторов ${debug.verification.repairs}`
+    ].filter(Boolean).join(" · "));
     if (debug.verification.rejected.length) appendDebugRow(grid, "Отклонено", debug.verification.rejected.join("; "));
   }
   details.append(grid);

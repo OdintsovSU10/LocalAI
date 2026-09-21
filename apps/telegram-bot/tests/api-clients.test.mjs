@@ -23,15 +23,15 @@ test("the portal client never passes a local path or a key to the bot", async ()
     fetchImpl: async (url, options) => {
       calls.push({ url, headers: options.headers });
       if (url.endsWith("/api/sources")) {
-        return jsonResponse({
-          sources: [{
-            id: "s1",
-            title: "ЖК Сокольники, Стромынка",
-            path: "D:\\LOCAL_RAG\\projects\\stromynka",
-            additionalPaths: ["C:\\Users\\odintsov.a.a\\Documents"],
-            indexStatus: { status: "completed", indexedFiles: 4 }
-          }]
-        });
+        // Real shape of the portal: a bare array of sources with local paths inside.
+        return jsonResponse([{
+          id: "s1",
+          title: "ЖК Сокольники, Стромынка",
+          path: "D:\\LOCAL_RAG\\projects\\stromynka",
+          additionalPaths: ["C:\\Users\\odintsov.a.a\\Documents"],
+          linkedTenders: [{ id: "t1", path: "D:\\LOCAL_RAG\\tenders" }],
+          indexStatus: { status: "completed", indexedFiles: 4 }
+        }]);
       }
       if (url.endsWith("/api/settings")) {
         return jsonResponse({
@@ -51,6 +51,9 @@ test("the portal client never passes a local path or a key to the bot", async ()
   for (const secret of ["LOCAL_RAG", "odintsov", "\\\\", "Documents"]) {
     assert.equal(serialized.includes(secret), false, secret);
   }
+
+  assert.equal(sources.length, 1, "a bare array is the shape the portal really returns");
+  assert.equal(sources[0].indexedFiles, 4);
 
   const status = await api.status();
   const statusText = JSON.stringify(status);
@@ -110,4 +113,16 @@ test("optional Telegram calls never break an answer", async () => {
   assert.equal(await telegram.answerCallbackQuery("cb"), null);
   assert.equal(await telegram.editMessageText(1, 2, "текст"), null);
   await assert.rejects(() => telegram.sendMessage(1, "текст"), /chat not found/);
+});
+
+test("the wrapped shape of /api/sources is accepted too", async () => {
+  const api = createLocalApi({
+    baseUrl: "http://127.0.0.1:8787",
+    fetchImpl: async (url) => jsonResponse(url.endsWith("/api/sources")
+      ? { sources: [{ id: "s1", title: "Проект", path: "D:\\LOCAL_RAG", indexStatus: { status: "running", indexedFiles: 2 } }] }
+      : { ok: true })
+  });
+  const sources = await api.sources();
+  assert.deepEqual(sources, [{ id: "s1", title: "Проект", sourceType: "", indexStatus: "running", indexedFiles: 2 }]);
+  assert.deepEqual(await createLocalApi({ baseUrl: "http://127.0.0.1:8787", fetchImpl: async () => jsonResponse(null) }).sources(), []);
 });

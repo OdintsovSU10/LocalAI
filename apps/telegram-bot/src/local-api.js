@@ -35,9 +35,11 @@ export function createLocalApi({ baseUrl, authToken = "", fetchImpl = fetch, tim
     request,
     health: () => request("/api/health"),
     // Only what the bot may show: titles and ids, never local paths.
+    // GET /api/sources answers with a bare array; the wrapped form is accepted too.
     sources: async () => {
       const payload = await request("/api/sources");
-      return (payload?.sources || []).map((source) => ({
+      const list = Array.isArray(payload) ? payload : (payload?.sources || []);
+      return list.map((source) => ({
         id: source.id,
         title: source.title || source.id,
         sourceType: source.sourceType || "",

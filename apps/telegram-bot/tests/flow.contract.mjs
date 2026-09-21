@@ -76,6 +76,22 @@ test("telegram flow: clarification, resume, follow-up, /new and an unauthorized 
     rateLimiter: createRateLimiter({ perMinute: 30 })
   };
 
+  // 0. Commands read the real portal: the project list and the status must not be empty.
+  await handleUpdate(ctx, message("/sources"));
+  const sourcesText = ctx.telegram.lastText();
+  assert.match(sourcesText, /Проекты \(2\)/);
+  assert.match(sourcesText, /ЖК Сокольники, Стромынка/);
+  assert.match(sourcesText, /Сокольники Парк, Русаковская/);
+  assert.equal(sourcesText.includes(root), false, "no local path in the project list");
+  assert.equal(sourcesText.includes("\\"), false);
+
+  await handleUpdate(ctx, message("/status"));
+  assert.match(ctx.telegram.lastText(), /Портал: доступен/);
+  assert.match(ctx.telegram.lastText(), /Проектов: 2/);
+
+  await handleUpdate(ctx, message("/project"));
+  assert.equal(ctx.telegram.lastKeyboard().length, 2, "the project keyboard is built from the real list");
+
   // 1-2. Two projects match "Сокольники": the bot asks instead of guessing.
   await handleUpdate(ctx, message("Какой размер аванса по Сокольникам?"));
   const options = ctx.telegram.lastKeyboard().map((row) => row[0]);
